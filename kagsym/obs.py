@@ -1,10 +1,8 @@
-"""Codificacion de la observacion para las redes.
+"""Observation encoding for the networks.
 
-Extraido de `kagworld/encode.py` dejando fuera la maquinaria de objetivos
-residuales del world model (`residual_targets`, `opp_history`, `encode_action`):
-esa rama esta medida como casi sin valor y vive en `kagworld/` por
-reproducibilidad. Aqui queda lo que el camino vivo usa: `encode_obs`,
-`legal_ops`, y la valoracion exacta a precio marginal.
+Everything here is derived from the engine, never guessed: the per-tile
+channels mirror the engine's tile fields, the legality mask is derived one by
+one from `_apply_unit_action`, and valuation uses the engine's marginal price.
 """
 from __future__ import annotations
 
@@ -18,7 +16,7 @@ from . import spec
 BOARD = spec.BOARD
 
 # ---------------------------------------------------------------------------
-# Canales de la rejilla, por jugador. El orden ES el layout del tensor.
+# Grid channels, per player. The order IS the tensor layout.
 # ---------------------------------------------------------------------------
 TILE_CHANNELS = [
     "locked", "empty", "weed", "plant", "coop", "pasture",
@@ -30,39 +28,39 @@ TILE_CHANNELS = [
 ]
 TILE_CH = {name: i for i, name in enumerate(TILE_CHANNELS)}
 N_TILE_CH = len(TILE_CHANNELS)
-N_GRID_CH = 2 * N_TILE_CH          # [yo, rival]
+N_GRID_CH = 2 * N_TILE_CH          # [me, opponent]
 
 # ---------------------------------------------------------------------------
-# Vector global. Cada bloque documenta su rango para poder leer el residual.
+# Global vector. Each block documents its range so the layout can be read.
 # ---------------------------------------------------------------------------
 def _global_layout() -> list[tuple[str, int]]:
     return [
-        # +2: HORIZONTE Y TOPE ABSOLUTOS. Todo lo demas del bloque "time" esta
-        # NORMALIZADO por spec.N_DAYS / spec.EPISODE_STEPS, que son globales por
-        # proceso y valen lo que dure la partida en curso: una de 5 dias y una
-        # de 30 producen exactamente la misma señal (0 -> 1). La red no podia
-        # distinguirlas, asi que al entrenar a horizontes mezclados promediaba
-        # dos estrategias incompatibles. Medido: ascendiendo por 5->8->10 dias
-        # con win=1,00 en autojuego, el margen real contra la escalera cayo de
-        # -82,7 % a -98,3 %. Y los optimos son distintos de verdad: peones
-        # 0,057 a 5 dias, 0,610 a 8, 0,378 a 30 -no monotono-.
-        # +3 (era +2): se anade HORAS POR DIA absolutas. Medido el 2026-09-21:
-        # `hour / spec.TURNS_PER_DAY` normaliza la jornada y la borra, igual que
-        # `day / N_DAYS` borraba el horizonte. Consecuencia: 8h x 13d (104
-        # turnos) y 5h x 21d (105) se separan solo por 0,0014 en el rasgo de
-        # horizonte -L2 total 0,26- y sus optimos difieren 2,8x (5,113x contra
-        # 1,815x). Para la red eran la misma celda. Y las horas por dia son el
-        # eje que MAS manda, porque deciden que fraccion de la jornada se come
-        # el trayecto: a 5 h/dia el peon recien contratado gasta el dia entero
-        # andando hasta el cuadrante abierto y no llega nunca -medido: 83 de
-        # 104 acciones son NORTH/WEST-, mientras que a 24 h/dia ese mismo
-        # trayecto son 8 de 24 acciones.
+        # +2: ABSOLUTE HORIZON AND CAP. Everything else in the "time" block is
+        # NORMALISED by spec.N_DAYS / spec.EPISODE_STEPS, which are per-process
+        # globals holding whatever the current episode lasts: a 5-day and a
+        # 30-day game produce exactly the same signal (0 -> 1). The network
+        # could not tell them apart, so training on mixed horizons averaged two
+        # incompatible strategies. Measured: climbing 5->8->10 days with
+        # win=1.00 in self-play, the real margin against the ladder fell from
+        # -82.7% to -98.3%. And the optima genuinely differ: hands 0.057 at 5
+        # days, 0.610 at 8, 0.378 at 30 -not monotonic-.
+        # +3 (was +2): absolute HOURS PER DAY added. Measured: `hour /
+        # spec.TURNS_PER_DAY` normalises the working day and erases it, just as
+        # `day / N_DAYS` erased the horizon. Consequence: 8h x 13d (104 turns)
+        # and 5h x 21d (105) differ by only 0.0014 in the horizon feature -0.26
+        # in total L2- while their optima differ by 2.8x (5.113x against
+        # 1.815x). To the network they were the same cell. And hours per day is
+        # the axis that matters MOST, because it decides what fraction of the
+        # day the commute eats: at 5 h/day a freshly hired hand spends the
+        # whole day walking to the open quadrant and never arrives -measured:
+        # 83 of 104 actions are NORTH/WEST- whereas at 24 h/day that same
+        # commute is 8 of 24 actions.
         ("time", 5 + 1 + len(spec.CROP_LIST) + len(spec.ANIMALS) + 1 + 3 + 3),
-        # day, hour, sin h, cos h, step  +  FASE DEL EPISODIO:
-        #   dias restantes normalizados
-        #   viabilidad exacta por cultivo   (¿madura antes del cierre?)
-        #   viabilidad exacta por animal    (¿da tiempo a amortizarlo?)
-        #   urgencia de liquidacion         (el cobertizo vale 0 al cerrar)
+        # day, hour, sin h, cos h, step  +  EPISODE PHASE:
+        #   normalised days remaining
+        #   exact per-crop viability     (does it mature before the close?)
+        #   exact per-animal viability   (is there time to pay it back?)
+        #   liquidation urgency          (the shed scores 0 at the close)
         ("money", 4),                          # yo/rival x {lineal, log}
         ("mkt_inv", len(spec.PRODUCTS)),
         ("mkt_price", len(spec.PRODUCTS)),
@@ -85,34 +83,34 @@ for _name, _n in GLOBAL_LAYOUT:
 N_GLOBAL = _off
 
 # ---------------------------------------------------------------------------
-# Accion
+# Action
 # ---------------------------------------------------------------------------
 ACTION_TILE_CHANNELS = [*spec.UNIT_OPS, *[f"plant_{c}" for c in spec.CROP_LIST]]
 ACTION_TILE_CH = {n: i for i, n in enumerate(ACTION_TILE_CHANNELS)}
 N_ACTION_GRID_CH = len(ACTION_TILE_CHANNELS)
 N_ACTION_GLOBAL = spec.N_MARKET_SLOTS
 
-# Escalas de normalizacion (elegidas por rango tipico, no por estadistica del
-# dataset: asi el encoder no depende de los datos con los que se entreno).
+# Normalisation scales (chosen from the typical range, not from dataset
+# statistics: that way the encoder does not depend on the data it was trained
+# on).
 INV_SCALE = 500.0        # el inventario se mueve ~cientos alrededor de I0
 MONEY_SCALE = 3000.0
 YIELD_SCALE = 6.0
-# Los objetivos (flujo, gasto) se emiten en UNIDADES FISICAS: unidades de
-# producto y dolares. No hay escala inventada porque no hace falta: la perdida
-# aprende una sigma por cabeza, asi que la escala se estima de los datos en vez
-# de fijarla yo. Las entradas se normalizan con estadisticas medidas del buffer
-# (ver model.Normalizer), no con divisores a ojo.
+# The targets (flow, spending) are emitted in PHYSICAL UNITS: product units
+# and dollars. There is no invented scale because none is needed: the loss
+# learns one sigma per head, so the scale is estimated from the data instead of
+# being fixed by hand.
 
 
 def flow_revenue(product: str, inv0: int, n: float, params=None) -> float:
-    """Dinero que mueve un flujo de `n` unidades de `product` desde `inv0`.
+    """Money moved by a flow of `n` units of `product` starting at `inv0`.
 
-    Se valora unidad a unidad con la funcion de precio EXACTA del motor, porque
-    el motor cotiza asi: cada unidad vendida baja el precio de la siguiente.
-    Con trigo, vender 10 unidades lo mueve de 25 a 23 (-8%), asi que valorar al
-    precio inicial se queda corto en flujos grandes.
+    Valued unit by unit with the engine's EXACT price function, because that
+    is how the engine quotes: each unit sold lowers the price of the next. With
+    wheat, selling 10 units moves it from 25 to 23 (-8%), so valuing at the
+    initial price falls short on large flows.
 
-    n > 0 = el rival vende (entra oferta); n < 0 = recompra.
+    n > 0 = the opponent sells (supply enters); n < 0 = they buy back.
     """
     k = int(round(n))
     if k == 0:
@@ -122,14 +120,14 @@ def flow_revenue(product: str, inv0: int, n: float, params=None) -> float:
         for j in range(k):
             total += spec.market_price(product, inv0 + j, params)
     else:
-        # El motor cotiza BUY_PRODUCT al inventario ya descontado.
+        # The engine quotes BUY_PRODUCT at the already-decremented inventory.
         for j in range(-k):
             total -= spec.market_price(product, inv0 - 1 - j, params)
     return total
 
 
 def flow_value(flow: np.ndarray, inv0: np.ndarray, params=None) -> float:
-    """Valor total en $ de un vector de flujo de 9 productos."""
+    """Total value in dollars of a 9-product flow vector."""
     return sum(flow_revenue(p, int(inv0[i]), float(flow[i]), params)
                for i, p in enumerate(spec.PRODUCTS) if abs(flow[i]) >= 0.5)
 
@@ -145,7 +143,7 @@ def _quadrant_flags(farm) -> list[float]:
 
 
 def encode_farm_grid(farm, day: int, out: np.ndarray) -> None:
-    """Escribe los N_TILE_CH canales de una granja en `out` (N_TILE_CH,B,B)."""
+    """Write a farm's N_TILE_CH channels into `out` (N_TILE_CH,B,B)."""
     tiles = farm["tiles"]
     for y in range(BOARD):
         row = tiles[y]
@@ -189,8 +187,8 @@ def encode_farm_grid(farm, day: int, out: np.ndarray) -> None:
 
 
 def _tope_peones():
-    """Tope de curriculo sobre NUESTROS peones, o None. Se lee tarde para no
-    crear un ciclo de importacion entre obs y macro."""
+    """Curriculum cap on OUR hands, or None. Imported late to avoid an
+    import cycle between obs and macro."""
     try:
         from . import macro as _M
         return _M.HAND_CAP
@@ -199,10 +197,10 @@ def _tope_peones():
 
 
 def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
-    """Observacion -> (grid (N_GRID_CH,B,B), global (N_GLOBAL,)), float32.
+    """Observation -> (grid (N_GRID_CH,B,B), global (N_GLOBAL,)), float32.
 
-    La granja propia va siempre en el primer bloque de canales, asi que la red
-    no tiene que aprender a desambiguar quien es quien.
+    Our own farm always occupies the first block of channels, so the network
+    does not have to learn to tell who is who.
     """
     me = int(obs["player"])
     opp = 1 - me
@@ -214,12 +212,12 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     encode_farm_grid(farms[opp], day, grid[N_TILE_CH:])
 
     g = np.zeros(N_GLOBAL, dtype=np.float32)
-    # TIEMPO RESTANTE, no transcurrido. Lo que decide en este juego es cuanto
-    # queda: plantar solo compensa si el cultivo madura antes del turno 720, un
-    # animal solo amortiza si quedan dias, y la liquidacion tiene que terminar
-    # antes del cierre porque el cobertizo puntua CERO. Dando solo contadores
-    # crecientes, la red tendria que aprender que 720 es el final y restar,
-    # cuando la viabilidad es exactamente calculable de las tablas del motor.
+    # TIME REMAINING, not elapsed. What decides in this game is how much is
+    # left: planting only pays if the crop matures before turn 720, an animal
+    # only pays back if days remain, and liquidation must finish before the
+    # close because the shed scores ZERO. Given only increasing counters, the
+    # network would have to learn that 720 is the end and subtract, when
+    # viability is exactly computable from the engine tables.
     remaining = max(0, spec.EPISODE_STEPS - 1 - step)
     dias_q = remaining / spec.TURNS_PER_DAY
     viables_cultivo = []
@@ -231,17 +229,17 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     for a in spec.ANIMALS:
         d = spec.ANIMALS[a]
         viables_animal.append(1.0 if dias_q >= d["first_yield_day"] + d["interval"] else 0.0)
-    # urgencia: 1 en el ultimo dia, 0 mientras sobre temporada
+    # urgency: 1 on the last day, 0 while season remains
     urgencia = max(0.0, 1.0 - dias_q / 2.0)
-    # FASE DEL DIA, tambien en terminos de decision. La hora tiene estructura
-    # dura en el motor: a la hora 0 se limpian los peones y se reinicia el coste
-    # fibonacci de contratar, la ventana de contratacion se cierra a la hora 3,
-    # y al CIERRE del dia se vuelcan los inventarios (lo que no cabe se tira) y
-    # muere toda planta sin regar.
+    # PHASE OF THE DAY, also in decision terms. The hour has hard structure in
+    # the engine: at hour 0 the hands are cleared and the fibonacci hiring cost
+    # resets, the hiring window closes at hour 3, and at the CLOSE of the day
+    # inventories are flushed (whatever does not fit is discarded) and every
+    # unwatered plant dies.
     #
-    # La tercera es la que de verdad decide: holgura de riego. Si quedan menos
-    # acciones-unidad hoy que plantas sin regar, esta noche mueren algunas y hay
-    # que priorizar. Es exactamente calculable.
+    # The third is the one that really decides: watering slack. If fewer
+    # unit-actions remain today than there are unwatered plants, some will die
+    # tonight and there is a choice to make. It is exactly computable.
     horas_q = (spec.TURNS_PER_DAY - hour) / spec.TURNS_PER_DAY
     puede_contratar = 1.0 if hour <= 3 else 0.0
     n_unid = 1 + len(farms[me]["hands"])
@@ -260,14 +258,14 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
         dias_q / spec.N_DAYS,
     ] + viables_cultivo + viables_animal
         + [urgencia, horas_q, puede_contratar, holgura,
-           # ABSOLUTOS, con 30 dias y 15 peones como referencia fija.
-           # EPISODE_STEPS, no N_DAYS: `set_episode_steps` solo actualiza el
-           # primero y N_DAYS se queda clavado en 30 para siempre.
+           # ABSOLUTE, with 30 days and 15 hands as the fixed reference.
+           # EPISODE_STEPS, not N_DAYS: `set_episode_steps` only updates the
+           # former and N_DAYS stays pinned at 30 forever.
            spec.EPISODE_STEPS / 720.0,
            (_tope_peones() or spec.HANDS_REF) / float(spec.HANDS_REF),
-           # AL FINAL DEL BLOQUE a proposito: `migrar_ckpt` inserta las columnas
-           # nuevas en `GLOBAL_SLICES["time"].stop - N_NUEVAS`. Ponerlo en otro
-           # sitio desplazaria los pesos equivocados, en silencio.
+           # AT THE END OF THE BLOCK on purpose: `migrate_ckpt` inserts the
+           # new columns at `GLOBAL_SLICES["time"].stop - n_new`. Putting it
+           # anywhere else would shift the wrong weights, silently.
            spec.TURNS_PER_DAY / 24.0])
     m_me, m_opp = float(farms[me]["money"]), float(farms[opp]["money"])
     g[GLOBAL_SLICES["money"]] = [
@@ -322,18 +320,18 @@ SHAPES = {
 }
 
 
-# --- legalidad de acciones de unidad ----------------------------------------
-# Derivada UNA A UNA de `_apply_unit_action` del motor. No es heuristica: si el
-# motor devuelve no-op silencioso, aqui la accion esta prohibida.
+# --- unit action legality ---------------------------------------------------
+# Derived ONE BY ONE from the engine's `_apply_unit_action`. Not a heuristic:
+# wherever the engine returns a silent no-op, the action is forbidden here.
 #
-# Por que hacia falta: medido sobre 336 turnos, la politica emitia 573 PLANT y
-# conseguia 0.7 cultivos vivos de media (el experto: 108 PLANT -> 29.5 cultivos).
-# Mas del 99% de sus acciones eran no-ops. Un gradiente de politica no puede
-# corregir eso, porque el motor devuelve el mismo estado haga lo que haga: la
-# accion ilegal no produce senal de aprendizaje, solo consume el presupuesto de
-# exploracion.
+# Why it was needed: measured over 336 turns, the policy emitted 573 PLANT and
+# achieved 0.7 live crops on average (the expert: 108 PLANT -> 29.5 crops).
+# More than 99% of its actions were no-ops. A policy gradient cannot correct
+# that, because the engine returns the same state whatever it does: an illegal
+# action produces no learning signal, it only consumes the exploration budget.
 def legal_ops(obs) -> "np.ndarray":
-    """(MAX_UNITS, N_UNIT_OPS) booleana. Filas de unidades inexistentes: todo False salvo PASS."""
+    """(MAX_UNITS, N_UNIT_OPS) boolean. Rows of non-existent units: all
+    False except PASS."""
     import numpy as np
 
     from . import bc
@@ -360,7 +358,7 @@ def legal_ops(obs) -> "np.ndarray":
     for i in range(n):
         x, y = pos[i]
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
-        # movimiento: legal si no sale del tablero (LOCKED si se permite)
+        # movement: legal if it stays on the board (LOCKED is allowed)
         for op, (dx, dy) in (("NORTH", (0, -1)), ("SOUTH", (0, 1)),
                              ("EAST", (1, 0)), ("WEST", (-1, 0))):
             if 0 <= x + dx < B and 0 <= y + dy < B:
@@ -406,7 +404,7 @@ def legal_ops(obs) -> "np.ndarray":
                     m[i, ix["COLLECT_FERTILIZER"]] = True
                 if int(t.get("yield_units", 0)) > 0:
                     m[i, ix["HARVEST"]] = True
-            # PLACE de animal sobre estructura vacia compatible
+            # PLACE an animal onto a compatible empty structure
             if t.get("kind") in ("COOP", "PASTURE") and not animal:
                 if any(int(inv.get(a, 0)) > 0 for a in spec.ANIMALS):
                     m[i, ix["PLACE"]] = True
@@ -418,43 +416,45 @@ def _shed_access(board: int):
     return {tuple(p) for p in K._shed_access_tiles(board)}
 
 
-# --- OFERTA INMINENTE DEL RIVAL ------------------------------------------
-# Por que existe. El mercado es compartido: cuando el rival vuelca genero, el
-# precio marginal cae y nuestro ingreso baja. Medido: nuestra conducta mueve su
-# puntuacion un 57 %, y su liquidacion aporta el 99,1 % de la varianza de la
-# recompensa diaria -por eso meterla en el shaping hundia el critico a R2
-# -2,535-. La leccion fue "el shaping solo puede llevar lo que el estado
-# predice"; esto ataca la otra mitad de la frase: hacer que el estado lo prediga.
+# --- THE OPPONENT'S IMMINENT SUPPLY -----------------------------------------
+# Why it exists. The market is shared: when the opponent dumps produce, the
+# marginal price falls and our income drops. Measured: our behaviour moves
+# their score by 57%, and their liquidation accounts for 99.1% of the variance
+# of the daily reward -which is why putting it in the shaping sank the critic
+# to R2 -2.535-. The lesson was "shaping can only carry what the state
+# predicts"; this attacks the other half of that sentence: making the state
+# predict it.
 #
-# La entrada existia -N_HIST = 4 x N_PRODUCTOS, "flujo del rival en 4 ventanas
-# hacia atras"- y el entrenador la rellenaba con CEROS. Se reinterpreta como
-# oferta FUTURA en 4 horizontes, que es lo causalmente anterior a nuestro
-# ingreso, y no como historia pasada.
+# The input already existed -N_HIST = 4 x N_PRODUCTS, "opponent flow over 4
+# backward windows"- and the trainer filled it with ZEROS. It is reinterpreted
+# as FUTURE supply over 4 horizons, which is what causally precedes our income,
+# rather than as past history.
 #
-# Y es predecible desde lo que vemos: su tablero se observa entero, asi que no
-# le pedimos adivinar su estrategia, solo leer su cosecha.
+# And it is predictable from what we see: their board is fully observable, so
+# we are not asking the network to guess their strategy, only to read their
+# harvest.
 RIVAL_WINDOWS = (1, 2, 4, 8)          # dias vista
 N_HIST_RIVAL = len(RIVAL_WINDOWS) * len(spec.PRODUCTS)
 
-# HORIZONTES DE LA TAREA AUXILIAR, en Fibonacci. Predecir solo manana es casi
-# trivial -el crecimiento de un dia es determinista- y no obliga al codificador
-# a nada. Lo que hay que modelar son los CICLOS: trigo 2-4 dias, tomate 8,
-# fresa y melon 10, y la fresa repite cada 2. Una escala geometrica los cubre
-# con pocos objetivos y reparte la dificultad como se degrada la informacion
-# real: cerca predecible, lejos grueso.
+# AUXILIARY TASK HORIZONS, in Fibonacci. Predicting only tomorrow is nearly
+# trivial -one day of growth is deterministic- and forces the encoder to do
+# nothing. What has to be modelled are the CYCLES: wheat 2-4 days, tomato 8,
+# strawberry and melon 10, and strawberry repeats every 2. A geometric scale
+# covers them with few targets and spreads the difficulty the way real
+# information degrades: predictable near, coarse far.
 AUX_HORIZONS = (1, 2, 3, 5, 8, 13)
 N_AUX_RIVAL = len(AUX_HORIZONS) * len(spec.PRODUCTS)
 
 
 def rival_ready(obs, opp: int = None) -> np.ndarray:
-    """Unidades por producto que el rival tiene LISTAS hoy. Es el objetivo
-    auxiliar: se le pide predecir este vector a 1, 2, 3, 5, 8 y 13 dias."""
+    """Units per product the opponent has READY today. This is the auxiliary
+    target: the network predicts this vector at 1, 2, 3, 5, 8 and 13 days."""
     f = rival_flow(obs, opp)
     return f.reshape(len(RIVAL_WINDOWS), -1)[0].copy()
 
 
 def rival_flow(obs, opp: int = None) -> np.ndarray:
-    """Unidades por producto que el rival tendra listas en cada ventana."""
+    """Units per product the opponent will have ready in each window."""
     me = int(obs.get("player", 0))
     opp = (1 - me) if opp is None else opp
     dia = int(obs.get("day", 0))
@@ -473,7 +473,7 @@ def rival_flow(obs, opp: int = None) -> np.ndarray:
                 if cd is None:
                     continue
                 prod, age = t["crop"], dia - int(t.get("planted_day", dia))
-                # cuantos dias faltan para que de fruto
+                # how many days until it bears fruit
                 missing = max(0, int(cd["first_yield_day"]) - age)
             elif "animal" in t:
                 a = spec.ANIMALS.get(t.get("animal"))
