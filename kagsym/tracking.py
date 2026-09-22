@@ -54,7 +54,7 @@ def _flatten(d: dict, prefix: str = "") -> dict:
 
 
 class Run:
-    """Contexto de una corrida. Es un no-op completo si MLflow no esta."""
+    """Context of one run. A complete no-op if MLflow is not installed."""
 
     def __init__(self, name: str, params: dict | None = None,
                  experiment: str = DEFAULT_EXPERIMENT,
@@ -88,10 +88,10 @@ class Run:
             self._run = mlflow.start_run(run_name=self.name)
             if self._params:
                 self.log_params(self._params)
-            print(f"[mlflow] corrida '{self.name}' en {self._uri} "
-                  f"(experimento {self._experiment})")
+            print(f"[mlflow] run '{self.name}' at {self._uri} "
+                  f"(experiment {self._experiment})")
         except Exception as e:
-            print(f"[mlflow] desactivado: {type(e).__name__}: {e}")
+            print(f"[mlflow] disabled: {type(e).__name__}: {e}")
             self._mlflow = None
             self.enabled = False
         return self

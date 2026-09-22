@@ -38,7 +38,7 @@ def test_coincide_con_scipy(n_cases: int = 200, verbose: bool = True) -> bool:
         m = int(rng.integers(n, n + 40))
         mat = rng.normal(0, 50, size=(n, m))
         assignment = max_assignment(mat.tolist())
-        assert len(set(assignment)) == n, f"columnas repetidas en semilla {seed}"
+        assert len(set(assignment)) == n, f"repeated columns on seed {seed}"
         assert all(0 <= j < m for j in assignment), f"columna fuera de rango ({seed})"
         ours, opt = _sum_values(mat, assignment), _scipy_optimum(mat)
         worst = max(worst, abs(ours - opt))

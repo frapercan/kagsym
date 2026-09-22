@@ -66,7 +66,7 @@ def test_equivalence(n_steps=240, seed=1234, verbose=True):
     for t in range(n_steps):
         acts_real = [pol_real[i](real_obs[i]) for i in range(2)]
         acts_fast = [pol_fast[i](fast_obs[i]) for i in range(2)]
-        assert _plain(acts_real) == _plain(acts_fast), f"acciones divergen en t={t}"
+        assert _plain(acts_real) == _plain(acts_fast), f"actions diverge at t={t}"
 
         real.step([_fast_copy(x) for x in acts_real])
         real_obs = [s.observation for s in real.state]

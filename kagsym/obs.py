@@ -61,7 +61,7 @@ def _global_layout() -> list[tuple[str, int]]:
         #   exact per-crop viability     (does it mature before the close?)
         #   exact per-animal viability   (is there time to pay it back?)
         #   liquidation urgency          (the shed scores 0 at the close)
-        ("money", 4),                          # yo/rival x {lineal, log}
+        ("money", 4),                          # ours/theirs x {linear, log}
         ("mkt_inv", len(spec.PRODUCTS)),
         ("mkt_price", len(spec.PRODUCTS)),
         ("town", len(spec.SHOP_LIST)),
@@ -186,7 +186,7 @@ def encode_farm_grid(farm, day: int, out: np.ndarray) -> None:
         out[TILE_CH["hands_here"], hy, hx] += 0.25
 
 
-def _tope_peones():
+def _hand_cap():
     """Curriculum cap on OUR hands, or None. Imported late to avoid an
     import cycle between obs and macro."""
     try:
@@ -268,7 +268,7 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
            # EPISODE_STEPS, not N_DAYS: `set_episode_steps` only updates the
            # former and N_DAYS stays pinned at 30 forever.
            spec.EPISODE_STEPS / 720.0,
-           (_tope_peones() or spec.HANDS_REF) / float(spec.HANDS_REF),
+           (_hand_cap() or spec.HANDS_REF) / float(spec.HANDS_REF),
            # AT THE END OF THE BLOCK on purpose: `migrate_ckpt` inserts the
            # new columns at `GLOBAL_SLICES["time"].stop - n_new`. Putting it
            # anywhere else would shift the wrong weights, silently.
@@ -357,8 +357,8 @@ def legal_ops(obs) -> "np.ndarray":
 
     seeds = priv.get("seeds", {}) or {}
     has_seed = any(int(v) > 0 for v in seeds.values())
-    cobertizo = priv.get("shed", {}) or {}
-    hay_en_cobertizo = any(int(v) > 0 for v in cobertizo.values())
+    shed = priv.get("shed", {}) or {}
+    shed_has_any = any(int(v) > 0 for v in shed.values())
     invs = priv.get("inventories", priv.get("inventory", [])) or []
 
     for i in range(n):
@@ -372,7 +372,7 @@ def legal_ops(obs) -> "np.ndarray":
 
         junto_cobertizo = (x, y) in acceso
         if junto_cobertizo:
-            if hay_en_cobertizo:
+            if shed_has_any:
                 m[i, ix["PICKUP"]] = True
             if inv:
                 m[i, ix["PLACE"]] = True
@@ -439,7 +439,7 @@ def _shed_access(board: int):
 # And it is predictable from what we see: their board is fully observable, so
 # we are not asking the network to guess their strategy, only to read their
 # harvest.
-RIVAL_WINDOWS = (1, 2, 4, 8)          # dias vista
+RIVAL_WINDOWS = (1, 2, 4, 8)          # days of lookahead
 N_HIST_RIVAL = len(RIVAL_WINDOWS) * len(spec.PRODUCTS)
 
 # AUXILIARY TASK HORIZONS, in Fibonacci. Predicting only tomorrow is nearly

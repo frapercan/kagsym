@@ -151,7 +151,7 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
             # crossed again on the next check and promotion cascades.
             env.results.clear()
             conn.send(True)
-        elif cmd == "nivel":
+        elif cmd == "level":
             env.level = data
             conn.send(True)
         elif cmd == "cerrar":
@@ -405,7 +405,7 @@ class ParallelEnv:
         vals = (list(level) if isinstance(level, (list, tuple))
                 else [level] * self.n_procs)
         for k, c in enumerate(self.conns):
-            c.send(("nivel", vals[k % len(vals)]))
+            c.send(("level", vals[k % len(vals)]))
         for c in self.conns:
             c.recv()
 
@@ -441,7 +441,7 @@ class ParallelEnv:
         return out
 
     def win_rate_per_rung(self):
-        """Tasa de victoria de CADA trabajador, o sea de cada peldano.
+        """Win rate of EACH worker, that is, of each rung.
 
         Each worker plays a different rung of the ladder, so its `_wr` is
         exactly how exhausted that rung is. The global mean hides this: one
