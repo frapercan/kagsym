@@ -142,6 +142,24 @@ def shrink_macro_head(sd: dict, macro_fields=None) -> list:
     return touched
 
 
+def migrate_stem(sd: dict, n_in: int) -> list:
+    """Stem that GROWS when a channel is appended to the grid.
+
+    The commitment channel is the 51st, appended AFTER both farm blocks
+    precisely so this migration is a zero column at the end and not a shift of
+    half the stem's weights. Zero means the network ignores it until training
+    gives it weight, so an older checkpoint keeps its exact function.
+    """
+    touched = []
+    for k, v in list(sd.items()):
+        if k.endswith("stem.0.weight") and v.dim() == 4 and v.shape[1] < n_in:
+            w = v.new_zeros(v.shape[0], n_in, *v.shape[2:])
+            w[:, : v.shape[1]] = v
+            sd[k] = w
+            touched.append(f"{k}: {v.shape[1]} -> {n_in} input channels (zeroed)")
+    return touched
+
+
 def migrate_micro_head(sd: dict, n_out: int) -> list:
     """Micro head that GROWS when channels are added to the per-tile map.
 
@@ -205,6 +223,8 @@ def migrate_sd(sd: dict, macro_fields=None, micro_out=None) -> tuple[dict, list[
     touched += migrate_macro_head(out)
     if micro_out:
         touched += migrate_micro_head(out, int(micro_out))
+    from . import obs as _O
+    touched += migrate_stem(out, _O.N_GRID_CH)
     for k in ("world.glob_enc.0.weight", "world.resumen.0.weight"):
         if k in out and out[k].shape[1] != NEW_WIDTH:
             out[k] = migrate_input(out[k])

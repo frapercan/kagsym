@@ -350,7 +350,8 @@ class DayEnv:
         B = np.zeros((self.n, O.N_GLOBAL), dtype=np.float32)
         Hf = np.zeros((self.n, O.N_HIST_RIVAL), dtype=np.float32)
         for i, o in enumerate(self.obs):
-            G[i], B[i] = O.encode_obs(o[0])
+            G[i], B[i] = O.encode_obs(
+                o[0], getattr(self.agents[i], "_destinations", None))
             Hf[i] = O.rival_flow(o[0])
         return G, B, Hf
 

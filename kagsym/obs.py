@@ -28,7 +28,15 @@ TILE_CHANNELS = [
 ]
 TILE_CH = {name: i for i, name in enumerate(TILE_CHANNELS)}
 N_TILE_CH = len(TILE_CHANNELS)
-N_GRID_CH = 2 * N_TILE_CH          # [me, opponent]
+# [mine, opponent, committed]. The last one is not a farm block: it marks the
+# tiles our own units are already walking to. Without it the network scores a
+# tile the same whether or not somebody is three steps into fetching it, and
+# 94% of our PASSes are precisely units losing a contested tile.
+#
+# It goes at the END on purpose. Every migration in `migrate_ckpt` assumes new
+# input columns are appended, so inserting a channel inside a farm block would
+# shift half the stem's weights in silence.
+N_GRID_CH = 2 * N_TILE_CH + 1
 
 # ---------------------------------------------------------------------------
 # Global vector. Each block documents its range so the layout can be read.
@@ -196,7 +204,7 @@ def _hand_cap():
         return None
 
 
-def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
+def encode_obs(obs: Any, destinations=None) -> tuple[np.ndarray, np.ndarray]:
     """Observation -> (grid (N_GRID_CH,B,B), global (N_GLOBAL,)), float32.
 
     Our own farm always occupies the first block of channels, so the network
@@ -209,7 +217,14 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
 
     grid = np.zeros((N_GRID_CH, BOARD, BOARD), dtype=np.float32)
     encode_farm_grid(farms[me], day, grid[:N_TILE_CH])
-    encode_farm_grid(farms[opp], day, grid[N_TILE_CH:])
+    encode_farm_grid(farms[opp], day, grid[N_TILE_CH:2 * N_TILE_CH])
+    # Tiles our own units are already committed to. `destinations` is the
+    # executor's own state -{unit: tile}- and it is the only thing that
+    # crosses the turn boundary, so it is the only place this can come from.
+    if destinations:
+        for _t in destinations.values():
+            if _t is not None:
+                grid[2 * N_TILE_CH, _t[1], _t[0]] = 1.0
 
     g = np.zeros(N_GLOBAL, dtype=np.float32)
     # TIME REMAINING, not elapsed. What decides in this game is how much is
