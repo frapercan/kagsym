@@ -10,7 +10,7 @@
 !README.md
 !LICENSE
 # el motor derivado exactamente: acciones, precondiciones, recompensa
-!ESPECIFICACION.md
+!SPECIFICATION.md
 !pyproject.toml
 
 # ---- measurement tools and ladder construction ----

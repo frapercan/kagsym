@@ -1,8 +1,8 @@
 [project]
 name = "kagsym"
 version = "0.1.0"
-description = "Agente neurosimbolico para la competicion Kaggriculture"
-requires-python = ">=3.10,<3.13"   # kaggle-environments arrastra pygame, sin wheel para 3.14
+description = "Neurosymbolic agent for the Kaggriculture competition"
+requires-python = ">=3.10,<3.13"   # kaggle-environments pulls pygame, no wheel for 3.14
 dependencies = [
     "kaggle-environments",
     "numpy",
@@ -10,8 +10,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ladder = ["kaggle"]          # CLI y API para replays y clasificacion
-tracking = ["mlflow"]        # registro de experimentos (opcional, degrada a no-op)
+ladder = ["kaggle"]          # CLI and API for replays and the leaderboard
+tracking = ["mlflow"]        # experiment tracking (optional, degrades to a no-op)
 
 [tool.setuptools.packages.find]
 include = ["kagsym*"]
