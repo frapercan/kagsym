@@ -31,10 +31,10 @@ N_EXPOSED = 32       # the hand-set ones; see the block in `Macro`
 N_MARKET = 9         # one learned value multiplier per product
 N_TURN = 5           # coefficients of the PER-TURN selling rule
 N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
-# El coste del peon 16 del dia es 987 $ el solo -medido-, pero eso es una razon
-# ECONOMICA que la busqueda puede descubrir sola, no un limite del motor: el
-# motor no topa las contrataciones. Ya no hay constante; ver `peones_objetivo`.
-# El horizonte de reventa ya no tiene techo; su defecto es un dia
+# The 16th hand of the day costs $987 on its own -measured- but that is an
+# ECONOMIC reason the search can find by itself, not an engine limit: the
+# engine does not cap hiring. There is no constant any more; see `target_hands`.
+# The resale horizon has no ceiling either; its default is one day
 # (`spec.TURNS_PER_DAY`, del motor). Ver `horizonte_venta`.
 
 
@@ -42,13 +42,13 @@ N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
 class Macro:
     """Targets, not orders. The executor decides how to reach them."""
 
-    tiles: float = 0.3333   # -> escala sobre el techo de riego, SIN borde
+    tiles: float = 0.3333     # -> scale over the watering ceiling, BORDERLESS
                                #    (exp(logit(1/3)) = 0.5, the previous value)
-    animals: float = 0.5      # -> fraccion de la capacidad de atencion dedicada a ganado
-    hands: float = 0.35       # -> peones objetivo por dia
+    animals: float = 0.5      # -> share of attention capacity given to livestock
+    hands: float = 0.35       # -> target hands per day
     venta: float = 0.25        # -> agresividad: 0 vender ya, 1 acumular al maximo
     crop: float = 0.0       # -> sesgo hacia cultivo caro (1) o barato y rapido (0)
-    expandir: float = 0.25     # -> saturacion exigida antes de comprar tierra
+    expandir: float = 0.25    # -> saturation required before buying land
     adherencia: float = 0.3333 # -> stickiness scale, borderless
                                #    (exp(logit(1/3)) = 0.5, the previous value)
     fertilizar: float = 0.0    # -> cuanto vale fertilizar frente a las demas tareas
@@ -79,7 +79,7 @@ class Macro:
     # is the definition of what the module docstring says must be learned.
     #
     # All in [0,1]; `params()` maps them to their real range.
-    f_labour: float = 0.137      # 0.15 / 1.09   -> reproduce el valor viejo
+    f_labour: float = 0.137         # reproduces the old 0.15
     f_seed: float = 0.479        # 0.50
     f_hand_margin: float = 0.359    # 3.0
     f_feed_days: float = 0.385    # 3.0
@@ -97,8 +97,8 @@ class Macro:
     # the cap decides where it is clipped. Nobody ever searched them.
     f_map_gain: float = 0.231  # 1.0
     f_map_cap: float = 0.655      # 20.0
-    f_max_animal: float = 0.111     # 2  (el limite del motor es 10, no 2)
-    f_residual_cap: float = 0.2784   # 3.0 -> exp(3) = 20x sobre la heuristica
+    f_max_animal: float = 0.111     # 2  (the engine limit is 10, not 2)
+    f_residual_cap: float = 0.2784  # 3.0 -> exp(3) = 20x over the heuristic
     # THRESHOLD for tiles the heuristic declares empty and the engine
     # considers legal -5.81 per turn against 8.94 offered-. It is what such a
     # tile has to be worth, in dollars emitted by the network, to deserve
@@ -109,18 +109,17 @@ class Macro:
     # extra tile enters and behaviour is identical to before. Training lowers
     # it if it pays.
     f_extra_threshold: float = 0.5
-    # CABEZA DE MERCADO: un multiplicador por producto sobre su valor de venta.
+    # MARKET HEAD: one multiplier per product over its sale value.
     #
-    # Es la ULTIMA capa de decision que no se aprendia. El tablero ya lo decide
-    # la red casilla a casilla, pero que vender y cuanto aguantar lo decidia
-    # `mercado.py` a partir de unos diez escalares. Y ahi esta el hueco medido:
-    # vendemos 59.872 $ contra los 200.760 de v48, con 71.170 en FRESAS que no
-    # tocamos y 60.179 en LECHE donde hacemos la quinta parte -el 84 % de la
-    # diferencia en dos productos-.
+    # The board is already decided tile by tile by the network, but WHAT to
+    # sell and how long to hold was decided by `market_ops.py` from about ten
+    # scalars. That is where a measured gap lives: we sell $59,872 against
+    # v48's $200,760, with $71,170 in STRAWBERRIES we never touch and $60,179
+    # in MILK where we do a fifth -84% of the difference in two products-.
     #
-    # Mismo patron que funciono en la cabeza micro: residuo MULTIPLICATIVO
-    # sobre la valoracion exacta, no sustituirla. 0.5 -> factor 1.0, o sea
-    # neutro, asi que el defecto reproduce la conducta anterior.
+    # Same pattern that worked for the micro head: a MULTIPLICATIVE residual
+    # over the exact valuation, not a replacement. 0.5 -> factor 1.0, i.e.
+    # neutral, so the default reproduces the previous behaviour.
     m_wheat: float = 0.5
     m_carrot: float = 0.5
     m_tomato: float = 0.5
@@ -131,44 +130,44 @@ class Macro:
     m_wool: float = 0.5
     m_fertilizer: float = 0.5
     # ------------------------------------------------------------------
-    # LAS QUE SEGUIAN INLINE. Auditoria del 2026-09-22: cuatro numeros
-    # escritos DENTRO del cuerpo de las funciones, no como constantes de
-    # modulo, asi que la auditoria anterior -la que expuso catorce y dio
-    # +34 %- no los vio.
+    # THE ONES THAT WERE STILL INLINE. Second audit: four numbers written
+    # INSIDE function bodies rather than as module constants, so the previous
+    # audit -the one that exposed fourteen and gave +34%- never saw them.
     #
-    # MEDIDOS VIVOS en ops, 4 semillas, 24h x 30d, 720 turnos:
-    #     credito de estiercol  0.5 -> 0.0    -22.5 %
-    #     caja para pienso     0.25 -> 0.02   -21.6 %
-    # o sea que cada uno decide mas que casi cualquier otra cosa del vector.
-    # `suelo_obra` midio 0.0 % a esta caja, pero es un SUELO EN DOLARES: con
-    # otra caja inicial muerde, y el modelo tiene que servir en otra liga.
+    # MEASURED LIVE in ops, 4 seeds, 24h x 30d, 720 turns:
+    #     manure credit      0.5 -> 0.0    -22.5%
+    #     cash for feed     0.25 -> 0.02   -21.6%
+    # i.e. each one decides more than almost anything else in the vector.
+    # `labour_floor` measured 0.0% at this starting cash, but it is a FLOOR IN
+    # DOLLARS: with another starting cash it bites, and the model has to work
+    # in another league.
     f_manure_credit: float = 0.5   # 0.50  credito de estiercol al valorar un animal
-    f_feed_cash: float = 0.5   # 0.25  fraccion de caja que puede irse en pienso
-    f_labour_floor: float = 0.5    # 60.0  suelo del presupuesto de mano de obra
-    f_liquidation: float = 0.5      # 2.0   dias de liquidacion al cerrar la temporada
+    f_feed_cash: float = 0.5   # 0.25  share of cash that may go on feed
+    f_labour_floor: float = 0.5    # 60.0  floor of the labour budget
+    f_liquidation: float = 0.5     # 2.0   liquidation days at the season close
     # ------------------------------------------------------------------
-    # REGLA DE VENTA POR TURNO. Hasta aqui, todo lo aprendido del mercado era
-    # un NIVEL por producto, constante durante las 24 horas: la red se llama
-    # una vez al dia -un paso de RL es un DIA, ver el docstring de
-    # `entorno.py`- y la capa simbolica juega el dia entero sola.
+    # PER-TURN SELLING RULE. Until this, everything learned about the market
+    # was a LEVEL per product, constant across all 24 hours: the network is
+    # called once a day -one RL step is a DAY, see `environment.py`- and the
+    # symbolic layer plays the whole day on its own.
     #
-    # La regla de venta SI mira el estado de cada turno, pero por una formula
-    # que escribi yo: vender mientras el precio de ahora bata al previsto. Lo
-    # que la politica no podia mover es CUANTO reaccionar a cada senal.
+    # The selling rule DOES look at each turn's state, but through a formula I
+    # wrote: sell while the current price beats the forecast. What the policy
+    # could not move is HOW MUCH to react to each signal.
     #
-    # Estos cinco son esos coeficientes. La pasada diaria emite la REGLA y la
-    # regla se evalua con el estado de CADA TURNO. Da decision por situacion
-    # sin multiplicar por 24 las pasadas de red, que es lo que pide una
-    # competicion con un segundo por turno.
+    # These five are those coefficients. The daily pass emits the RULE and the
+    # rule is evaluated against EACH TURN's state. That gives decisions per
+    # situation without multiplying the network passes by 24, which is what a
+    # competition with one second per turn demands.
     #
-    # w = logit(f), asi que 0.5 -> w = 0 -> exp(0) = 1: al arrancar esto es
-    # EXACTAMENTE la conducta anterior. Sin constante de escala, por el mismo
-    # motivo que en `parametros()`: sigmoide y logit se cancelan.
-    w_price: float = 0.5      # reaccion a la caida de precio prevista
-    w_rival: float = 0.5       # reaccion a lo que el rival esta a punto de verter
-    w_shed: float = 0.5   # reaccion a la presion de almacen
-    w_season: float = 0.5    # reaccion al avance de la temporada
-    w_cash: float = 0.5        # reaccion a cuanta riqueza esta inmovilizada
+    # w = logit(f), so 0.5 -> w = 0 -> exp(0) = 1: at startup this is EXACTLY
+    # the previous behaviour. No scale constant, for the same reason as in
+    # `params()`: sigmoid and logit cancel.
+    w_price: float = 0.5       # reaction to the forecast price drop
+    w_rival: float = 0.5       # reaction to what the opponent is about to dump
+    w_shed: float = 0.5        # reaction to storage pressure
+    w_season: float = 0.5      # reaction to how far the season has advanced
+    w_cash: float = 0.5        # reaction to how much wealth is tied up
     # ------------------------------------------------------------------
     # FOURTH PASS, from the AST audit. Two scales that were still fixed:
     #
@@ -187,26 +186,27 @@ class Macro:
     # ------------------------------------------------------------------
     # TERCERA HORNADA, 2026-09-22. Auditoria ESTRUCTURAL: las dos anteriores
     # buscaban constantes de modulo y literales; esta recorre cada punto de
-    # decision del arbol (`runs/ligas/auditoria_cascada.py`) y clasifica. De
-    # 156 sitios, estos ocho eran decisiones de politica que nadie podia mover.
+    # decision site in the tree (`herramientas/auditoria_cascada.py`) and
+    # classifies it. Of 156 sites, these eight were policy decisions nobody
+    # could move.
     #
-    # El que mas duele es `stock_semilla`: `seed_orders` ABORTA entera si ya
-    # tienes 2 semillas por unidad. Medido, llevamos 25,1 semillas de media con
-    # 8,4 unidades -umbral 16,8-, o sea que buena parte de la partida NO SE
-    # COMPRA SEMILLA. Encaja con el sintoma que perseguiamos: 15,4 plantas
-    # vivas contra las 44 de v48 con la misma siembra.
-    f_seed_stock: float = 0.5   # 2.0   semillas por unidad antes de dejar de comprar
+    # The worst is `seed_stock`: `seed_orders` ABORTS entirely if you
+    # already hold 2 seeds per unit. Measured, we carry 25.1 seeds on average
+    # with 8.4 units -threshold 16.8- meaning that for much of the episode NO
+    # SEED IS BOUGHT. It matches the symptom being chased: 15.4 live plants
+    # against v48's 44 while planting the same amount.
+    f_seed_stock: float = 0.5      # 2.0   seeds per unit before buying stops
     f_animal_reserve: float = 0.5  # 300.0 caja a reservar antes de comprar un animal
     f_actions_per_animal: float = 0.5 # 3.0   acciones/dia que cuesta sostener un animal
-    f_last_hire_hour: float = 0.5   # 3.0   ultima hora del dia en que se contrata
-    f_min_hand_days: float = 0.5       # 2.0   dias minimos para amortizar un peon
-    f_cost_rise: float = 0.5      # 0.5   cuanto sube el coste/casilla al secarse
-    f_cost_decay: float = 0.5      # 0.93  cuanto baja cuando no se seca nada
-    f_fert_per_trip: float = 0.5      # 4.0   fertilizante que se coge de una vez
+    f_last_hire_hour: float = 0.5  # 3.0   last hour of the day for hiring
+    f_min_hand_days: float = 0.5   # 2.0   minimum days to pay a hand back
+    f_cost_rise: float = 0.5       # 0.5   how much cost/tile rises when plants dry
+    f_cost_decay: float = 0.5      # 0.93  how much it falls when nothing dries
+    f_fert_per_trip: float = 0.5   # 4.0   fertiliser picked up in one trip
 
     @staticmethod
     def default() -> "Macro":
-        """Los valores que reproducen la capa guionizada tal y como esta medida."""
+        """The values that reproduce the scripted layer exactly as measured."""
         return Macro()
 
     @staticmethod
@@ -219,50 +219,50 @@ class Macro:
 
 
 # TOPE DE CURRICULO. None = sin tope. Limita cuantos peones puede planificar
-# NUESTRO agente, igual que `publico_con_tope` limita al rival. Sirve para
+# OUR agent, exactly as `public_with_cap` limits the opponent. It serves to
 # entrenar en un juego mas pequeno y coherente: menos unidades = ejecutor mas
-# barato (el ejecutor es el 94 % del coste) y espacio de accion menor, sin
-# truncar la partida -que invierte el signo de la ventaja, medido-.
+# cheaper (the executor is 94% of the cost) and a smaller action space, without
+# truncating the episode -which flips the sign of the advantage, measured-.
 HAND_CAP = None
-# FACTOR DE RIEGO. "la mitad del presupuesto se va en moverse: medido 42.3% en
-# el experto" -pero 0.5 es una constante a ojo y nunca ha entrado en ninguna
-# busqueda, igual que las tres del mercado que al exponerlas dieron +12,8 %.
+# WATERING FACTOR. "half the budget goes on moving: measured 42.3% in the
+# expert" -but 0.5 was a hand-set constant that had never entered any search,
+# like the three market ones that gave +12.8% when exposed. Learned now.
 WATERING_FACTOR = 0.5
-# Acciones al dia que cuesta sostener un animal. Aprendido (`f_actions_per_animal`).
+# Actions per day it costs to sustain one animal. Learned (`f_actions_per_animal`).
 ACTIONS_PER_ANIMAL = 3.0
 # Softmax temperature over the six priorities. Learned (`f_priority_temp`).
 PRIORITY_TEMP = 3.0
 
 
-# (nombre, minimo, rango). Los rangos salen de la busqueda que encontro 1.258 $.
+# (name, default, kind).
 # PARAMETRIZACION SIN BORDES.
 #
-# Antes era `valor = lo + rango * f`: dos constantes a ojo por parametro -36
-# numeros- y, peor, un suelo y un techo DUROS. Si otra liga u otro rival pedian
-# un valor fuera, el modelo no podia ni expresarlo. Medido: `valor_dig` se
-# pegaba al suelo en 5 de 8 vectores aprendidos.
+# It used to be `value = lo + range * f`: two hand-set constants per parameter
+# -36 numbers- and, worse, a HARD floor and ceiling. If another league or
+# another opponent needed a value outside, the model could not even express it.
+# Measured: `dig_value` pinned itself to the floor in 5 of 8 learned vectors.
 #
-# Ahora no hay bordes. Como la red emite `macro_mu` y en todas partes se hace
-# f = sigmoid(macro_mu), resulta que logit(f) == macro_mu EXACTAMENTE, asi que:
+# There are no borders now. Since the network emits `macro_mu` and everywhere
+# f = sigmoid(macro_mu), it follows that logit(f) == macro_mu EXACTLY, so:
 #
-#     positivo   valor = defecto * exp(logit(f))           -> (0, +inf)
-#     fraccion   valor = sigmoid(logit(defecto) + logit(f)) -> (0, 1)
+#     positive   value = default * exp(logit(f))           -> (0, +inf)
+#     fraction   value = sigmoid(logit(default) + logit(f)) -> (0, 1)
 #
-# f = 0.5 devuelve el defecto exacto y los extremos alcanzan todo el dominio.
-# No queda ninguna constante de escala: el factor que multiplicaria a logit(f)
-# es 1 porque sigmoide y logit se cancelan, no porque nadie lo elija.
+# f = 0.5 returns the exact default and the extremes reach the whole domain.
+# No scale constant remains: the factor that would multiply logit(f) is 1
+# because sigmoid and logit cancel, not because someone chose it.
 #
-# El DOMINIO no es gusto: una fraccion de presupuesto vive en [0,1] por lo que
-# significa. Y donde el limite lo pone el MOTOR se usa el del motor -ver
+# The DOMAIN is not taste: a budget fraction lives in [0,1] because of what it
+# means. And where the ENGINE sets the limit, the engine's limit is used -see
 # `max_animal` en `aplica_parametros`-.
 #
 # QUE NO ESTA AQUI: `horiz_fert` se fue. Era un HECHO DEL MOTOR disfrazado de
 # parametro -el fertilizante dura 3 dias exactos- y dejarlo aprender permitia
-# que la politica creyera que dura siete y valorase mal cada fertilizacion.
-# Vive en `spec.FERTILIZER_DAYS`, con los demas hechos del motor.
+# letting the policy believe it lasts seven and mis-value every fertilisation.
+# It lives in `spec.FERTILIZER_DAYS`, with the other engine facts.
 #
-# `umbral_extra` no tiene original porque es nuevo: su defecto es el p95 MEDIDO
-# de lo que valen las tareas que propone la heuristica (424 $ sobre 6.431).
+# `extra_threshold` has no original because it is new: its default is the p95
+# of what the tasks the heuristic proposes are worth ($424 of 6,431).
 PARAM_TABLE = [
     ("labour",      0.15,  "fraction"),
     ("seed",        0.50,  "fraction"),
@@ -298,16 +298,17 @@ PARAM_TABLE = [
     ("seed_floor",        2.00,  "positive"),
 ]
 
-# Coeficientes de la regla de venta por turno. NO estan en RANGOS_F porque su
-# forma es otra: son ADITIVOS en el exponente, no multiplicadores de un
-# defecto. El defecto de un coeficiente aditivo es 0, y `defecto * exp(z)` se
-# degenera en 0 para siempre. La forma natural es w = logit(f) directamente,
-# que cumple lo mismo: f = 0.5 reproduce la conducta anterior y no hay bordes.
+# Coefficients of the per-turn selling rule. They are NOT in PARAM_TABLE
+# because their form is different: they are ADDITIVE in the exponent, not
+# multipliers of a default. The default of an additive coefficient is 0, and
+# `default * exp(z)` degenerates to 0 forever. The natural form is w = logit(f)
+# directly, which satisfies the same property: f = 0.5 reproduces the previous
+# behaviour and there are no borders.
 TURN_WEIGHTS = ("price", "rival", "shed", "season", "cash")
 
 
 def turn_weights(macro) -> dict:
-    """Cuanto reacciona la venta a cada senal del turno. Defecto 0 = regla de hoy."""
+    """How much selling reacts to each turn signal. Default 0 = today's rule."""
     if macro is None:
         return {k: 0.0 for k in TURN_WEIGHTS}
     # NO default on getattr. It used to be `getattr(macro, "w_"+k, 0.5)`, and
@@ -318,7 +319,7 @@ def turn_weights(macro) -> dict:
 
 
 def market_factors(macro: Macro) -> dict:
-    """Multiplicador aprendido por producto. 0.5 -> 1.0 (neutro), sin bordes."""
+    """Learned multiplier per product. 0.5 -> 1.0 (neutral), borderless."""
     from . import spec as _sp
     out = {}
     for pr in _sp.PRODUCTS:
@@ -330,15 +331,15 @@ def market_factors(macro: Macro) -> dict:
 
 
 def _logit(f: float) -> float:
-    """logit con guarda numerica. El 1e-6 no es modelado: es el epsilon que
-    evita el infinito. Deja un alcance de exp(+-13.8) = 1e6 veces el defecto,
-    que a efectos practicos es no tener borde."""
+    """logit with a numerical guard. The 1e-6 is not modelling: it is the
+    epsilon that avoids infinity. It leaves a reach of exp(+-13.8) = 1e6 times
+    the default, which for practical purposes is no border at all."""
     f = min(1.0 - 1e-6, max(1e-6, float(f)))
     return math.log(f / (1.0 - f))
 
 
 def params(macro: Macro) -> dict:
-    """Los que estaban a ojo, ya en sus unidades reales y SIN borde."""
+    """The hand-set ones, in their real units and WITHOUT borders."""
     out = {}
     for n, default, kind in PARAM_TABLE:
         z = _logit(getattr(macro, "f_" + n))
@@ -350,11 +351,12 @@ def params(macro: Macro) -> dict:
 
 
 def apply_params(macro: Macro) -> None:
-    """Escribe los parametros donde los leen las capas. Un solo sitio.
+    """Write the parameters where the layers read them. One single place.
 
-    Se hace asi -y no pasando el macro por seis firmas- porque `tareas.py` y
-    `ejecutor.py` los consultan desde funciones que no reciben el macro, y
-    cambiar sus firmas tocaria mucho mas codigo del que este cambio justifica.
+    Done this way -rather than threading the macro through six signatures-
+    because `tasks.py` and `executor.py` read them from functions that do not
+    receive the macro, and changing those signatures would touch far more code
+    than this change justifies.
     """
     if macro is None:
         return
@@ -374,11 +376,11 @@ def apply_params(macro: Macro) -> None:
     _E.TURNS_PER_TILE_MIN    = p["turns_min"]
     _T.MAP_GAIN         = p["map_gain"]
     _T.MAP_CAP             = p["map_cap"]
-    # El TECHO lo pone el motor, no nosotros: `maxMarketOrdersPerTurn`. Cuantos
-    # animales comprar por turno es politica; cuantos CABEN es mecanica.
+    # The CEILING comes from the engine, not from us: `maxMarketOrdersPerTurn`.
+    # How many animals to buy per turn is policy; how many FIT is mechanics.
     _M.MAX_ANIMALS_PER_TURN      = max(1, min(int(spec.DEFAULT_CONFIG["maxMarketOrdersPerTurn"]),
                                           int(round(p["max_animal"]))))
-    # Hecho del motor, no parametro: el fertilizante dura 3 dias exactos.
+    # Engine fact, not a parameter: fertiliser lasts exactly 3 days.
     _T.FERTILIZER_HORIZON  = int(spec.FERTILIZER_DAYS)
     _T.RESIDUAL_CAP          = p["residual_cap"]
     _M.MANURE_CREDIT           = p["manure_credit"]
@@ -400,12 +402,12 @@ def apply_params(macro: Macro) -> None:
 
 
 def target_hands(obs, macro: Macro) -> int:
-    # SIN TECHO, y el motor respalda que no lo haya: no limita las
-    # contrataciones -`_hire_cost(hires_today)` solo las ENCARECE-, asi que el
-    # 15 de antes era un muro puesto por mi sobre un nivel aprendible. Mismo
-    # mecanismo que los parametros: 0.5 da el valor de siempre (7,5 -> 8) y los
-    # extremos alcanzan cualquier plantilla, que es lo que hace falta para que
-    # el modelo sirva en ligas con otra caja y otro horizonte.
+    # NO CEILING, and the engine backs that up: it does not limit hiring
+    # -`_hire_cost(hires_today)` only makes it MORE EXPENSIVE- so the 15 that
+    # used to be here was a wall I put over a learnable level. Same mechanism
+    # as the parameters: 0.5 gives the usual value (7.5 -> 8) and the extremes
+    # reach any workforce, which is what is needed for the model to work in
+    # leagues with another starting cash and another horizon.
     n = max(0, int(round(7.5 * math.exp(_logit(macro.hands)))))
     return n if HAND_CAP is None else min(n, HAND_CAP)
 
@@ -413,21 +415,21 @@ def target_hands(obs, macro: Macro) -> int:
 def target_tiles(obs, macro: Macro) -> int:
     """Cuantas casillas plantadas mantener. Tope exacto: las que se pueden regar.
 
-    Una planta sin regar dos dias se convierte en hierba, asi que el techo real
-    no es la tierra sino las acciones: cada casilla cuesta un riego al dia.
+    A plant left unwatered for two days turns into a weed, so the real ceiling
+    is not land but actions: each tile costs one watering per day.
     """
     me = int(obs["player"])
     farm = obs["farms"][me]
-    # PLANIFICADAS, no las que hay ahora mismo. El macro se decide en la hora 0,
-    # cuando los peones de ayer ya se limpiaron (`farm["hands"] = []` cada noche)
+    # PLANNED, not the ones present right now. The macro is decided at hour 0,
+    # when yesterday's hands have been cleared (`farm["hands"] = []` nightly)
     # y los de hoy aun no se han contratado: `len(farm["hands"])` vale SIEMPRE 0
-    # ahi. Con eso el techo quedaba clavado en 12 casillas por muchos peones que
-    # se contrataran despues, y la granja no podia crecer. El CEM no eligio una
+    # there. With that the ceiling was pinned at 12 tiles however many hands
+    # were hired afterwards, and the farm could not grow. CEM did not choose a
     # granja de 7 casillas y 1.9 unidades: era la unica alcanzable.
     n_units = 1 + target_hands(obs, macro)
     cultivables = sum(1 for y in range(spec.BOARD) for x in range(spec.BOARD)
                       if farm["tiles"][y][x] != "LOCKED")
-    # la mitad del presupuesto se va en moverse: medido 42.3% en el experto
+    # half the budget goes on moving: measured 42.3% in the expert
     # SIN BORDE, como en `peones_objetivo`. Antes era
     #     macro.casillas * min(cultivables, techo_riego)
     # y ahi hay DOS techos de naturaleza distinta metidos en el mismo `min`:
@@ -436,14 +438,15 @@ def target_tiles(obs, macro: Macro) -> int:
     #     se puede plantar, y punto. Se queda como limite.
     #   * `techo_riego` NO lo es: es una ESTIMACION mia de cuantas casillas se
     #     pueden atender, y entraba como tope infranqueable. La politica no
-    #     podia pedir mas aunque le conviniera -por ejemplo con cultivos que no
-    #     piden riego todos los dias, o con mas unidades de las planificadas-.
-    #     Mismo defecto que el tope de 15 peones que se quito de aqui al lado.
+    #     could not ask for more even when it paid -for instance with crops
+    #     that do not need daily watering, or with more units than planned-.
+    #     Same flaw as the 15-hand cap removed right next to this.
     #
-    # Ahora `techo_riego` es la ESCALA y la politica la multiplica sin borde:
-    # f = 1/3 reproduce el valor de antes (exp(logit(1/3)) = 0.5), f = 0.5 pide
-    # el techo de riego entero, y los extremos alcanzan cualquier granja que el
-    # motor permita. El unico recorte que queda es el del motor.
+    # Now the watering ceiling is the SCALE and the policy multiplies it
+    # without a border: f = 1/3 reproduces the previous value
+    # (exp(logit(1/3)) = 0.5), f = 0.5 asks for the whole watering ceiling, and
+    # the extremes reach any farm the engine allows. The only clipping left is
+    # the engine's.
     techo_riego = n_units * spec.TURNS_PER_DAY * WATERING_FACTOR
     deseadas = techo_riego * math.exp(_logit(macro.tiles))
     return max(0, int(min(cultivables, deseadas)))
@@ -454,12 +457,12 @@ def target_animals(obs, macro: Macro) -> int:
     me = int(obs["player"])
     farm = obs["farms"][me]
     n_units = 1 + target_hands(obs, macro)   # planificadas, ver arriba
-    # DOBLE CONTEO CORREGIDO. Estaba `* 0.5` ("la mitad se va en moverse") y
-    # ademas `/ ACCIONES_POR_ANIMAL = 3`, que ya incluye el desplazamiento. El
-    # resultado era 4 tareas por unidad y dia, la mitad de lo real.
+    # DOUBLE COUNTING FIXED. It had `* 0.5` ("half goes on moving") AND
+    # `/ ACTIONS_PER_ANIMAL = 3`, which already includes the travel. The result
+    # was 4 tasks per unit per day, half the real figure.
     #
-    # El experto 2945 sostiene 58 cultivos + 17 animales = 75 tareas con 9.4
-    # unidades: 8 tareas por unidad y dia, que es exactamente 24/3. Medido: con
+    # A strong public agent sustains 58 crops + 17 animals = 75 tasks with 9.4
+    # units: 8 tasks per unit per day, exactly 24/3. Measured: with
     # el `0.5`, los animales saturaban en ~19 pasara lo que pasara -incluso con
     # 4 cuadrantes y 100 casillas libres-.
     capacity = n_units * spec.TURNS_PER_DAY
@@ -470,25 +473,25 @@ def target_animals(obs, macro: Macro) -> int:
 
 
 def sell_horizon(obs, macro: Macro) -> int:
-    """Turnos que se mira hacia delante antes de decidir vender.
+    """How many turns to look ahead before deciding to sell.
 
     Es la decision acoplada al rival: aguantar producto solo compensa si el
-    rival no hunde el precio antes. Es tambien donde el world model tiene senal
-    medida (dinero del rival +19%, su gasto +35%).
+    the opponent does not crash the price first. It is also where the world
+    model has measured signal (opponent money +19%, their spending +35%).
     """
-    # El defecto es UN DIA de horizonte -`spec.TURNS_PER_DAY`, del motor-, y
-    # sin techo: antes el `2 *` limitaba a dos dias por decision mia, y aguantar
-    # producto mas tiempo es justo la jugada que puede pagar contra un rival
-    # que no hunde el precio.
+    # The default is ONE DAY of horizon -`spec.TURNS_PER_DAY`, from the engine-
+    # no ceiling: the old `2 *` limited it to two days by my decision, and
+    # holding produce longer is exactly the play that can pay against an
+    # opponent who is not crashing the price.
     return max(1, int(round(spec.TURNS_PER_DAY
                             * math.exp(_logit(macro.venta)))))
 
 
 def target_crop(obs, macro: Macro):
-    """Interpola entre el cultivo mas rapido y el mas rentable por casilla-dia.
+    """Interpolate between the fastest crop and the most profitable per tile-day.
 
-    No es una categoria libre: elegir un cultivo que no da tiempo a madurar es
-    perdida segura, asi que solo entran los viables, que es exacto.
+    Not a free choice: picking a crop that has no time to mature is a certain
+    loss, so only the viable ones enter, which is exact.
     """
     from .symbolic.tasks import cycle_days, cycle_profit
     days = spec.EPISODE_STEPS // spec.TURNS_PER_DAY - int(obs["day"])
@@ -503,22 +506,22 @@ def target_crop(obs, macro: Macro):
 
 
 def assignment_stickiness(macro: Macro) -> float:
-    """Bonus multiplicativo por conservar el destino del turno anterior.
+    """Multiplicative bonus for keeping the previous turn's destination.
 
     El humgaro reasigna desde cero cada turno y eso es miope: medido, el 23.8%
     de las decisiones de destino son un cambio estando YA EN RUTA, y los pasos
-    dados se tiran. Medido tambien el remedio, con el vector del CEM:
+    dice are rolled. The remedy was measured too, with the CEM vector:
 
         0.00 -> 23 793 $     0.25 -> 27 177 $  (+14%)
         0.10 -> 26 887 $     0.50 -> 24 869 $
                              1.00 -> 22 755 $  (demasiado pegado: ignora urgencias)
 
     Tiene optimo interior, asi que no es un "cuanto mas mejor" y no se puede
-    fijar por razonamiento. Lo decide la politica.
+    fixed by reasoning. The policy decides it.
 
-    Nota de diseno: esto es un termino por (UNIDAD, casilla), no por casilla.
-    Un mapa de valor 10x10 no puede expresarlo -las unidades no solo difieren en
-    posicion e inventario, tambien en su compromiso previo-.
+    Design note: this is a term per (UNIT, tile), not per tile. A 10x10 value
+    map cannot express it -units differ not only in position and inventory but
+    also in their prior commitment-.
     """
     # BORDERLESS. It used to be `2.0 * macro.adherencia`, linear in [0,1]
     # and therefore capped at 2.0 -a ceiling nobody searched-. Now it is
@@ -528,12 +531,12 @@ def assignment_stickiness(macro: Macro) -> float:
 
 
 def priorities(macro: Macro) -> dict:
-    """Reparto de la caja entre categorias. Softmax sobre las 6 componentes.
+    """Split of the cash across categories. Softmax over the 6 components.
 
-    Devuelve fracciones que suman 1. La temperatura 3.0 hace que la politica
-    pueda llegar a concentrar casi todo en una categoria (con una componente a 1
-    y el resto a 0, esa se lleva el 73 %) sin que el reparto uniforme sea un
-    punto raro: con todas iguales, cada una recibe 1/6.
+    Returns fractions summing to 1. The learned temperature lets the policy
+    concentrate almost everything on one category (with one component at 1 and
+    the rest at 0 it takes 73% at the default temperature) without the uniform
+    split being a strange point: with all equal, each gets 1/6.
     """
     import math
     vals = [getattr(macro, "p_" + c) for c in CATEGORIES]
@@ -545,8 +548,8 @@ def priorities(macro: Macro) -> dict:
 def category_order(macro: Macro) -> list:
     """Categorias ordenadas de mas a menos prioritaria.
 
-    Decide tanto el reparto de caja como la POSICION en la lista de ordenes,
-    que importa porque el motor solo acepta `maxMarketOrdersPerTurn` y el resto
+    It decides both the cash split and the POSITION in the order list, which
+    matters because the engine only accepts `maxMarketOrdersPerTurn` and the
     se cae en silencio.
     """
     p = priorities(macro)
@@ -554,17 +557,17 @@ def category_order(macro: Macro) -> list:
 
 
 def peso_fertilizar(macro: Macro) -> float:
-    """Cuanto vale fertilizar, como multiplicador de su valor calculado.
+    """What fertilising is worth, as a multiplier of its computed value.
 
-    Es un MANDO, no un interruptor. Probado como interruptor global con el
-    vector congelado dio -21 998 $ +- 4 563, pero ese vector estaba optimizado
-    para un mundo SIN fertilizante: tenia 7 peones porque no le hacian falta
-    mas. Juzgar una capacidad sin reoptimizar la pone en su peor luz.
+    It is a DIAL, not a switch. Tried as a global switch with the frozen vector
+    it gave -$21,998 +- 4,563, but that vector was optimised for a world
+    WITHOUT fertiliser: it had 7 hands because it needed no more. Judging a
+    capability without re-optimising shows it in its worst light.
 
     Con un mando, la busqueda decide: si no paga lo deja en 0 y no cuesta nada
-    tenerlo; si paga con mas mano de obra, lo encontrara junto con los peones
-    que necesita. Es la unica forma de capturar la interaccion.
+    have it; if it pays with more labour, it will find it together with the
+    hands it needs. That is the only way to capture the interaction.
     """
     # Sin techo: el 3.0 de antes era un maximo elegido a ojo. 0.5 da 1.5, que
-    # es lo que salia antes en el centro del rango.
+    # which is what the old midpoint gave.
     return 1.5 * math.exp(_logit(macro.fertilizar))
