@@ -103,6 +103,45 @@ def migrate_macro_head(sd: dict) -> list:
     return touched
 
 
+# DIMENSION REMOVED from the macro vector. `residual_cap` was written to
+# `tasks.RESIDUAL_CAP` and nothing read it again once the residual mode
+# disappeared: a learned dimension that decided nothing. It sat at index 30 of
+# `Macro`, so EVERY checkpoint saved before its removal has one extra row
+# there, and every row after it means one field further along than it does now.
+#
+# Growing such a head without deleting that row first is the silent
+# misalignment this module exists to prevent: the head would still load, and 28
+# dimensions would quietly decide the wrong thing.
+#
+# `LEGACY_MAX_WIDTH` is the widest head that ever carried it (60 = the vector
+# just before the removal). New checkpoints carry `macro_fields`, so they are
+# recognised by name and never touched by this path.
+REMOVED_DIM_INDEX = 30
+LEGACY_MAX_WIDTH = 60
+
+
+def shrink_macro_head(sd: dict, macro_fields=None) -> list:
+    """Delete the row of the removed dimension in a pre-removal checkpoint."""
+    import torch as _t
+    from .macro import N_MACRO
+    if macro_fields is not None:
+        # The checkpoint says which field each row is: nothing to guess.
+        return []
+    touched = []
+    for k, v in list(sd.items()):
+        if not (k.endswith("macro_mu.weight") or k.endswith("macro_mu.bias")
+                or k.endswith("log_sigma")):
+            continue
+        n = v.shape[0]
+        if not (REMOVED_DIM_INDEX < n <= LEGACY_MAX_WIDTH) or n == N_MACRO:
+            continue
+        keep = [i for i in range(n) if i != REMOVED_DIM_INDEX]
+        sd[k] = v[_t.tensor(keep, device=v.device)]
+        touched.append(f"{k}: {n} -> {sd[k].shape[0]} "
+                       f"(dim {REMOVED_DIM_INDEX}, residual_cap, removed)")
+    return touched
+
+
 # Attributes renamed when the code moved to English. `state_dict` keys are
 # ATTRIBUTE paths, so renaming a submodule invalidates every earlier
 # checkpoint. They are translated on load, the same way growing heads are.
@@ -121,10 +160,16 @@ def migrate_keys(sd: dict) -> list[str]:
     return touched
 
 
-def migrate_sd(sd: dict) -> tuple[dict, list[str]]:
-    """Returns (migrated state_dict, list of touched keys)."""
+def migrate_sd(sd: dict, macro_fields=None) -> tuple[dict, list[str]]:
+    """Returns (migrated state_dict, list of touched keys).
+
+    `macro_fields` is the field list the checkpoint was saved with. When it is
+    there, the head is recognised by name; when it is not -every checkpoint
+    older than that field- the legacy fix-up below applies.
+    """
     out, touched = dict(sd), []
     touched += migrate_keys(out)        # first of all: the old names
+    touched += shrink_macro_head(out, macro_fields)
     touched += migrate_macro_head(out)
     for k in ("world.glob_enc.0.weight", "world.resumen.0.weight"):
         if k in out and out[k].shape[1] != NEW_WIDTH:
@@ -133,14 +178,14 @@ def migrate_sd(sd: dict) -> tuple[dict, list[str]]:
     return out, touched
 
 
-def load_strict(net, sd, name_="checkpoint"):
+def load_strict(net, sd, name_="checkpoint", macro_fields=None):
     """Load with migration, and RAISE if anything is left unloaded.
 
     Deliberately loud: the original failure was silent. If a tensor does not
     fit, an exception beats a policy with random parts that looks like it
     works and produces meaningless numbers.
     """
-    sd, touched = migrate_sd(sd)
+    sd, touched = migrate_sd(sd, macro_fields)
     act = net.state_dict()
     # MICRO HEAD SIGMA. It used to be a config constant; it is now an
     # `nn.Parameter` learned by PPO, like the macro one. An older checkpoint
@@ -170,7 +215,7 @@ def load_strict(net, sd, name_="checkpoint"):
     return touched
 
 
-def load_tolerant(net, sd, name_="checkpoint", verbose=True):
+def load_tolerant(net, sd, name_="checkpoint", verbose=True, macro_fields=None):
     """Migrate, load what fits, and SAY OUT LOUD what is left random.
 
     Tolerance is deliberate in some places (`--init-net` starts from a
@@ -179,7 +224,7 @@ def load_tolerant(net, sd, name_="checkpoint", verbose=True):
     missing ones were the global encoder and the summary. Here they are always
     named.
     """
-    sd, touched = migrate_sd(sd)
+    sd, touched = migrate_sd(sd, macro_fields)
     act = net.state_dict()
     # MICRO HEAD SIGMA. It used to be a config constant; it is now an
     # `nn.Parameter` learned by PPO, like the macro one. An older checkpoint

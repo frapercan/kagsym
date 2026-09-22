@@ -325,19 +325,18 @@ class TurnContext:
 def animal_value(ctx, a, macro):
     """Animal value WEIGHTED by the learned factor of its product.
 
-    `ctx.valor` es `animal_net_value`, una formula escrita a mano. Decidir con
+    `ctx.value` is `animal_net_value`, a hand-written formula. Deciding with
     it WHICH animal is picked up, which is placed and which shed is built is
     the same family of hard-wired decisions as `best_crop` and `seed_orders`,
     and it is where the other measured hole lives: v48 makes $60,179 from MILK
-    and we make
-    $13,536. The per-product factor (EGG, MILK, WOOL) already lives in the
-    que la preferencia pasa a la red. Neutro = 1.0: sin macro, el orden de
-    siempre.
+    and we make $13,536. The per-product factor (EGG, MILK, WOOL) already
+    lives in the macro vector, so weighting by it hands the preference to the
+    network. Neutral = 1.0: with no macro, the order is the one of always.
 
-    It exists as a function rather than repeated at each site because it
-    already happened once:
-    se pondero UN sitio -PICKUP en `tile_options`- y los otros cuatro se
-    stayed unweighted for a whole session without anyone noticing.
+    It exists as a function rather than repeated at each site because that
+    already went wrong once: ONE site was weighted -PICKUP in `tile_options`-
+    and the other four stayed unweighted for a whole session without anyone
+    noticing.
     """
     v = ctx.value(a)
     if macro is None:
@@ -364,7 +363,8 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
 
     if tile is None:
         # An animal waiting in the shed is worth nothing until there is
-        # ponerlo. Construir desbloquea un ingreso de ~1700 $ ya pagado.
+        # somewhere to put it. Building unlocks ~$1,700 of income already
+        # paid for.
         for kind in ("COOP", "PASTURE"):
             animals = [a for a in ctx.pending_animals if spec.ANIMALS[a]["structure"] == kind]
             if animals and ctx.free_slots.get(kind, 0) <= 0:
@@ -386,7 +386,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
     if kind == "WEED":
         crop = best_crop(obs, seeds_only=True, free_tiles=free_capacity)
         v = cycle_profit(obs, crop) / max(1, cycle_days(crop)) if crop else 1.0
-        return (v * DIG_VALUE, ["DIG"])    # fraccion expuesta, no fija
+        return (v * DIG_VALUE, ["DIG"])    # exposed fraction, not fixed
 
     if kind == "PLANT":
         cd = spec.CROPS[tile["crop"]]
@@ -395,9 +395,10 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         ripe = age >= cd["first_yield_day"] and tile["yield_units"] > 0
 
         if not tile["watered_today"]:
-            # `consecutive_unwatered` NACE EN 1 al plantar: una planta sin regar
-            # el mismo dia se convierte en hierba esa noche. Por eso >= 1 ya es
-            # an emergency, not a warning. Verified against the engine.
+            # `consecutive_unwatered` IS BORN AT 1 on planting: a plant not
+            # watered the same day turns into weed that night. That is why >= 1
+            # is already an emergency, not a warning. Verified against the
+            # engine.
             if tile["consecutive_unwatered"] >= 1:
                 remaining = max(1, cycle_yield(tile["crop"]) - tile["yield_units"])
                 return (remaining * price, ["WATER"])
@@ -413,27 +414,28 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
 
         # FERTILISE: only where the NETWORK provides the value.
         #
-        # La capacidad hacia falta -recogiamos fertilizante 550 veces por
-        # partida sin usarlo nunca, y el motor da `bonus = 2 if fertilized`-
-        # pero NO se como valorarla. Tres intentos a ojo, los tres peores:
-        #   valor bruto (dias x precio)  -> gana siempre a regar: 22 768 $
-        #   valor marginal x tasa_riego  -> sigue robando riegos: 25 770 $
-        #   movido despues de regar      -> 11 086 $
-        # Comparacion PAREADA sobre 8 semillas: -21 998 $ +- 4 563 (4.8 sigma),
-        # con dos partidas hundidas a 568 $ y 33 $.
+        # The capability was needed -fertiliser was picked up 550 times per
+        # game and never used, and the engine gives `bonus = 2 if fertilized`-
+        # but there is no hand-written way to value it. Three attempts by eye,
+        # all three worse:
+        #   gross value (days x price)      -> always beats watering: $22,768
+        #   marginal value x watering rate  -> still steals waterings: $25,770
+        #   moved after watering            -> $11,086
+        # PAIRED comparison over 8 seeds: -$21,998 +- 4,563 (4.8 sigma), with
+        # two games sunk to $568 and $33.
         #
-        # So the operation is left AVAILABLE for the network to put a
-        # precio en modo directo, y fuera de la heuristica escrita a mano. Es
+        # So the operation is left AVAILABLE for the network to price, and out
+        # of the hand-written heuristic. It is
         # exactly the case that motivates the learned micro head: an action
         # whose value depends on the state in a way I cannot write down.
         # Fertilise dial: 0 turns it off, and the search decides.
         from ..macro import fertilize_weight
         _pf = fertilize_weight(macro) if macro is not None else 0.0
         if _pf > 0.0:
-            # FERTILIZAR, DESPUES de regar. Estaba ANTES y hacia `return`, asi que
-            # a plant needing both got fertilised and the watering
-            # nunca llegaba a evaluarse: moria esa noche. El sintoma era plantar
-            # 563 and watered 386 -more plantings than waterings is a death
+            # FERTILISE, AFTER watering. It used to sit BEFORE and `return`,
+            # so a plant needing both got fertilised and the watering was never
+            # evaluated: it died that night. The symptom was 563 plantings
+            # against 386 waterings -more plantings than waterings is a death
             # sentence-.
             if (not cd["ongoing"] and tile.get("fertilized_until_day", -1) < day):
                 w0 = (cd["max_yield_day"] + 1) // 2
@@ -441,11 +443,12 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
                     useful_days = min(FERTILIZER_HORIZON,
                                       cd["max_yield_day"] - age, days_left(obs))
                     if useful_days > 0:
-                        # MARGINAL VALUE, not gross. The bonus adds +1 unit per day
-                        # REGADO, no por dia. Valorarlo a `dias * precio` lo hacia
-                        # ganar siempre a regar (1-2 x precio): medido, el riego
-                        # caia de 1 791 a 904, las cosechas de 768 a 360 y el dinero
-                        # de 36 566 a 22 768 $.
+                        # MARGINAL VALUE, not gross. The bonus adds +1 unit
+                        # per day WATERED, not per day. Pricing it at
+                        # `days * price` made it always beat watering
+                        # (1-2 x price): measured, watering fell from 1,791 to
+                        # 904, harvests from 768 to 360 and money from $36,566
+                        # to $22,768.
                         return (_pf * useful_days * price * _watering_rate(farm), ["FERTILIZE"])
             elif cd["ongoing"] and tile.get("fertilized_until_day", -1) < day:
                 if age >= cd["first_yield_day"] - 1 and days_left(obs) > 1:
@@ -494,9 +497,6 @@ DIG_VALUE = 0.9             # clearing, as a fraction of the planting value
 # limiting their effect.
 MAP_GAIN = 1.0              # how much the network's emission weighs
 MAP_CAP = 20.0      # corte en `ops`/`directo`, dentro de expm1
-RESIDUAL_CAP = 3.0    # corte en `residuo`: exp(3) = 20x de amplificacion o
-                      # of damping over the heuristic. It decides whether the
-                      # network SUGGESTS or IMPOSES.
 FERTILIZER_HORIZON = 3      # days counted towards the fertiliser bonus
 FERT_PER_TRIP = 4.0         # fertiliser picked up in one trip. Learned.
 

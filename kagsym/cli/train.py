@@ -40,6 +40,13 @@ from kagsym.environment import LADDER
 from kagsym.parallel_env import ParallelEnv
 from kagsym.macro import N_MACRO
 from kagsym.version import fingerprint, model_fingerprint
+# Saved with every checkpoint: which macro field each row of the head is.
+# Without it, a head of an unknown width has to be guessed by position, and
+# a removed dimension shifts the meaning of every row after it in silence
+# (see `migrate_ckpt.shrink_macro_head`).
+from dataclasses import fields as _dc_fields
+from kagsym.macro import Macro as _Macro
+_MACRO_FIELDS = [f.name for f in _dc_fields(_Macro)]
 from kagsym.nets.world import E2EAgent, WorldConfig, N_HIST
 
 
@@ -322,7 +329,8 @@ def main():
         # the shapes do not fit. What fits is loaded and the reuse reported.
         d0 = torch.load(a.resume, map_location="cpu", weights_only=False)
         from kagsym.migrate_ckpt import load_tolerant
-        _n_reusados, _n_total, _azar = load_tolerant(net, d0["sd"], a.resume)
+        _n_reusados, _n_total, _azar = load_tolerant(
+            net, d0["sd"], a.resume, macro_fields=d0.get("macro_fields"))
         net.to(dev)
         print(f"reanudado desde {a.resume}: {_n_reusados}/{_n_total} tensores "
               f"reusados (update {d0.get('upd','?')}, "
@@ -337,7 +345,8 @@ def main():
         d0 = torch.load(a.init_net, map_location="cpu", weights_only=False)
         from kagsym.migrate_ckpt import load_tolerant
         current = net.state_dict()
-        _nok, _ntot, _ = load_tolerant(net, d0["sd"], a.init_net)
+        _nok, _ntot, _ = load_tolerant(
+            net, d0["sd"], a.init_net, macro_fields=d0.get("macro_fields"))
         net.init_macro_at(vec0)        # the macro head, from the vector
         net.to(dev)
         print(f"micro preentrenado desde {a.init_net}: "
@@ -1658,6 +1667,7 @@ def main():
         # nothing.
         if upd % 10 == 0 or upd == a.updates:
             torch.save({"sd": net.state_dict(), "cfg": vars(cfg), "init": vec0,
+                        "macro_fields": _MACRO_FIELDS,
                         "upd": upd, "huella": fingerprint(), "huella_modelo": model_fingerprint(),
                         "opt": opt.state_dict()}, a.out + ".ultimo")
         # --- red de seguridad: comprobar y, si toca, rescatar ---
@@ -1692,7 +1702,7 @@ def main():
             if r80 > best:
                 best = r80
                 torch.save({"sd": net.state_dict(), "cfg": vars(cfg),
-                            "init": vec0, "ret": r80, "upd": upd,
+                            "init": vec0, "macro_fields": _MACRO_FIELDS, "ret": r80, "upd": upd,
                             "huella": fingerprint(), "huella_modelo": model_fingerprint(), "opt": opt.state_dict()}, a.out)
 
 

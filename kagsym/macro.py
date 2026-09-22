@@ -27,7 +27,7 @@ from . import spec
 N_LEVELS = 8         # how much of each thing
 CATEGORIES = ["land", "feed", "animal", "sell", "seed", "hand"]
 N_PRIORITIES = len(CATEGORIES)
-N_EXPOSED = 32       # the hand-set ones; see the block in `Macro`
+N_EXPOSED = 31       # the hand-set ones; see the block in `Macro`
 N_MARKET = 9         # one learned value multiplier per product
 N_TURN = 5           # coefficients of the PER-TURN selling rule
 N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
@@ -98,7 +98,6 @@ class Macro:
     f_map_gain: float = 0.231  # 1.0
     f_map_cap: float = 0.655      # 20.0
     f_max_animal: float = 0.111     # 2  (the engine limit is 10, not 2)
-    f_residual_cap: float = 0.2784  # 3.0 -> exp(3) = 20x over the heuristic
     # THRESHOLD for tiles the heuristic declares empty and the engine
     # considers legal -5.81 per turn against 8.94 offered-. It is what such a
     # tile has to be worth, in dollars emitted by the network, to deserve
@@ -281,7 +280,6 @@ PARAM_TABLE = [
     ("map_gain",  1.00,  "positive"),
     ("map_cap",     20.00,  "positive"),
     ("max_animal",     2.00,  "positive"),
-    ("residual_cap",   3.00,  "positive"),
     ("manure_credit",    0.50,  "fraction"),
     ("feed_cash",    0.25,  "fraction"),
     ("labour_floor",    60.00,  "positive"),
@@ -382,7 +380,6 @@ def apply_params(macro: Macro) -> None:
                                           int(round(p["max_animal"]))))
     # Engine fact, not a parameter: fertiliser lasts exactly 3 days.
     _T.FERTILIZER_HORIZON  = int(spec.FERTILIZER_DAYS)
-    _T.RESIDUAL_CAP          = p["residual_cap"]
     _M.MANURE_CREDIT           = p["manure_credit"]
     _M.FEED_CASH_FRACTION           = p["feed_cash"]
     _M.LABOUR_FLOOR            = p["labour_floor"]
@@ -394,6 +391,9 @@ def apply_params(macro: Macro) -> None:
     _E.COST_RISE            = p["cost_rise"]
     _E.COST_DECAY            = p["cost_decay"]
     _T.FERT_PER_TRIP            = p["fert_per_trip"]
+    _M.SEED_FLOOR              = p["seed_floor"]
+    global PRIORITY_TEMP
+    PRIORITY_TEMP = p["priority_temp"]
     global ACTIONS_PER_ANIMAL
     ACTIONS_PER_ANIMAL = p["actions_per_animal"]
     _T.EXTRA_TILE_THRESHOLD          = p["extra_threshold"]
