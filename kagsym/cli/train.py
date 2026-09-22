@@ -1446,7 +1446,25 @@ def main():
                 _new = E2EAgent(cfg)
                 _new.load_state_dict({k: v.detach().cpu().clone()
                                         for k, v in net.state_dict().items()})
-                env.set_selfplay(_new)
+                # NEVER ON THE RUNGS THAT MEASURE US. `set_selfplay` is global:
+                # it replaces the opponent on EVERY worker, so one promotion
+                # turns the whole campaign into self-play -including the
+                # uncapped rung, which is the only one playing the real
+                # competition opponent-. From that point the internal numbers
+                # rise against a copy of ourselves and say nothing about
+                # strength, which is the failure the league already had once.
+                #
+                # The uncapped rungs of the grid are protected and keep their
+                # public agent; the rest take the frozen copy.
+                _prot = set()
+                if a.grid:
+                    _prot = {_j for _j, _c in enumerate(_rival_cap) if _c is None}
+                _map2 = _assign if _assign else list(range(env.n_procs))
+                _idxs = [_k for _k in range(len(_map2)) if _map2[_k] not in _prot]
+                if _prot and 0 < len(_idxs) < len(_map2):
+                    env.set_selfplay_on(_idxs, _new)
+                else:
+                    env.set_selfplay(_new)
                 # Without this promotion cascades: the 60-episode window is
                 # still full of wins against the old opponent.
                 env.forget_results()
