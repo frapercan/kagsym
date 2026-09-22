@@ -142,6 +142,38 @@ def shrink_macro_head(sd: dict, macro_fields=None) -> list:
     return touched
 
 
+def migrate_micro_head(sd: dict, n_out: int) -> list:
+    """Micro head that GROWS when channels are added to the per-tile map.
+
+    The assignment keys and queries are 2K extra channels of the same 1x1
+    conv. An older checkpoint has 1+N_OPS and has to reach 1+N_OPS+2K without
+    changing what it does, which is the same contract as the macro head:
+
+      * weight -> new rows to ZERO
+      * bias   -> ZERO, because the score multiplies by exp(<q,k>) and the
+                  neutral element of a product is 1 = exp(0), not 0
+      * sigma  -> the value the verb channels carry, so the new dimensions
+                  explore at the scale of the other logits
+
+    Growing them to anything else would silently change every assignment made
+    by every checkpoint trained before the keys existed.
+    """
+    touched = []
+    for k, v in list(sd.items()):
+        if k.endswith("micro.weight") and v.dim() == 4 and v.shape[0] < n_out:
+            w = v.new_zeros(n_out, *v.shape[1:]); w[: v.shape[0]] = v
+            sd[k] = w; touched.append(f"{k}: {v.shape[0]} -> {n_out} (zeroed)")
+        elif k.endswith("micro.bias") and v.dim() == 1 and v.shape[0] < n_out:
+            b_ = v.new_zeros(n_out); b_[: v.shape[0]] = v
+            sd[k] = b_; touched.append(f"{k}: {v.shape[0]} -> {n_out} (zeroed)")
+        elif k.endswith("log_sigma_micro") and v.shape[0] < n_out:
+            t = v.new_full((n_out,) + tuple(v.shape[1:]),
+                           float(v[-1].reshape(-1)[0]))
+            t[: v.shape[0]] = v
+            sd[k] = t; touched.append(f"{k}: {v.shape[0]} -> {n_out} (verb sigma)")
+    return touched
+
+
 # Attributes renamed when the code moved to English. `state_dict` keys are
 # ATTRIBUTE paths, so renaming a submodule invalidates every earlier
 # checkpoint. They are translated on load, the same way growing heads are.
@@ -160,7 +192,7 @@ def migrate_keys(sd: dict) -> list[str]:
     return touched
 
 
-def migrate_sd(sd: dict, macro_fields=None) -> tuple[dict, list[str]]:
+def migrate_sd(sd: dict, macro_fields=None, micro_out=None) -> tuple[dict, list[str]]:
     """Returns (migrated state_dict, list of touched keys).
 
     `macro_fields` is the field list the checkpoint was saved with. When it is
@@ -171,6 +203,8 @@ def migrate_sd(sd: dict, macro_fields=None) -> tuple[dict, list[str]]:
     touched += migrate_keys(out)        # first of all: the old names
     touched += shrink_macro_head(out, macro_fields)
     touched += migrate_macro_head(out)
+    if micro_out:
+        touched += migrate_micro_head(out, int(micro_out))
     for k in ("world.glob_enc.0.weight", "world.resumen.0.weight"):
         if k in out and out[k].shape[1] != NEW_WIDTH:
             out[k] = migrate_input(out[k])
@@ -185,7 +219,10 @@ def load_strict(net, sd, name_="checkpoint", macro_fields=None):
     fit, an exception beats a policy with random parts that looks like it
     works and produces meaningless numbers.
     """
-    sd, touched = migrate_sd(sd, macro_fields)
+    sd, touched = migrate_sd(
+        sd, macro_fields,
+        micro_out=(net.micro.bias.shape[0]
+                   if hasattr(net, 'micro') and hasattr(net.micro, 'bias') else None))
     act = net.state_dict()
     # MICRO HEAD SIGMA. It used to be a config constant; it is now an
     # `nn.Parameter` learned by PPO, like the macro one. An older checkpoint
@@ -224,7 +261,10 @@ def load_tolerant(net, sd, name_="checkpoint", verbose=True, macro_fields=None):
     missing ones were the global encoder and the summary. Here they are always
     named.
     """
-    sd, touched = migrate_sd(sd, macro_fields)
+    sd, touched = migrate_sd(
+        sd, macro_fields,
+        micro_out=(net.micro.bias.shape[0]
+                   if hasattr(net, 'micro') and hasattr(net.micro, 'bias') else None))
     act = net.state_dict()
     # MICRO HEAD SIGMA. It used to be a config constant; it is now an
     # `nn.Parameter` learned by PPO, like the macro one. An older checkpoint

@@ -63,6 +63,24 @@ class WorldConfig:
     # hand-written heuristic -a fixed ranking- cannot capture and a
     # state-conditioned network can.
     con_ops: bool = True
+    # PER-UNIT ASSIGNMENT KEYS. Today every unit shares ONE value map, so their
+    # preference order over tiles is identical up to distance, and when two
+    # units want the same tile the loser gets the dummy column. Measured on two
+    # checkpoints: 94.1% and 85.7% of all PASSes are exactly that -a unit that
+    # HAD positively valued tiles and lost every one of them to another unit-.
+    #
+    # With K keys and K queries per tile, the score of (unit at a, tile b) gains
+    # a term <query[:,a], key[:,b]>, so the network can say "this tile for that
+    # unit" instead of publishing a single global ranking. 0 disables it.
+    #
+    # K = 4 by measurement, not by taste. Every key is a Gaussian dimension
+    # more in the importance ratio, and that product is what once saturated
+    # 99.4% of the batch. Measured over 5 updates at 8h x 13d, ratio
+    # saturation against decision-relevant dims:
+    #     K=0   0.0%   119 dims        K=4   0.0%   334 dims
+    #     K=2   1.0%   193 dims        K=8  15.4%   398 dims
+    # K=4 is the most expression that still leaves the ratio clean.
+    n_keys: int = 4
     # SEPARATE SIGMA for the verb channels. The 0.15 of `sigma_micro` was
     # calibrated by "measuring how many assignments it flips" on the VALUE
     # channel, in symlog dollars; inheriting it for the logits of a choice
@@ -213,7 +231,8 @@ class E2EAgent(nn.Module):
             self.micro_ctx = nn.Sequential(nn.Conv2d(w, w, 5, padding=2), nn.SiLU())
         else:
             self.micro_ctx = nn.Sequential(nn.Conv2d(w, w, 3, padding=1), nn.SiLU())
-        self.micro = nn.Conv2d(w, 1 + self.n_ops, 1)
+        self.n_keys = int(cfg.n_keys) if self.n_ops else 0
+        self.micro = nn.Conv2d(w, 1 + self.n_ops + 2 * self.n_keys, 1)
         # MICRO HEAD SIGMA, LEARNED. It used to be `cfg.sigma_micro` and
         # `cfg.sigma_verb`, two config constants: the head that contributes
         # NOTHING -the macro- explored adaptively, and the one contributing
@@ -223,7 +242,7 @@ class E2EAgent(nn.Module):
         # It is initialised at EXACTLY the previous values, so behaviour at
         # startup is identical; from there PPO moves it, with the same
         # mechanism already used for the macro.
-        _nc = 1 + self.n_ops
+        _nc = 1 + self.n_ops + 2 * self.n_keys
         _ini = torch.full((_nc, 1, 1), float(np.log(cfg.sigma_ops)))
         _ini[0] = float(np.log(cfg.sigma_micro))
         self.log_sigma_micro = nn.Parameter(_ini)

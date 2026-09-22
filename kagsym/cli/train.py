@@ -267,6 +267,10 @@ def main():
                          "trunk keeps what is relevant. Watch "
                          "`2_health/jepa_sd`: if it falls to zero, "
                          "the representation has collapsed")
+    ap.add_argument("--keys", type=int, default=4,
+                    help="K assignment keys and K queries per tile: the term "
+                         "that lets the network prefer a tile FOR A UNIT. "
+                         "0 disables it and the matrix is the per-tile one")
     ap.add_argument("--ctx-micro", default="3x3",
                     choices=("1x1", "3x3", "3x3x2", "5x5", "attn"),
                     help="spatial context shape of the micro head")
@@ -300,7 +304,7 @@ def main():
     a = ap.parse_args()
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    cfg = WorldConfig(device=dev, sigma_micro=a.sigma,
+    cfg = WorldConfig(device=dev, sigma_micro=a.sigma, n_keys=a.keys,
                       sigma_ops=a.sigma_verb, ctx_micro=a.ctx_micro)
     net = E2EAgent(cfg).to(dev)
     vec0 = list(np.load(a.init))
@@ -693,7 +697,10 @@ def main():
     # costs 54% of the return ($40,972 fixed -> $18,967 sampled), because 30
     # days of random jitter destroy the farm's coherence.
     eps = torch.randn(a.envs, N_MACRO, device=dev)
-    _NC = 1 + getattr(net, "n_ops", 0)
+    # Channels of the micro map: value + verbs + 2K assignment keys. Read
+    # from the head itself, not recomputed, so adding channels never leaves
+    # the rollout shape and the network disagreeing in silence.
+    _NC = int(net.micro.bias.shape[0]) if getattr(net, "n_ops", 0) else 1
     _U_SHAPE = (10, 10) if _NC == 1 else (_NC, 10, 10)
     # One sigma per channel: value and verbs live on different scales.
     # The MICRO head's sigma is no longer a config constant: it is an
@@ -711,6 +718,7 @@ def main():
     # collapses, also halving the pace.
     _lifeline = {"ret": None, "sd": None, "opt": None, "rescates": 0}
     _grad_norms = []
+    _sig_grads = []
     _last_promo = -10**9
     ret_ep = []          # returns of CLOSED EPISODES, not per-update sums
     accum = np.zeros(a.envs, dtype=np.float64)
@@ -1058,6 +1066,22 @@ def main():
                 # everything else looks normal -the indirect symptom was "the
                 # rollout column does not move", which took 5,456 episodes to
                 # read-.
+                # GRADIENT REACHING THE EXPLORATION, split by head. Both
+                # sigmas are learned parameters, and both were measured barely
+                # moving from their initialisation -2.0% and 0.3% of travel in
+                # 830 updates-. That is compatible with two very different
+                # situations: the policy has decided this width is right, or
+                # no gradient is arriving and the width is frozen by
+                # construction. Reading the norm separates them, and the verb
+                # channels are kept apart from the value channel because they
+                # start five times narrower (0.03 against 0.15) and are the
+                # ones suspected of being under-explored.
+                _sg = net.log_sigma.grad
+                _sm_g = net.log_sigma_micro.grad
+                _sig_grads.append((
+                    float(_sg.norm()) if _sg is not None else 0.0,
+                    float(_sm_g[0].norm()) if _sm_g is not None else 0.0,
+                    float(_sm_g[1:].norm()) if _sm_g is not None and _sm_g.shape[0] > 1 else 0.0))
                 _gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 0.5)
                 _grad_norms.append(float(_gn))
                 opt.step()
@@ -1688,6 +1712,14 @@ def main():
                         # rest
                         # parece normal. El sintoma indirecto -"el despliegue
                         # no se mueve"- tardo 5.456 episodios en leerse.
+                        if _sig_grads:
+                            _sgg = _sig_grads[-50:]
+                            _m["2_health/grad_sigma_macro"] = float(
+                                np.mean([x[0] for x in _sgg]))
+                            _m["2_health/grad_sigma_micro_value"] = float(
+                                np.mean([x[1] for x in _sgg]))
+                            _m["2_health/grad_sigma_micro_verb"] = float(
+                                np.mean([x[2] for x in _sgg]))
                         if _grad_norms:
                             _gg = _grad_norms[-50:]
                             _m["2_health/grad_norm"] = float(np.mean(_gg))

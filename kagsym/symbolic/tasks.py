@@ -22,6 +22,8 @@ is derived from the engine.
 """
 from __future__ import annotations
 
+import math
+
 from .. import spec
 
 # spec.TURNS_PER_DAY is read at call time (see spec.set_turns_per_day): as a
@@ -586,10 +588,11 @@ import numpy as np
 EXTRA_TILE_THRESHOLD = 2500.0
 
 
-def enable_mask():
+def enable_mask(n_keys=0):
     import numpy as np
     global MASK_ACC
-    MASK_ACC = np.zeros((1 + N_OPS, BOARD, BOARD), dtype=np.float32)
+    MASK_ACC = np.zeros((1 + N_OPS + 2 * int(n_keys), BOARD, BOARD),
+                        dtype=np.float32)
 
 
 def collect_mask():
@@ -597,6 +600,29 @@ def collect_mask():
     m = MASK_ACC
     MASK_ACC = None
     return m
+
+
+# WHY A UNIT PASSES. Measured against an uncapped v48, 11% of our actions are
+# PASS against their 5%: about 480 wasted unit-turns per episode, which is
+# roughly the whole watering deficit that kills half our plants. But "PASS"
+# has two causes that need opposite fixes -no legal task was offered, or one
+# was offered and the emitted value was not positive- and the number alone
+# does not separate them. Off by default; costs nothing when disabled.
+PASS_ACC = None
+
+
+def enable_pass_stats():
+    global PASS_ACC
+    PASS_ACC = {"units": 0, "pass": 0, "no_task_at_all": 0,
+                "all_blocked_by_inventory": 0, "all_value_nonpositive": 0,
+                "taken_by_another": 0, "offers": 0, "blocked": 0}
+
+
+def collect_pass_stats():
+    global PASS_ACC
+    d = PASS_ACC
+    PASS_ACC = None
+    return d
 
 
 def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
@@ -885,7 +911,8 @@ def _can_do(inv, op) -> bool:
 # LEARNED like the others, not set by hand.
 
 
-def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0) -> list:
+def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
+                      key_map=None, query_map=None) -> list:
     """Minimum-cost assignment: maximises the TOTAL discounted value.
 
     The greedy fails in a specific and frequent way: the first unit takes a
@@ -904,20 +931,87 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0) ->
     m = len(tiles) + n
     value = [[0.0] * m for _ in range(n)]
     invs = invs or [{}] * len(units)
+    if PASS_ACC is not None:
+        PASS_ACC["units"] += len(units)
     for i, pos in enumerate(units):
         row = value[i]
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
         for j, tile in enumerate(tiles):
             v, op = tasks[tile]
             if not _can_do(inv, op):
+                if PASS_ACC is not None:
+                    PASS_ACC["blocked"] += 1
                 continue                  # stays 0: loses to the dummy
+            if PASS_ACC is not None:
+                PASS_ACC["offers"] += 1
             row[j] = v * (STEP_DISCOUNT ** dist(pos, tile))
+            # PER-UNIT PREFERENCE. The value is the same for everybody, so
+            # without this term the only thing telling two units apart is
+            # distance, and when they want the same tile the loser takes the
+            # dummy column: measured, that is 94% of all PASSes.
+            #
+            # MULTIPLICATIVE, like the market factors, so the entry keeps its
+            # dollar meaning and needs no scale constant: the dot product of
+            # the unit's query with the tile's key starts at exactly 0 -the
+            # head is zero-initialised- and exp(0) = 1 leaves the matrix
+            # identical to the one before this existed.
+            if key_map is not None and query_map is not None:
+                _z = 0.0
+                for _c in range(len(key_map)):
+                    _z += float(query_map[_c][pos[1]][pos[0]]) * \
+                        float(key_map[_c][tile[1]][tile[0]])
+                row[j] *= math.exp(max(-13.8, min(13.8, _z)))
             if stickiness and previous is not None and previous.get(i) == tile:
                 row[j] *= (1.0 + stickiness)
 
+    # WHICH KEY DIMS DECIDED. Same rule as the verbs: a dimension only
+    # counts if there was a COMPARISON. A tile wanted by a single unit, or a
+    # unit with a single positive option, is settled without the key term, so
+    # its dims cannot change the action and must contribute exactly zero to
+    # the importance ratio. Marking every task tile instead took the ratio
+    # saturation from 3% to 15-23%, which is the same bug that once saturated
+    # 99.4% of it.
+    if (MASK_ACC is not None and key_map is not None
+            and MASK_ACC.shape[0] > 1 + N_OPS):
+        _k = len(key_map)
+        _per_tile = [sum(1 for i in range(n) if value[i][j] > 0.0)
+                     for j in range(len(tiles))]
+        for j, tile in enumerate(tiles):
+            if _per_tile[j] > 1:
+                for _c in range(_k):
+                    MASK_ACC[1 + N_OPS + _c, tile[1], tile[0]] = 1.0
+        for i, pos in enumerate(units):
+            if sum(1 for j in range(len(tiles)) if value[i][j] > 0.0) > 1:
+                for _c in range(_k):
+                    MASK_ACC[1 + N_OPS + _k + _c, pos[1], pos[0]] = 1.0
+
     actions = []
+    _assigned = set()
+    if PASS_ACC is not None:
+        _assigned = {j for j in max_assignment(value) if j < len(tiles)}
     for i, j in enumerate(max_assignment(value)):
         if j >= len(tiles) or value[i][j] <= 0.0:
+            if PASS_ACC is not None:
+                PASS_ACC["pass"] += 1
+                _row = value[i]
+                _pos = [k for k in range(len(tiles)) if _row[k] > 0.0]
+                if not tiles:
+                    PASS_ACC["no_task_at_all"] += 1
+                elif not _pos:
+                    # the row is all zeros: either nothing was legal for this
+                    # unit's inventory, or every task was valued at <= 0
+                    _legal = sum(1 for k, t in enumerate(tiles)
+                                 if _can_do(invs[i] if i < len(invs)
+                                            and isinstance(invs[i], dict) else {},
+                                            tasks[t][1]))
+                    if _legal == 0:
+                        PASS_ACC["all_blocked_by_inventory"] += 1
+                    else:
+                        PASS_ACC["all_value_nonpositive"] += 1
+                else:
+                    # there WAS something positive for this unit; another unit
+                    # took it, which is the Hungarian doing its job
+                    PASS_ACC["taken_by_another"] += 1
             actions.append(["PASS"])
             if previous is not None:
                 previous[i] = None
@@ -929,7 +1023,8 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0) ->
 
 
 def assign_units(obs, free_capacity: int,
-                 value_map=None, previous=None, macro=None, verb_map=None) -> list:
+                 value_map=None, previous=None, macro=None, verb_map=None,
+                 key_map=None, query_map=None) -> list:
     """One action per unit, maximising the discounted value of the set.
 
     The budget is not the problem it was feared to be: 16 units x 116 columns
@@ -952,4 +1047,5 @@ def assign_units(obs, free_capacity: int,
     if macro is not None:
         from ..macro import assignment_stickiness
         adh = assignment_stickiness(macro)
-    return _assign_hungarian(units, tasks, invs, previous, adh)
+    return _assign_hungarian(units, tasks, invs, previous, adh,
+                             key_map, query_map)

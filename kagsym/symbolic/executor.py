@@ -177,18 +177,22 @@ class Agent:
                         if isinstance(t, dict) and t.get("kind") == "PLANT")
         free = max(0, sustainable - planted)
 
-        # The micro head returns TWO maps: a 10x10 value map and N_OPS x 10 x
-        # 10 verb logits. An agent without a network returns neither.
-        _mv, _mo = None, None
+        # The micro head returns a 10x10 value map, N_OPS x 10 x 10 verb
+        # logits and, when the assignment keys are on, K key and K query
+        # channels. An agent without a network returns none of it.
+        _mv, _mo, _mk, _mq = None, None, None, None
         if self.micro:
             _out = self.micro(obs)
             if isinstance(_out, tuple):
-                _mv, _mo = _out
+                if len(_out) == 4:
+                    _mv, _mo, _mk, _mq = _out
+                else:
+                    _mv, _mo = _out
             else:
                 _mv = _out
         units = tasks.assign_units(
             obs, free,
-            value_map=_mv, verb_map=_mo,
+            value_map=_mv, verb_map=_mo, key_map=_mk, query_map=_mq,
             previous=self._destinations,
             macro=self.macro)
         provisional = {"farmer": units[0] if units else ["PASS"],

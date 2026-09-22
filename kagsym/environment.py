@@ -167,16 +167,26 @@ def load_public(name_):
     return ag
 
 
-def _parte_micro(m):
-    """The micro map carries 1+N_OPS channels: channel 0 value, rest verbs.
+def _split_micro(m):
+    """Split the micro map into value, verbs and -if present- keys/queries.
 
-    An agent without a network returns (10,10) or nothing, so the same
-    pipeline serves both without branching elsewhere.
+    Layout: channel 0 is the value, the next N_OPS are the verb logits, and
+    the remaining 2K are K assignment keys followed by K queries. An agent
+    without a network returns (10,10) or nothing, so the same pipeline serves
+    both without branching elsewhere.
     """
     if m is None:
         return None
     m = np.asarray(m, dtype=np.float32)
-    return (m[0], m[1:]) if m.ndim == 3 else m
+    if m.ndim != 3:
+        return m
+    from .symbolic.tasks import N_OPS
+    _rest = m.shape[0] - 1 - N_OPS
+    if _rest >= 2 and _rest % 2 == 0:
+        k = _rest // 2
+        return (m[0], m[1:1 + N_OPS], m[1 + N_OPS:1 + N_OPS + k],
+                m[1 + N_OPS + k:])
+    return (m[0], m[1:])
 
 
 class DayEnv:
@@ -244,7 +254,7 @@ class DayEnv:
         self.obs[i] = self.envs[i].reset()
         mac = self.macro_fijo if self.macro_fijo is not None else Macro.default()
         self.agents[i] = Agent(episode_steps=self.steps, macro=mac,
-                                micro=lambda ob, k=i: _parte_micro(self._micro[k]))
+                                micro=lambda ob, k=i: _split_micro(self._micro[k]))
         self.counter[i] = ProductionLedger()
         self._micro[i] = None
         self._rival[i] = self._new_rival()
@@ -356,7 +366,12 @@ class DayEnv:
                 self.agents[i].macro = Macro.from_vector(macros[i])
             env, counter = self.envs[i], self.counter[i]
             from .symbolic import tasks as _Tm
-            _Tm.enable_mask()
+            _mk = self._micro[i]
+            _nk = 0
+            if _mk is not None and getattr(_mk, "ndim", 0) == 3:
+                _nk = max(0, (_mk.shape[0] - 1 - _Tm.N_OPS) // 2)
+            self._n_keys = _nk
+            _Tm.enable_mask(_nk)
             util = total = 0
             for _ in range(spec.TURNS_PER_DAY):
                 if env.done:
@@ -450,12 +465,14 @@ class DayEnv:
         return rec, fin
 
     def masks(self):
-        """(n, 1+N_OPS, B, B): which micro dimensions decided today.
+        """(n, 1+N_OPS+2K, B, B): which micro dimensions decided today.
 
         None when there is nothing to mask.
         """
         from .symbolic import tasks as _Tm
-        z = np.zeros((1 + _Tm.N_OPS, spec.BOARD, spec.BOARD), dtype=np.float32)
+        _nk = int(getattr(self, "_n_keys", 0))
+        z = np.zeros((1 + _Tm.N_OPS + 2 * _nk, spec.BOARD, spec.BOARD),
+                     dtype=np.float32)
         return np.stack([m if m is not None else z for m in self._masks])
 
     def mean_money(self, last=50):
