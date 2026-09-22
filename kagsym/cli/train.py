@@ -732,7 +732,7 @@ def main():
         mlflow.set_experiment("kaggriculture-world-model")
         mlflow.start_run(run_name=a.run_name)
         mlflow.log_params(vars(a))
-        # REFERENCIAS. Una curva de dinero sin sus lineas no se puede leer.
+        # REFERENCES. A money curve cannot be read without its baselines.
         mlflow.log_params({
             "ref_inaccion": 3000,            # medido, a cualquier horizonte
             "ref_azar_legal": 8692,          # verbo legal al azar cada turno
@@ -746,26 +746,26 @@ def main():
     except Exception:
         usar_ml = False
 
-    # PERTURBACION POR EPISODIO, no por dia. Medido: remuestrear cada dia
-    # cuesta el 54 % del rendimiento (40 972 $ fijo -> 18 967 $ muestreado),
-    # porque 30 dias de temblor aleatorio destruyen la coherencia de la granja.
+    # PERTURBATION PER EPISODE, not per day. Measured: resampling every day
+    # costs 54% of the return ($40,972 fixed -> $18,967 sampled), because 30
+    # days of random jitter destroy the farm's coherence.
     eps = torch.randn(a.envs, N_MACRO, device=dev)
     _NC = 1 + getattr(net, "n_ops", 0)
     _FORMA_U = (10, 10) if _NC == 1 else (_NC, 10, 10)
-    # Un sigma por canal: valor y verbos viven en escalas distintas.
-    # El sigma de la cabeza MICRO ya no es una constante del config: es un
-    # `nn.Parameter` de la red y lo aprende PPO, igual que el del macro. Se
-    # recalcula en cada uso porque tras `opt.step()` el valor cambia; guardarlo
-    # en una variable dejaria un tensor rancio y, en la actualizacion, un grafo
-    # que ya no corresponde.
+    # One sigma per channel: value and verbs live on different scales.
+    # The MICRO head's sigma is no longer a config constant: it is an
+    # `nn.Parameter` of the network learned by PPO, like the macro's. It is
+    # recomputed at each use because after `opt.step()` the value changes;
+    # caching it in a variable would leave a stale tensor and, during the
+    # update, a graph that no longer corresponds.
     def SIG():
         return net.log_sigma_micro.exp()
     eps_u = torch.randn(a.envs, *_FORMA_U, device=dev)
     best = -1e18
-    # RED DE SEGURIDAD ante colapso. Medido esta noche: un update con kl 25,7
-    # llevo la caja de 34.900 $ a 3 $ en quince updates y el controlador
-    # reacciono tarde. Guarda el ultimo estado BUENO y lo restaura si el
-    # retorno se desploma, bajando ademas el ritmo a la mitad.
+    # SAFETY NET against collapse. Measured: one update with kl 25.7 took the
+    # cash from $34,900 to $3 in fifteen updates and the controller reacted too
+    # late. It keeps the last GOOD state and restores it if the return
+    # collapses, also halving the pace.
     _salvavidas = {"ret": None, "sd": None, "opt": None, "rescates": 0}
     _grad_normas = []
     _ultima_promo = -10**9
@@ -773,16 +773,17 @@ def main():
     acum = np.zeros(a.envs, dtype=np.float64)
 
     if a.selfplay:
-        # Contra v48 perdemos el 100 %: el terminal vale -1 SIEMPRE y no aporta
-        # un solo bit sobre lo unico que puntua. Contra uno mismo la tasa ronda
-        # el 0.59 con los dos haciendo el mismo dinero (36 385 vs 36 295), que
-        # es donde una senal binaria tiene maxima informacion.
+        # Against a full-power public agent we lose 100%: the terminal is -1
+        # ALWAYS and carries not one bit about the only thing that scores.
+        # Against a copy of ourselves the rate sits around 0.59 with both
+        # making the same money ($36,385 against $36,295), which is where a
+        # binary signal has maximum information.
         env.set_selfplay(net)
         print("rival: AUTO-JUEGO (instantanea congelada de la politica)", flush=True)
 
     import copy
     bank = []
-    # Semillas del banco: rivales DIVERSOS, no del propio linaje.
+    # Bank seeds: DIVERSE opponents, not from our own lineage.
     _seed_vectors = []
     for _p in [x.strip() for x in (a.bank_seed or "").split(",") if x.strip()]:
         try:
@@ -792,12 +793,12 @@ def main():
                       f"({N_MACRO},)", flush=True)
                 continue
             if _v.shape[0] < N_MACRO:
-                # Vector de una version con menos parametros. Se RELLENA con
-                # los valores por defecto del `Macro`, que son exactamente los
-                # que la constante tenia cuando estaba a ojo: asi el vector
-                # viejo sigue describiendo la misma politica. Dejarlo caer
-                # -lo que hacia antes- vaciaba el banco en silencio y la run
-                # se quedaba en auto-juego puro sin diversidad.
+                # A vector from a version with fewer parameters. It is PADDED
+                # with `Macro`'s defaults, which are exactly what the constant
+                # held when it was hand-set: that way the old vector still
+                # describes the same policy. Dropping it -what happened before-
+                # emptied the bank silently and the run fell back to pure
+                # self-play with no diversity.
                 from kagsym.macro import Macro as _Mc
                 _d = np.array(_Mc().to_vector(), dtype=np.float64)
                 _d[: _v.shape[0]] = _v
@@ -812,33 +813,34 @@ def main():
               f"{', '.join(n for n, _ in _seed_vectors)}", flush=True)
 
     t0 = time.time()
-    # CONTINUIDAD DEL EJE. Al reanudar, el contador volvia a 1 y MLflow pintaba
-    # la continuacion SOLAPADA sobre el tramo anterior en vez de a continuacion:
-    # la curva de aprendizaje quedaba partida en dos y no se podia leer como
-    # una. El desplazamiento la vuelve a unir.
+    # AXIS CONTINUITY. On resume the counter went back to 1 and MLflow drew
+    # the continuation OVERLAID on the previous stretch instead of after it:
+    # the learning curve was split in two and could not be read as one. The
+    # offset joins it back up.
     _upd0 = int(d0.get("upd", 0) or 0) if a.resume else 0
     if _upd0:
         print(f"el eje de pasos continua desde {_upd0}", flush=True)
     for upd in range(1, a.updates + 1):
         if a.selfplay and upd % a.refresh == 0:
-            # Banco de versiones antiguas: sin el, la politica puede olvidar
-            # como batir a lo que ya sabia batir y ciclar. Se alterna entre la
-            # version mas reciente y una del banco elegida por turno.
+            # A bank of older versions: without it the policy can forget how
+            # to beat what it already knew how to beat, and cycle. It
+            # alternates between the most recent version and one from the bank
+            # chosen in turn.
             bank.append({k: v.detach().cpu().clone() for k, v in net.state_dict().items()})
             bank[:] = bank[-a.bank:]
-            # La poblacion es semillas diversas MAS fotos propias. Rotar solo
-            # entre fotos propias es jugar contra el mismo linaje.
-            # Las semillas ocupan UN solo puesto porque se lanzan todas a la
-            # vez -una por trabajador-. Con un puesto por semilla la rotacion
-            # gastaba turnos identicos.
+            # The population is diverse seeds PLUS our own snapshots. Rotating
+            # only among our own snapshots is playing against the same lineage.
+            # The seeds occupy ONE slot because they are all deployed at once
+            # -one per worker-. With one slot per seed the rotation spent
+            # identical turns.
             _pool = (([("macro", "diversos", None)] if _seed_vectors else [])
                      + [("foto", f"auto{i}", sd) for i, sd in enumerate(bank)])
             _tipo, _nom, _obj = _pool[(upd // a.refresh) % len(_pool)]
             if _tipo == "macro":
-                # Todos los rivales diversos A LA VEZ, uno por trabajador:
-                # `pon_rival_macro` lo admite de forma nativa. Rotar de uno en
-                # uno hace que el gradiente los vea en serie, que es como se
-                # olvida de batir a lo que ya sabia batir.
+                # All diverse opponents AT ONCE, one per worker:
+                # `set_rival_macro` accepts that natively. Rotating one at a
+                # time makes the gradient see them in series, which is how it
+                # forgets to beat what it already knew how to beat.
                 env.set_rival_macro([v for _, v in _seed_vectors])
                 _nom = f"{len(_seed_vectors)} diversos a la vez"
             else:
@@ -853,11 +855,11 @@ def main():
         JZ = []                      # proyecciones JEPA por dia (objetivo, detenido)
         for _ in range(a.days):
             g, b, hf = env.encode()
-            # La entrada `hist` llevaba CEROS desde siempre pese a estar
-            # disenada y conectada al codificador. Con --flujo-rival se le da
-            # lo que le corresponde: la oferta inminente del adversario, que
-            # es el mecanismo por el que nos afecta -vuelca genero, cae el
-            # precio marginal, baja nuestro ingreso-.
+            # The `hist` input carried ZEROS from the start despite being
+            # designed and wired into the encoder. With --rival-flow it gets
+            # what belongs there: the opponent's imminent supply, which is the
+            # mechanism by which they affect us -they dump produce, the
+            # marginal price falls, our income drops-.
             h = (hf if a.rival_flow
                  else np.zeros((a.envs, N_HIST), dtype=np.float32))
             HF.append(torch.from_numpy(np.asarray(hf, dtype=np.float32)).to(dev))
@@ -875,16 +877,16 @@ def main():
                 if a.jepa_weight > 0:
                     JZ.append(s["jepa_z"].detach())
             rec, fin = env.step_day(mapas=au.cpu().numpy(), macros=am.cpu().numpy())
-            # La mascara solo se conoce DESPUES de jugar el dia: dice que
-            # dimensiones influyeron de verdad en alguna decision. Se recalcula
-            # la log-prob con ella para que el cociente de PPO ignore el resto.
+            # The mask is only known AFTER playing the day: it says which
+            # dimensions genuinely influenced some decision. The log-prob is
+            # recomputed with it so PPO's ratio ignores the rest.
             _ms = env.masks()
             if _ms is not None:
                 mt = torch.from_numpy(_ms).to(dev)
                 lp = lp_m + (_lpu * mt).flatten(1).sum(-1)
                 _lp_mi = (_lpu * mt).flatten(1).sum(-1)
                 MS.append(mt)
-            # retorno por episodio cerrado, que si es comparable entre updates
+            # return per closed episode, which IS comparable across updates
             acum += rec
             for k in np.nonzero(fin)[0]:
                 ret_ep.append(float(acum[k])); acum[k] = 0.0
@@ -915,25 +917,26 @@ def main():
         _w = 1.0 / min(_vn, 100)
         _vmu = (1 - _w) * _vmu + _w * _b_mu
         _vsd = (1 - _w) * _vsd + _w * _b_sd
-        # R2 DEL CRITICO en vuelo. Medido aparte, su techo con datos suficientes
-        # es 0,900 y en vuelo iba por 0,675: el hueco es de entrenamiento, no de
+        # CRITIC R2 in flight. Measured separately, its ceiling with enough
+        # data is 0.900 and in flight it was at 0.675: the gap is training, not
         # ruido. Sin registrarlo no hay forma de ver si se cierra.
         _vr = ret.reshape(-1); _vp = Vn.reshape(-1)
         _sse = float(((_vr - _vp) ** 2).sum())
         _sst = float(((_vr - _vr.mean()) ** 2).sum())
         _r2 = 1.0 - _sse / _sst if _sst > 0 else 0.0
-        # VENTAJA NORMALIZADA POR PELDANO cuando hay rejilla.
+        # ADVANTAGE NORMALISED PER RUNG when there is a grid.
         #
-        # `escala` del moldeado es una constante (2.000 $) que NO depende del
-        # peldano, asi que el potencial terminal vale ~20 en una partida de 720
-        # turnos y ~2,5 en una de 105. Normalizando la ventaja sobre el lote
-        # ENTERO, las muestras del peldano grande se llevan casi todo el modulo
-        # y las de los pequenos quedan aplastadas contra cero: mezclar dejaria
-        # de servir para nada, que es justo lo contrario de lo que se busca.
+        # The shaping `scale` is a constant ($2,000) that does NOT depend on
+        # the rung, so the terminal potential is worth ~20 in a 720-turn
+        # episode and ~2.5 in a 105-turn one. Normalising the advantage over
+        # the WHOLE batch, samples from the large rung take almost all the
+        # magnitude and those from the small ones are crushed against zero:
+        # mixing would stop serving any purpose, which is the opposite of what
+        # it is for.
         #
-        # Normalizar por peldano pone a los once a competir en igualdad. Es la
-        # practica estandar en RL multitarea y no cambia el signo de ninguna
-        # ventaja, solo su escala relativa entre tareas.
+        # Normalising per rung puts all rungs on equal footing. It is standard
+        # practice in multi-task RL and it does not change the sign of any
+        # advantage, only its relative scale across tasks.
         if _GRUPOS is not None:
             for _a, _b in _GRUPOS:
                 _sl = adv[:, _a:_b]
@@ -947,18 +950,18 @@ def main():
         fh = torch.from_numpy(np.concatenate(H)).to(dev)
         fam, fau, flp = torch.cat(AM), torch.cat(AU), torch.cat(LP)
         flpma, flpmi = torch.cat(LPMA), torch.cat(LPMI)
-        # OBJETIVO AUXILIAR, horizontes de Fibonacci. Para el estado del dia t,
-        # lo que el rival tendra LISTO en t+1, t+2, t+3, t+5, t+8 y t+13. Mas
-        # alla del ultimo dia disponible se repite el ultimo: no inventa
-        # informacion y mantiene cuadradas las longitudes.
+        # AUXILIARY TARGET, Fibonacci horizons. For the state of day t, what
+        # the opponent will have READY at t+1, t+2, t+3, t+5, t+8 and t+13.
+        # Beyond the last available day the last one is repeated: it invents no
+        # information and keeps the lengths square.
         #
-        # Predecir solo t+1 seria casi trivial -el crecimiento de un dia es
-        # determinista-; los ciclos del juego viven entre 2 y 13 dias y es ahi
-        # donde el codificador tiene que aprender algo.
-        # OBJETIVO JEPA: para el dia t, la proyeccion del PROPIO codificador
-        # en t+k, detenida y congelada del rollout. Si se recalculara durante
-        # las epocas, el objetivo se moveria con el predictor, que es una via
-        # directa al colapso.
+        # Predicting only t+1 would be nearly trivial -one day of growth is
+        # deterministic-; the game's cycles live between 2 and 13 days and that
+        # is where the encoder has to learn something.
+        # JEPA TARGET: for day t, the projection of the encoder ITSELF at
+        # t+k, detached and frozen from the rollout. If it were recomputed
+        # during the epochs the target would move with the predictor, which is
+        # a direct route to collapse.
         _fjz = None
         if a.jepa_weight > 0 and JZ:
             from kagsym.obs import AUX_HORIZONS as _HZ
@@ -970,7 +973,7 @@ def main():
         if HF:
             from kagsym.obs import AUX_HORIZONS, RIVAL_WINDOWS
             _nd = len(HF)
-            # de (dias, envs, 4*P) a la primera ventana: lo LISTO hoy
+            # from (days, envs, 4*P) to the first window: what is READY today
             _listo = [x.reshape(x.shape[0], len(RIVAL_WINDOWS), -1)[:, 0, :]
                       for x in HF]
             _fhf = torch.cat([
@@ -981,25 +984,25 @@ def main():
         fadv = torch.from_numpy(adv.reshape(-1).astype(np.float32)).to(dev)
         fret = torch.from_numpy(ret.reshape(-1).astype(np.float32)).to(dev)
         kl_cortes = 0
-        # (la red de seguridad se inicializa antes del bucle)
-        # RED DE SEGURIDAD. El guardia de KL limita cuanto se mueve la politica
-        # en un update, pero no repara lo que ya se rompio: medido esta noche,
-        # un solo update con kl 25,7 llevo la caja de 34.900 $ a 3 $ en quince
-        # updates, y el controlador reacciono tarde. En una run desatendida eso
-        # son horas perdidas sin que nadie se entere.
+        # (the safety net is initialised before the loop)
+        # SAFETY NET. The KL guard limits how far the policy moves in one
+        # update, but it does not repair what already broke: measured, a single
+        # update with kl 25.7 took the cash from $34,900 to $3 in fifteen
+        # updates, and the controller reacted too late. In an unattended run
+        # that is hours lost without anyone noticing.
         #
-        # Se guarda el ultimo estado BUENO y, si el retorno se desploma por
-        # debajo de la mitad del mejor reciente, se restaura y se baja el ritmo
-        # a la mitad. No evita el mal update; evita que se lo lleve la noche.
+        # The last GOOD state is kept and, if the return collapses below half
+        # the recent best, it is restored and the pace is halved. It does not
+        # prevent the bad update; it prevents it from taking the whole night.
 
-        # MINILOTES. A lote completo, 4 epocas son 4 PASOS de optimizador sobre
-        # ~2.160 muestras. Trocear en N no cambia el computo -el mismo numero de
-        # gradientes-muestra- pero da 4*N pasos, y cada uno parte de los pesos
-        # que actualizo el anterior. Donde mas se nota es en el CRITICO, que es
-        # una regresion: su R2 va por 0,80 con techo medido en 0,900, y ese
-        # hueco esta documentado como de entrenamiento, no de ruido.
+        # MINIBATCHES. At full batch, 4 epochs are 4 optimizer STEPS over
+        # ~2,160 samples. Splitting into N does not change the compute -the
+        # same number of sample-gradients- but gives 4*N steps, each starting
+        # from the weights the previous one updated. It shows up most in the
+        # CRITIC, which is a regression: its R2 sits at 0.80 with a measured
+        # ceiling of 0.900, and that gap is documented as training, not noise.
         _N = len(fadv)
-        # La POLITICA siempre a lote completo: trocearla multiplica su KL por 24
+        # The POLICY always at full batch: splitting it multiplies its KL by 24
         # (medido) y el controlador tendria que deshacerlo recortando el lr.
         # `--minilotes` afecta SOLO al critico, mas abajo.
         _nm, _tam = 1, _N
@@ -1030,20 +1033,21 @@ def main():
                 _lpmi = _lp2.flatten(1).sum(-1)
                 lp = _lpma + _lpmi
                 if a.factored_ratio:
-                    # UN COCIENTE POR CABEZA. PPO suma la log-prob sobre TODAS
-                    # las dimensiones -32 del macro mas 1.600 del micro- en un
-                    # unico cociente, asi que el ruido de exploracion del macro
-                    # entra en el cociente de cada muestra y arrastra al micro:
-                    # cuando el cociente se sale de banda por culpa del macro,
-                    # el gradiente del micro se pierde con el.
+                    # ONE RATIO PER HEAD. PPO sums the log-prob over ALL
+                    # dimensions -60 from the macro plus 1,600 from the micro-
+                    # into a single ratio, so the macro's exploration noise
+                    # enters every sample's ratio and drags the micro with it:
+                    # when the ratio leaves the band because of the macro, the
+                    # micro's gradient is lost with it.
                     #
-                    # Y el macro no lo merece: medido, su condicionamiento
-                    # aporta +1 $ de 953. Separar los cocientes deja que cada
-                    # cabeza explore lo suyo sin recortar a la otra.
+                    # And the macro does not deserve it: measured, its
+                    # conditioning contributes +$1 of 953. Separating the
+                    # ratios lets each head explore its own space without
+                    # clipping the other.
                     #
-                    # La mascara `fms` ya atacaba este problema a medias
-                    # -ignorar dimensiones que no deciden nada-; esto es la
-                    # version completa.
+                    # The `fms` mask already attacked this problem halfway
+                    # -ignoring dimensions that decide nothing-; this is the
+                    # complete version.
                     _rma = torch.exp((_lpma - _flpma).clamp(-10, 10))
                     _rmi = torch.exp((_lpmi - _flpmi).clamp(-10, 10))
                     l_pi = -0.5 * (
@@ -1061,53 +1065,55 @@ def main():
                     s["valor"], (_fret - _vmu) / _vsd)
                 l_aux = torch.zeros((), device=dev)
                 if a.aux_weight > 0 and _fhf is not None:
-                    # symlog: la oferta va de 0 a >100 unidades y un error de
-                    # 80 no puede pesar 80 veces mas que uno de 1.
+                    # symlog: supply ranges from 0 to >100 units and an error
+                    # of 80 cannot weigh 80 times one of 1.
                     _t = _fhf[_sel] if _nm > 1 else _fhf
                     l_aux = torch.nn.functional.smooth_l1_loss(
                         s["rival"], torch.sign(_t) * torch.log1p(_t.abs()))
                 l_jepa = torch.zeros((), device=dev)
                 if a.jepa_weight > 0 and _fjz is not None:
                     _tj = _fjz[_sel] if _nm > 1 else _fjz
-                    # coseno: solo interesa la DIRECCION del embedding; la
-                    # norma la puede inflar el codificador sin aprender nada.
+                    # cosine: only the embedding's DIRECTION matters; the
+                    # norm can be inflated by the encoder without learning
+                    # anything.
                     _p = torch.nn.functional.normalize(s["jepa_p"], dim=-1)
                     _q = torch.nn.functional.normalize(_tj, dim=-1)
                     l_jepa = (1.0 - (_p * _q).sum(-1)).mean()
                 if upd <= a.jepa_warmup:
-                    # CALENTAMIENTO: solo representacion. La politica no se
-                    # mueve, asi que el codificador se forma con un gradiente
-                    # DENSO y de baja varianza antes de que nadie dependa de
-                    # el. Ataca la carrera de arranque -codificador, critico y
-                    # politica persiguiendose- que es candidata a explicar la
-                    # loteria del despegue: el critico entra en R2 -1,7 a -4,1
-                    # y hasta que sube, la ventaja es ruido.
+                    # WARMUP: representation only. The policy does not move,
+                    # so the encoder is shaped by a DENSE, low-variance
+                    # gradient before anything depends on it. It attacks the
+                    # startup race -encoder, critic and policy chasing each
+                    # other- which is a candidate explanation for the takeoff
+                    # lottery: the critic starts at R2 -1.7 to -4.1 and until
+                    # it rises, the advantage is noise.
                     #
-                    # El valor SI se entrena: es lo que la politica necesitara
-                    # el primer dia y no cuesta nada tenerlo listo.
+                    # The value head IS trained: it is what the policy will
+                    # need on day one and costs nothing to have ready.
                     perdida = a.value_weight * l_v + a.jepa_weight * l_jepa
                 else:
                     perdida = (l_pi + a.value_weight * l_v + a.aux_weight * l_aux
                                + a.jepa_weight * l_jepa)
                 opt.zero_grad(); perdida.backward()
                 if a.jepa_warmup < upd <= a.jepa_warmup + a.freeze_trunk:
-                    # OJO al intervalo: se congela DESPUES del calentamiento,
-                    # no durante. Durante el calentamiento el tronco es
-                    # justamente lo que tiene que aprender; congelarlo alli
-                    # dejaria la fase sin efecto y luego mediriamos "JEPA no
-                    # sirve" cuando lo que no sirvio fue el montaje.
+                    # MIND THE INTERVAL: it freezes AFTER the warmup, not
+                    # during. During the warmup the trunk is precisely what has
+                    # to learn; freezing it there would make the phase a no-op
+                    # and we would then measure "JEPA does not work" when what
+                    # did not work was the setup.
                     #
-                    # Se anula el gradiente en vez de sacar los tensores del
-                    # optimizador, para no perder el estado de Adam.
+                    # The gradient is zeroed rather than removing the tensors
+                    # from the optimizer, so Adam's state is not lost.
                     for _p in _tronco:
                         if _p.grad is not None:
                             _p.grad = None
-                # La norma ANTES de recortar, que es lo que devuelve la
-                # funcion. Es el diagnostico directo del fallo que mas nos ha
-                # costado: con `log_prob` sobre la muestra sin `detach`, mu se
-                # cancela y esto vale 0.000e+00 mientras todo lo demas parece
-                # normal -el sintoma indirecto era "la columna de despliegue no
-                # se mueve", que tardamos 5.456 episodios en leer-.
+                # The norm BEFORE clipping, which is what the function
+                # returns. It is the direct diagnostic for the most expensive
+                # bug we have had: with `log_prob` over the sample without
+                # `detach`, mu cancels and this reads 0.000e+00 while
+                # everything else looks normal -the indirect symptom was "the
+                # rollout column does not move", which took 5,456 episodes to
+                # read-.
                 _gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 0.5)
                 _grad_normas.append(float(_gn))
                 opt.step()
@@ -1118,9 +1124,9 @@ def main():
                             net.log_sigma_micro.clamp_(
                                 min=float(np.log(a.sigma_floor_micro)))
 
-            # PARADA POR DIVERGENCIA KL. El recorte de gradiente limita la
-            # MAGNITUD del paso, no cuanto se mueve la POLITICA. Medido: 80
-            # updates estables (win ~0.5, 44 000 $) y de golpe un precipicio
+            # KL DIVERGENCE ABORT. Gradient clipping limits the step's
+            # MAGNITUDE, not how far the POLICY moves. Measured: 80 stable
+            # updates (win ~0.5, $44,000) and then a cliff
             # -win 0.015, 7 514 $- del que no se recupera. Un solo update malo
             # destruye la politica; esto lo corta antes de que ocurra.
             with torch.no_grad():
