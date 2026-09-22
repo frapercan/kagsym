@@ -350,7 +350,7 @@ def animal_value(ctx, a, macro):
 
 
 def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=None):
-    """(valor en $, operacion) de la mejor accion posible en esa casilla."""
+    """(value in $, operation) of the best possible action on that tile."""
     tile = farm["tiles"][y][x]
     day = obs["day"]
     seeds = obs["private"].get("seeds", {})
@@ -491,13 +491,13 @@ STEP_DISCOUNT = 0.82        # a step costs a turn: the value is discounted
 # ceiling from $939 to $1,201 (+27.9%), so none is taken on trust without
 # having entered a search.
 DIG_VALUE = 0.9             # clearing, as a fraction of the planting value
-# FORMA CON QUE EL MAPA DE LA RED ENTRA EN EL VALOR. `expm1` es exponencial, asi
-# so GAIN decides whether the map SUGGESTS or IMPOSES, and CAP decides where
-# it is clipped. Nobody ever searched them. This may explain why the map
-# saturated at 4 parameters: perhaps 4 were not enough, the transform was
-# limiting their effect.
+# HOW THE NETWORK'S MAP ENTERS THE VALUE. `expm1` is exponential, so GAIN
+# decides whether the map SUGGESTS or IMPOSES, and CAP decides where it is
+# clipped. Nobody ever searched them. This may explain why the map saturated at
+# 4 parameters: perhaps 4 were not enough, the transform was limiting their
+# effect.
 MAP_GAIN = 1.0              # how much the network's emission weighs
-MAP_CAP = 20.0      # corte en `ops`/`directo`, dentro de expm1
+MAP_CAP = 20.0              # clip inside expm1
 FERTILIZER_HORIZON = 3      # days counted towards the fertiliser bonus
 FERT_PER_TRIP = 4.0         # fertiliser picked up in one trip. Learned.
 # WHAT EACH OPERATION IS WORTH, where the engine does not say it. A trip to the
@@ -515,25 +515,25 @@ CARE_VALUE = 0.5            # caring for an animal
 
 
 # ---------------------------------------------------------------------------
-# ENUMERACION LEGAL. Lo contrario de `tile_task`.
+# LEGAL ENUMERATION. The opposite of `tile_task`.
 #
-# `tile_task` es una cascada de `return`: mezcla LEGALIDAD (que permite el
-# motor) con PREFERENCIA (que prefiero yo). El orden de los `return` y las
-# value formulas were eleven hand-written constants, and measured at the time
-# their optimum was NOT TO PLANT: sweeping the tile target paired over 8 seeds,
-# planting cost $41-50k (8-11 sigma) because crops displaced
-# la economia animal, que rinde 831 uds de producto frente a 316.
+# `tile_task` is a cascade of `return`s: it mixes LEGALITY (what the engine
+# allows) with PREFERENCE (what someone preferred). The order of those returns
+# and the value formulas were eleven hand-written constants, and measured at
+# the time their optimum was NOT TO PLANT: sweeping the tile target paired over
+# 8 seeds, planting cost $41-50k (8-11 sigma) because crops displaced the
+# animal economy, which yields 831 units of product against 316.
 #
 # Only legality lives here, which is derivable from the engine. The verb is
-# red; el sustantivo (que cultivo, que animal) sale de aritmetica exacta
-# -`best_crop`, `ctx.valor`-, que es mecanica, no preferencia.
-# UN VERBO POR CULTIVO. Antes habia un solo "PLANT" y QUE se plantaba lo
-# decidia `best_crop`, una funcion escrita a mano; el comentario de arriba lo
-# llamaba "mecanica, no preferencia". Pero es preferencia, y es la que decide
-# 84% of the gap: v48 makes $71,170 from STRAWBERRIES we never touch and
-# $60,179 from MILK where we do a fifth. With a single verb the network could
-# elegir SI plantar, nunca QUE, y ninguna cabeza aguas abajo podia arreglarlo:
-# the market head cannot sell what is not produced -measured, moving its
+# chosen by the network.
+#
+# ONE VERB PER CROP. There used to be a single "PLANT" and WHAT got planted was
+# decided by `best_crop`, a hand-written function that the comment above called
+# "mechanics, not preference". But it is preference, and it is the one that
+# decides 84% of the gap: v48 makes $71,170 from STRAWBERRIES we never touch
+# and $60,179 from MILK where we do a fifth. With a single verb the network
+# could choose WHETHER to plant, never WHAT, and no downstream head could fix
+# it: the market head cannot sell what is not produced -measured, moving its
 # strawberry factor does not change a single dollar-.
 OPS_VOCAB = [
     *("PLANT_" + c for c in spec.CROP_LIST),
@@ -545,15 +545,15 @@ OPS_VOCAB = [
 OPS_IX = {v: i for i, v in enumerate(OPS_VOCAB)}
 N_OPS = len(OPS_VOCAB)
 
-# MASCARA DE DIMENSIONES QUE DE VERDAD DECIDEN.
+# MASK OF THE DIMENSIONS THAT REALLY DECIDE.
 #
 # The micro log-prob is a SUM over 1+N_OPS channels x 100 tiles = 1,614
-# Gaussian dimensions, but only those on tiles with
-# operaciones legales, y el logit de un verbo solo importa si HABIA con quien
-# compararlo. Medido: sin enmascarar, el 99.4 % de los cocientes de importancia
-# de PPO se saturan en el tope de +-10 tras UN paso de gradiente -el cociente es
-# un producto sobre ~1 570 dimensiones de puro ruido-. No es una eleccion de
-# diseno incluirlas: es un fallo.
+# Gaussian dimensions, but only the tiles with legal operations decide
+# anything, and a verb's logit only matters if there WAS something to compare
+# it against. Measured: unmasked, 99.4% of PPO's importance ratios saturate at
+# the +-10 clip after ONE gradient step -the ratio is a product over ~1,570
+# dimensions of pure noise-. Including them is not a design choice: it is a
+# bug.
 MASK_ACC = None
 FILTER_BY_INVENTORY = False
 
@@ -563,22 +563,21 @@ FILTER_BY_INVENTORY = False
 # already a stochastic decision with a log-probability PPO can use.
 import numpy as np
 
-# UMBRAL de las casillas EXTRA. Lo fija `macro.aplica_parametros` una vez por
-# turn from the learned `f_extra_threshold` parameter; this value is only the
-# de arranque y equivale a "ninguna casilla extra entra".
+# THRESHOLD for the EXTRA tiles. `macro.apply_params` sets it once per turn
+# from the learned `f_extra_threshold` parameter; the value below is only the
+# starting point and amounts to "no extra tile enters".
 #
 # What the extra tiles are. Measured at championship scale: the heuristic
 # offers 8.94 tasks per turn for 10.88 units and leaves out another 5.81 the
 # engine DOES consider legal. Turns are passed 52.8% of the time -v48 passes
 # 5.3%- and 44.5 of those points are from having no task to assign, not from
-# choosing badly. On 22.7% of turns the heuristic offers nothing and yet
-# hay jugadas legales. Verbos desaprovechados: FERTILIZE 3010, HARVEST 837,
-# DROP 327, PICKUP 164 -and we harvest 111 times per episode against 420
-# de v48-.
+# choosing badly. On 22.7% of turns the heuristic offers nothing while legal
+# plays exist. Wasted verbs: FERTILIZE 3,010, HARVEST 837, DROP 327,
+# PICKUP 164 -and we harvest 111 times per episode against v48's 420-.
 #
-# Por que la red no podia arreglarlo: en `residuo` el mapa MULTIPLICA el valor
-# of existing tasks, but the tile with
-# `tile_task is None` no entra en el diccionario y es invisible al aprendizaje.
+# Why the network could not fix it: the map MULTIPLIES the value of existing
+# tasks, but a tile where `tile_task` returns None never enters the dictionary
+# and is invisible to learning.
 #
 # What decides here: LEGALITY comes from the engine, the VERB is chosen by the
 # network among the legal options and the VALUE is emitted by the network.
@@ -604,7 +603,7 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
                  macro=None) -> list:
     """All LEGAL operations on that tile, unvalued and unordered.
 
-    Devuelve [(indice_en_OPS_VOCAB, operacion_completa), ...].
+    Returns [(index in OPS_VOCAB, full operation), ...].
     """
     tile = farm["tiles"][y][x]
     day = obs["day"]
@@ -614,34 +613,29 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
 
     if _is_shed_access(x, y):
         shed = obs["private"]["shed"]
-        hay = [a for a in spec.ANIMALS if int(shed.get(a, 0)) > 0]
-        if hay:
+        in_shed = [a for a in spec.ANIMALS if int(shed.get(a, 0)) > 0]
+        if in_shed:
             # WHICH animal to take from the shed was another hand-written
-            # cuarta de la misma familia: `best_crop`, `seed_orders`,
-            # formula. It is weighted by the LEARNED factor of the product
-            # the animal gives, which already lives in the macro vector.
-            _fa = {}
-            if macro is not None:
-                try:
-                    from ..macro import market_factors
-                    _fa = market_factors(macro)
-                except Exception:
-                    _fa = {}
-            best = max(hay, key=lambda a: animal_value(ctx, a, macro))
+            # formula, the fourth of the same family as `best_crop` and
+            # `seed_orders`. It is weighted by the LEARNED factor of the
+            # product the animal gives, which already lives in the macro
+            # vector (see `animal_value`).
+            best = max(in_shed, key=lambda a: animal_value(ctx, a, macro))
             out.append((OPS_IX["PICKUP_ANIMAL"], ["PICKUP", best, 1]))
-        # CANTIDAD, no solo verbo. `OPS_VOCAB` tiene `PICKUP_WHEAT` como un
-        # verbo sin argumento, asi que esto emitia SIEMPRE 1 mientras la
-        # heuristica coge `min(hambrientos, trigo_en_cobertizo)`. Medido el
-        # measured by comparing the two task tables over THE SAME state:
-        # 96,8 % identicas, 0 % de casillas perdidas, 0 % de valores distintos,
-        # y el 3,2 % restante eran exactamente esto -`PICKUP WHEAT 2` contra
-        # `PICKUP WHEAT 1`-. With one unit bringing a single wheat per trip,
-        # the livestock feeding chain runs at half capacity, and livestock is
-        # the entire economy at this scale.
+        # QUANTITY, not just the verb. `OPS_VOCAB` has `PICKUP_WHEAT` as a
+        # verb with no argument, so this used to emit ALWAYS 1 while the
+        # heuristic takes `min(hungry, wheat in shed)`. It was measured by
+        # comparing the two task tables over THE SAME state: 96.8% identical,
+        # 0% of tiles lost, 0% of values different, and the remaining 3.2% were
+        # exactly this -`PICKUP WHEAT 2` against `PICKUP WHEAT 1`-. With one
+        # unit bringing a single wheat per trip, the livestock feeding chain
+        # runs at half capacity, and livestock is the entire economy at this
+        # scale.
         #
-        # La cantidad NO es una decision estrategica: la fijan cuantos animales
-        # tienen hambre y cuanto hay en el cobertizo. Es del lado simbolico,
-        # like legality and routing. The network still chooses the VERB.
+        # The quantity is NOT a strategic decision: it is fixed by how many
+        # animals are hungry and how much is in the shed. It belongs to the
+        # symbolic side, like legality and routing. The network still chooses
+        # the VERB.
         wheat = int(shed.get("WHEAT", 0))
         if wheat > 0:
             hungry = sum(1 for row in farm["tiles"] for t in row
@@ -673,17 +667,16 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
         # What IS kept is `plantable`: a crop that does not have time to mature
         # yields ZERO by engine mechanics, exactly like not being able to plant
         # on LOCKED. That is a fact, not an opinion.
-        if True:
-            # UNA OPCION POR CULTIVO con semilla disponible y que dé tiempo a
-            # mature. Legality and viability still come from the engine;
-            # la PREFERENCIA pasa a la red.
-            _seeds = obs["private"].get("seeds", {})
-            for _c in spec.CROP_LIST:
-                if int(_seeds.get(_c, 0)) <= 0:
-                    continue
-                if not plantable(obs, _c):
-                    continue
-                out.append((OPS_IX["PLANT_" + _c], ["PLANT", _c]))
+        # ONE OPTION PER CROP with seed available and time to mature.
+        # Legality and viability still come from the engine; the PREFERENCE
+        # goes to the network.
+        _seeds = obs["private"].get("seeds", {})
+        for _c in spec.CROP_LIST:
+            if int(_seeds.get(_c, 0)) <= 0:
+                continue
+            if not plantable(obs, _c):
+                continue
+            out.append((OPS_IX["PLANT_" + _c], ["PLANT", _c]))
         return out
 
     if not isinstance(tile, dict):
@@ -728,7 +721,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                        verb_map=None) -> dict:
     """(x,y) -> (value in $, operation) for each tile that offers something."""
     tasks = {}
-    _deferred = []          # casillas invisibles, se resuelven al final
+    _deferred = []          # invisible tiles, resolved at the end
     free = free_capacity
     ctx = TurnContext(obs, farm)
     _turn_invs = (obs["private"].get("inventories") or []
@@ -740,51 +733,48 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                 continue
             if verb_map is not None:
                 # END TO END: LEGALITY from the engine, the VERB from the
-                # network. NOTE: this is only entered WITH a verb map.
-                # al proceso, asi que un agente SIN red -el rival de una liga,
-                # un publico- caia aqui y elegia `opciones[0]`, la primera
-                # legal, o sea al azar. Medido: el experto de 8 dias hacia
-                # 2.340 $ de rival cuando vale 4.861, con 1 unidad en vez de 9,
-                # and we won 1.000 against an opponent lobotomised by OUR own
-                # training setup. With no map the heuristic is used.
-                # Nada de `tile_task` entra aqui -ni su orden de preferencia ni
-                # sus formulas de valor-.
+                # network. This branch is only entered WITH a verb map: an
+                # agent WITHOUT a network -a league opponent, a public agent-
+                # used to fall in here and pick `options[0]`, the first legal
+                # one, which is at random. Measured: the 8-day expert made
+                # $2,340 as an opponent when it is worth $4,861, with 1 unit
+                # instead of 9, and we won 1.000 against an opponent
+                # lobotomised by OUR own training setup. With no map the
+                # heuristic is used, and nothing of `tile_task` enters here
+                # -neither its preference order nor its value formulas-.
                 import math
                 options = tile_options(obs, farm, x, y, free, ctx, macro)
-                # `_puede` ES LEGALIDAD, no una preocupacion de asignacion: el
-                # the engine IGNORES the action if the unit is not carrying
-                # what it consumes.
-                # Con la heuristica daba igual -ofrecia otra cosa-, pero al
-                # committing to ONE verb per tile decides. Measured without
-                # filtro: la red elegia PLACE en el 95 % de las casillas, el
-                # 66.9% of the tasks could be executed by nobody, 86% of
-                # PASS y 3 036 $.
-                # REVERTIDO tras medirlo: filtrar aqui cambia un bloqueo por
-                # otro. Sin filtro, 10.7 tareas/turno y 6 727 $; con filtro,
-                # 0 % de tareas inejecutables pero 3.8 tareas/turno y 4 484 $,
-                # because a tile asking for FEED DISAPPEARS when nobody
-                # lleva trigo y entonces nadie va a buscarlo. El `carried`
-                # agregado esta en la observacion, asi que evitarlo es
-                # learnable; teaching it by CLONING is not, because the expert
-                # nunca esta en esa situacion.
+                # Filtering by what the unit CARRIES is legality, not an
+                # assignment concern: the engine IGNORES the action if the unit
+                # is not carrying what it consumes. With the heuristic it made
+                # no difference -it offered something else- but committing to
+                # ONE verb per tile makes it decide. Measured without the
+                # filter: the network chose PLACE on 95% of tiles, 66.9% of the
+                # tasks could be executed by nobody, 86% PASS and $3,036.
+                #
+                # REVERTED after measuring it: filtering here trades one block
+                # for another. Without the filter, 10.7 tasks/turn and $6,727;
+                # with it, 0% unexecutable tasks but 3.8 tasks/turn and $4,484,
+                # because a tile asking for FEED DISAPPEARS when nobody carries
+                # wheat and then nobody goes to fetch it. The aggregate
+                # `carried` is in the observation, so avoiding it is learnable;
+                # teaching it by CLONING is not, because the expert is never in
+                # that situation.
                 if FILTER_BY_INVENTORY and _turn_invs:
                     options = [o_ for o_ in options
                                 if any(_can_do(iv, o_[1]) for iv in _turn_invs)]
                 if not options:
                     continue
-                if verb_map is not None:
-                    k, op = max(options,
-                                key=lambda o: float(verb_map[o[0]][y][x]))
-                    # Only the LEARNER brings a verb map; the opponent does not,
-                    # so this says who accumulates without passing flags down
-                    # the pipe.
-                    if MASK_ACC is not None:
-                        MASK_ACC[0, y, x] = 1.0        # el valor decidio aqui
-                        if len(options) > 1:
-                            for _k, _ in options:
-                                MASK_ACC[1 + _k, y, x] = 1.0   # hubo comparacion
-                else:
-                    k, op = options[0]
+                k, op = max(options,
+                            key=lambda o: float(verb_map[o[0]][y][x]))
+                # Only the LEARNER brings a verb map; the opponent does not, so
+                # this says who accumulates without passing flags down the
+                # pipe.
+                if MASK_ACC is not None:
+                    MASK_ACC[0, y, x] = 1.0        # the value decided here
+                    if len(options) > 1:
+                        for _k, _ in options:
+                            MASK_ACC[1 + _k, y, x] = 1.0   # there was a choice
                 r = float(value_map[y][x]) if value_map is not None else 0.0
                 v = math.copysign(
                     math.expm1(abs(min(MAP_CAP, MAP_GAIN * r))), r)
@@ -794,11 +784,11 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                 continue
             t = tile_task(obs, farm, x, y, free, ctx, macro)
             if t is None and verb_map is not None and value_map is not None:
-                # SEGUNDA PASADA, y el orden importa. Resolviendolo aqui, una
-                # extra tile with PLANT consumed the planting budget and
-                # strangled the plantings the heuristic would have proposed:
-                # medido, 8,62 tareas/turno caian a 5,78 -el mecanismo QUITABA
-                # en vez de anadir-. Apuntandolas y resolviendolas al final,
+                # SECOND PASS, and the order matters. Resolved here, an extra
+                # tile with PLANT consumed the planting budget and strangled
+                # the plantings the heuristic would have proposed: measured,
+                # 8.62 tasks/turn fell to 5.78 -the mechanism was TAKING AWAY
+                # instead of adding-. Noted down and resolved at the end,
                 # the heuristic decides first at full capacity and the extra
                 # tiles fill whatever is left. That makes it purely additive
                 # and the learned threshold the only dial.
@@ -825,12 +815,12 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
     # considers legal. LEGALITY from the engine, the VERB chosen by the network
     # among the legal options and the VALUE emitted by the network; the
     # THRESHOLD deciding whether it deserves a unit is the learned
-    # `f_extra_threshold`. No hay orden de preferencia ni valor escritos a mano.
+    # `f_extra_threshold`. There is no hand-written preference order or value.
     #
-    # It comes after the main sweep on purpose: resolving them inline, an
-    # extra tile with PLANT consumed the budget and strangled the
-    # plantar de la heuristica -medido, 8,62 tareas/turno caian a 5,78-. Aqui
-    # the heuristic has already decided at full capacity and this only fills.
+    # It comes after the main sweep on purpose: resolved inline, an extra tile
+    # with PLANT consumed the budget and strangled the heuristic's plantings
+    # -measured, 8.62 tasks/turn fell to 5.78-. Here the heuristic has already
+    # decided at full capacity and this only fills what is left.
     for _x, _y in _deferred:
         _ex = tile_options(obs, farm, _x, _y, free, ctx, macro)
         if not _ex:
@@ -889,31 +879,25 @@ def _can_do(inv, op) -> bool:
 # constant STICKINESS = 0.0 here -a bonus for keeping the previous turn's
 # destination- declared and never read: tuning it did absolutely nothing. The
 # measurement that motivated it still stands and is still interesting: 23.8%
-# de las decisiones de destino son un cambio estando YA EN RUTA, porque el
-# the Hungarian reassigns from scratch every turn. A change is not
-# desperdicio -puede aparecer algo urgente-, asi que si algun dia se implementa,
-# the weight must be LEARNED like the others, not set by hand.
-
-# KEPT FOR COMPATIBILITY; it no longer branches anything. Three modes existed
-# -"residuo", "directo", "ops"- so they could be measured against each other.
-# They are measured: `ops` -the network emits value AND verb- is the only one
-# with full learning freedom and the only one used. Historical scripts still
-# assign this, so the name survives without changing behaviour.
+# of the destination decisions are a change made ALREADY EN ROUTE, because the
+# Hungarian reassigns from scratch every turn. A change is not waste -something
+# urgent may have appeared- so if it is ever implemented, the weight must be
+# LEARNED like the others, not set by hand.
 
 
 def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0) -> list:
     """Minimum-cost assignment: maximises the TOTAL discounted value.
 
-    El greedy falla de una forma concreta y frecuente: la primera unidad se
-    takes a task that was equally close to another unit, and leaves that other
-    one with nothing nearby. Since the order of units means nothing, that loss
-    is pure arbitrariness.
+    The greedy fails in a specific and frequent way: the first unit takes a
+    task that was equally close to another unit, and leaves that other one with
+    nothing nearby. Since the order of units means nothing, that loss is pure
+    arbitrariness.
 
-    Las `n` columnas ficticias de valor 0 hacen dos cosas a la vez: garantizan
-    that there are at least as many columns as rows, and they ensure no unit
-    accepts a negative-value task -a free dummy always remains, which
-    es mejor-. `best_crop` puede devolver un cultivo de beneficio negativo
-    when capital dominates, so the case does happen.
+    The `n` dummy columns of value 0 do two things at once: they guarantee
+    there are at least as many columns as rows, and they ensure no unit accepts
+    a negative-value task -a free dummy always remains, which is better-.
+    `best_crop` can return a crop of negative profit when capital dominates, so
+    the case does happen.
     """
     tiles = list(tasks)
     n = len(units)
@@ -949,12 +933,13 @@ def assign_units(obs, free_capacity: int,
     """One action per unit, maximising the discounted value of the set.
 
     The budget is not the problem it was feared to be: 16 units x 116 columns
-    solve exactly in 0.23 ms, against the ~83 ms average allowed by the
-    bolsa de 60 s para 720 turnos (ver `tests/test_assign.py`).
+    solve exactly in 0.23 ms, against the ~83 ms average allowed by the 60 s
+    given for 720 turns (see `tests/test_assign.py`).
+
+    ONE METHOD ONLY. The greedy and the route assigner were kept to be measured
+    against; they are measured and the Hungarian wins. Unused paths are just
+    surface for a bug to hide in.
     """
-    # ONE METHOD ONLY. The greedy and the route assigner were kept to be
-    # measured against; they are measured and the Hungarian wins. Three
-    # unused paths are just surface for a bug to hide in.
     me = int(obs["player"])
     farm = obs["farms"][me]
     units = [tuple(farm["farmer"])] + [tuple(p) for p in farm["hands"]]
