@@ -1,15 +1,15 @@
-"""Clon exacto del motor de Kaggriculture, sin el envoltorio de kaggle-environments.
+"""Exact clone of the Kaggriculture engine, without the kaggle-environments wrapper.
 
-La clave: no re-implementamos las reglas, llamamos al `interpreter` del propio
-motor instalado sobre un estado duck-typeado. Es exacto por construccion y no se
-desincroniza cuando Kaggle publique una version nueva.
+The key point: the rules are not re-implemented. It calls the `interpreter` of
+the installed engine itself over a duck-typed state. That is exact by
+construction and cannot desynchronise when Kaggle ships a new version.
 
-Lo que nos ahorramos frente a `kaggle_environments.make(...)`:
-  - validacion de esquema y copia de acciones en cada turno
-  - grabacion del historico completo de estados (720 estados profundos)
-  - la maquinaria de agentes (subprocesos, timeouts, logs)
+What it saves against `kaggle_environments.make(...)`:
+  - schema validation and action copying every turn
+  - recording the full state history (720 deep states)
+  - the agent machinery (subprocesses, timeouts, logs)
 
-Uso tipico::
+Typical use::
 
     env = FastEnv(seed=7)
     obs = env.reset()
@@ -17,7 +17,7 @@ Uso tipico::
         obs, done = env.step([a0, a1])
     print(env.rewards())
 
-Para rollouts imaginados desde una observacion real (en partida)::
+For imagined rollouts from a real in-game observation::
 
     env = FastEnv.from_observation(obs, seed_guess=0)
     env.step([my_action, guessed_opponent_action])
@@ -35,11 +35,11 @@ from . import spec
 PASS_ACTION: dict = {"farmer": ["PASS"], "hands": [], "market": []}
 
 
-# --- copia rapida -----------------------------------------------------------
-# OJO con Struct: kaggle_environments.utils.Struct mantiene una copia paralela
-# en __dict__, asi que `s["k"] = v` NO cambia `s.k`. El interpreter lee la
-# accion por atributo (`s.action`) y el step por item (`get(obs,"step")`), asi
-# que hay que escribir SIEMPRE por atributo para tocar los dos lados.
+# --- fast copy --------------------------------------------------------------
+# BEWARE of Struct: kaggle_environments.utils.Struct keeps a parallel copy in
+# __dict__, so `s["k"] = v` does NOT change `s.k`. The interpreter reads the
+# action by attribute (`s.action`) and the step by item (`get(obs,"step")`), so
+# writes must ALWAYS go through the attribute to touch both sides.
 def _fast_copy(x: Any) -> Any:
     t = type(x)
     if t is list:
@@ -52,11 +52,11 @@ def _fast_copy(x: Any) -> Any:
 
 
 def _agent_state(player: int, observation: dict) -> Struct:
-    """Solo los dos niveles superiores necesitan acceso por atributo.
+    """Only the top two levels need attribute access.
 
-    Por debajo (farms, tiles, market, town) el motor usa item access y .get(),
-    asi que dejarlos como dicts planos es identico en comportamiento y bastante
-    mas barato de copiar.
+    Below that (farms, tiles, market, town) the engine uses item access and
+    .get(), so leaving them as plain dicts is behaviourally identical and
+    considerably cheaper to copy.
     """
     return Struct(
         action=_fast_copy(PASS_ACTION),
@@ -81,7 +81,7 @@ def _blank_observation() -> dict:
 
 
 class FastEnv:
-    """Motor de Kaggriculture sobre dicts planos."""
+    """The Kaggriculture engine over plain dicts."""
 
     def __init__(
         self,
@@ -99,7 +99,7 @@ class FastEnv:
         self.state: list = []
         self._n_recorded = 0
 
-    # -- propiedades que el interpreter consulta ----------------------------
+    # -- properties the interpreter queries ---------------------------------
     @property
     def done(self) -> bool:
         return all(s.status != "ACTIVE" for s in self.state) if self.state else False
@@ -112,7 +112,7 @@ class FastEnv:
     def day(self) -> int:
         return self.state[0].observation["day"]
 
-    # -- ciclo de vida -------------------------------------------------------
+    # -- lifecycle -----------------------------------------------------------
     def reset(self) -> list:
         self.state = [_agent_state(i, _blank_observation()) for i in range(self.n_agents)]
         _eng.interpreter(self.state, self)          # rama _initialize
@@ -121,7 +121,7 @@ class FastEnv:
         return self.observations()
 
     def step(self, actions: list[dict]) -> tuple[list, bool]:
-        """Aplica un turno. `actions[i]` es el dict de accion del jugador i."""
+        """Apply one turn. `actions[i]` is player i's action dict."""
         for i, a in enumerate(actions):
             self.state[i].action = a if isinstance(a, dict) else _fast_copy(PASS_ACTION)
         _eng.interpreter(self.state, self)
@@ -133,9 +133,9 @@ class FastEnv:
                     s.status = "DONE"
         return self.observations(), self.done
 
-    # -- lectura -------------------------------------------------------------
+    # -- reading -------------------------------------------------------------
     def observations(self) -> list:
-        """Observacion por jugador, con los campos compartidos ya propagados."""
+        """Per-player observation, with shared fields already propagated."""
         obs0 = self.state[0].observation
         for i in range(1, self.n_agents):
             oi = self.state[i].observation
@@ -151,7 +151,7 @@ class FastEnv:
         farms = self.state[0].observation["farms"]
         return [float(f["money"]) for f in farms]
 
-    # -- clonado para rollouts imaginados ------------------------------------
+    # -- cloning for imagined rollouts ---------------------------------------
     def clone(self) -> "FastEnv":
         new = FastEnv.__new__(FastEnv)
         new.configuration = self.configuration
@@ -159,8 +159,8 @@ class FastEnv:
         new.n_agents = self.n_agents
         new._n_recorded = self._n_recorded
         new.state = [_fast_copy(s) for s in self.state]
-        # Re-enlaza los objetos compartidos: el interpreter escribe via farms[0],
-        # y _fast_copy los habria duplicado por jugador.
+        # Re-link the shared objects: the interpreter writes via farms[0], and
+        # _fast_copy would have duplicated them per player.
         obs0 = new.state[0].observation
         for i in range(1, new.n_agents):
             oi = new.state[i].observation
@@ -169,7 +169,7 @@ class FastEnv:
             oi.town = obs0["town"]
         return new
 
-    # -- reconstruccion desde una observacion real ---------------------------
+    # -- reconstruction from a real observation ------------------------------
     @classmethod
     def from_observation(
         cls,
@@ -178,20 +178,20 @@ class FastEnv:
         seed_guess: int | None = None,
         assume_opponent_private: Callable[[Any, int], dict] | None = None,
     ) -> "FastEnv":
-        """Construye un estado simulable desde la observacion de un agente.
+        """Build a simulable state from an agent's observation.
 
-        `seed_guess=None` (por defecto) sortea una semilla. Importa: hierbas y
-        desbloqueo de tiendas salen de `Random((seed*1000003) ^ day)`, asi que
-        con una semilla FIJA un rollout imaginado que cruce un cambio de dia
-        genera siempre la misma tienda equivocada -y la tienda decide que
-        productos drena el pueblo-. Con semilla aleatoria el motor las muestrea
-        con la tasa y la distribucion correctas, que es lo mejor que se puede
-        hacer con algo que no es observable.
+        `seed_guess=None` (the default) draws a random seed. This matters:
+        weeds and shop unlocks come from `Random((seed*1000003) ^ day)`, so
+        with a FIXED seed an imagined rollout crossing a day boundary always
+        generates the same wrong shop -and the shop decides which products the
+        town drains-. With a random seed the engine samples them at the correct
+        rate and distribution, which is the best that can be done with
+        something unobservable.
 
-        El cobertizo, las semillas y los inventarios del rival son privados: hay
-        que suponerlos. `assume_opponent_private(obs, opp_id)` es el gancho donde
-        enchufar un modelo de rival; por defecto se asume vacio, que es justo el
-        sesgo que el residual neuronal tiene que aprender a corregir.
+        The opponent's shed, seeds and unit inventories are private and have to
+        be assumed. `assume_opponent_private(obs, opp_id)` is the hook for
+        plugging in an opponent model; by default they are assumed empty, which
+        is exactly the bias a neural residual would have to learn to correct.
         """
         import random as _random
         me = int(obs["player"])
@@ -210,7 +210,7 @@ class FastEnv:
                 private = _fast_copy(assume_opponent_private(obs, i))
             else:
                 private = _eng._new_private()
-                # el rival tiene tantos inventarios como peones contratados
+                # the opponent has as many inventories as hands hired
                 private["inventories"] = [{} for _ in range(1 + len(farms[i]["hands"]))]
             state.append(_agent_state(i, {
                 "step": int(obs["step"]),
@@ -234,10 +234,10 @@ def run_episode(
     configuration: dict | None = None,
     on_transition: Callable[[int, list, list, list], None] | None = None,
 ) -> tuple[list[float], int]:
-    """Juega un episodio completo. Devuelve (recompensas, turnos jugados).
+    """Play a full episode. Returns (rewards, turns played).
 
-    `on_transition(step, obs_antes, acciones, obs_despues)` se llama en cada
-    turno; es el gancho de recoleccion de datos.
+    `on_transition(step, obs_before, actions, obs_after)` is called every turn;
+    it is the data-collection hook.
     """
     env = FastEnv(configuration=configuration, seed=seed)
     obs = env.reset()

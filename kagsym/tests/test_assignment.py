@@ -1,10 +1,10 @@
-"""El humgaro propio contra scipy: mismo optimo, siempre.
+"""Our Hungarian against scipy: the same optimum, always.
 
-scipy se usa SOLO aqui, como oraculo de test. El agente no lo importa nunca
--el contenedor de submission puede no traerlo, y esa es toda la razon de
-escribir el algoritmo a mano-.
+scipy is used ONLY here, as a test oracle. The agent never imports it -the
+submission container may not ship it, and that is the whole reason for writing
+the algorithm by hand-.
 
-    python tests/test_assign.py
+    python -m pytest kagsym/tests/test_assignment.py
 """
 from __future__ import annotations
 
@@ -20,19 +20,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from kagsym.symbolic.assignment import max_assignment
 
 
-def _optimo_scipy(m: np.ndarray) -> float:
+def _scipy_optimum(m: np.ndarray) -> float:
     rows, cols = linear_sum_assignment(m, maximize=True)
     return float(m[rows, cols].sum())
 
 
-def _suma(m: np.ndarray, assignment: list[int]) -> float:
+def _sum_values(m: np.ndarray, assignment: list[int]) -> float:
     return float(sum(m[i, j] for i, j in enumerate(assignment)))
 
 
-def test_coincide_con_scipy(n_casos: int = 200, verbose: bool = True) -> bool:
-    """Matrices aleatorias, rectangulares, con valores positivos y negativos."""
-    peor = 0.0
-    for seed in range(n_casos):
+def test_coincide_con_scipy(n_cases: int = 200, verbose: bool = True) -> bool:
+    """Random rectangular matrices, with positive and negative values."""
+    worst = 0.0
+    for seed in range(n_cases):
         rng = np.random.default_rng(seed)
         n = int(rng.integers(1, 14))
         m = int(rng.integers(n, n + 40))
@@ -40,27 +40,27 @@ def test_coincide_con_scipy(n_casos: int = 200, verbose: bool = True) -> bool:
         assignment = max_assignment(mat.tolist())
         assert len(set(assignment)) == n, f"columnas repetidas en semilla {seed}"
         assert all(0 <= j < m for j in assignment), f"columna fuera de rango ({seed})"
-        mio, opt = _suma(mat, assignment), _optimo_scipy(mat)
-        peor = max(peor, abs(mio - opt))
-        assert abs(mio - opt) < 1e-6, f"subóptimo en semilla {seed}: {mio} vs {opt}"
+        ours, opt = _sum_values(mat, assignment), _scipy_optimum(mat)
+        worst = max(worst, abs(ours - opt))
+        assert abs(ours - opt) < 1e-6, f"suboptimal at seed {seed}: {ours} vs {opt}"
     if verbose:
-        print(f"OK: {n_casos} matrices aleatorias, desviacion maxima del optimo {peor:.2e}")
+        print(f"OK: {n_cases} random matrices, max deviation from the optimum {worst:.2e}")
     return True
 
 
-def test_empates_y_ceros(n_casos: int = 100, verbose: bool = True) -> bool:
-    """El caso REAL: muchas casillas vacias valen exactamente lo mismo y las
-    columnas ficticias valen 0. Los empates rompen implementaciones ingenuas."""
-    for seed in range(n_casos):
+def test_empates_y_ceros(n_cases: int = 100, verbose: bool = True) -> bool:
+    """The REAL case: many empty tiles are worth exactly the same and the dummy
+    columns are worth 0. Ties break naive implementations."""
+    for seed in range(n_cases):
         rng = np.random.default_rng(10_000 + seed)
         n = int(rng.integers(1, 12))
         m = n + int(rng.integers(0, 20))
         mat = rng.choice([0.0, 0.0, 0.0, 1.0, 2.5, 2.5, -3.0], size=(n, m))
         assignment = max_assignment(mat.tolist())
-        mio, opt = _suma(mat, assignment), _optimo_scipy(mat)
-        assert abs(mio - opt) < 1e-6, f"subóptimo con empates en semilla {seed}: {mio} vs {opt}"
+        ours, opt = _sum_values(mat, assignment), _scipy_optimum(mat)
+        assert abs(ours - opt) < 1e-6, f"suboptimal with ties at seed {seed}: {ours} vs {opt}"
     if verbose:
-        print(f"OK: {n_casos} matrices con empates, ceros y negativos")
+        print(f"OK: {n_cases} matrices with ties, zeros and negatives")
     return True
 
 
@@ -68,35 +68,35 @@ def test_bordes(verbose: bool = True) -> bool:
     assert max_assignment([]) == []
     assert max_assignment([[1.0, 9.0, 3.0]]) == [1]
     mat = [[1.0, 2.0, 3.0], [3.0, 1.0, 2.0], [2.0, 3.0, 1.0]]
-    assert _suma(np.array(mat), max_assignment(mat)) == 9.0
+    assert _sum_values(np.array(mat), max_assignment(mat)) == 9.0
     try:
-        max_assignment([[1.0], [2.0]])           # menos columnas que filas
+        max_assignment([[1.0], [2.0]])           # fewer columns than rows
     except ValueError:
         pass
     else:
         raise AssertionError("deberia exigir n <= m")
     if verbose:
-        print("OK: casos borde (vacio, una fila, cuadrada, n>m)")
+        print("OK: edge cases (empty, one row, square, n>m)")
     return True
 
 
 def test_presupuesto(verbose: bool = True) -> bool:
-    """Peor caso realista: 16 unidades x (100 casillas + 16 ficticias).
+    """Realistic worst case: 16 units x (100 tiles + 16 dummies).
 
-    El limite duro es 1 s/turno con bolsa de 60 s para 720 turnos (~83 ms de
-    media), y la asignacion es solo una parte del turno.
+    The hard limit is 1 s/turn with a 60 s pool for 720 turns (~83 ms on
+    average), and the assignment is only one part of the turn.
     """
     rng = random.Random(7)
     n, m = 16, 116
-    peor = 0.0
+    worst = 0.0
     for _ in range(100):
         mat = [[rng.uniform(0, 100) for _ in range(m)] for _ in range(n)]
         t0 = time.perf_counter()
         max_assignment(mat)
-        peor = max(peor, time.perf_counter() - t0)
-    assert peor < 0.020, f"demasiado lento: {peor*1000:.1f} ms"
+        worst = max(worst, time.perf_counter() - t0)
+    assert worst < 0.020, f"demasiado lento: {worst*1000:.1f} ms"
     if verbose:
-        print(f"OK: peor caso {n}x{m} en {peor*1000:.2f} ms (presupuesto ~83 ms de turno)")
+        print(f"OK: worst case {n}x{m} en {worst*1000:.2f} ms (budget ~83 ms per turn)")
     return True
 
 
@@ -105,4 +105,4 @@ if __name__ == "__main__":
     test_empates_y_ceros()
     test_bordes()
     test_presupuesto()
-    print("\nTODOS OK")
+    print("\nALL OK")

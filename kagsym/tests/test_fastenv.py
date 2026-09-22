@@ -1,7 +1,7 @@
-"""FastEnv tiene que ser indistinguible del motor real, turno a turno.
+"""FastEnv must be indistinguishable from the real engine, turn by turn.
 
-Si este test falla, todo lo que hay encima (datos, residual, DAgger) esta
-aprendiendo sobre una dinamica equivocada. Es el test que no se puede saltar.
+If this test fails, everything built on top is learning against the wrong
+dynamics. This is the test that cannot be skipped.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from kagsym.fastenv import FastEnv, _fast_copy
 
 
 def _plain(x):
-    """Normaliza Struct/dict/list a algo comparable y hasheable por json."""
+    """Normalise Struct/dict/list into something json-comparable."""
     if isinstance(x, dict):
         return {k: _plain(v) for k, v in sorted(x.items())}
     if isinstance(x, list):
@@ -37,8 +37,8 @@ def _snapshot(obs_list):
     })
 
 
-# random_agent del motor usa random.Random() sin semilla: no es reproducible.
-# Usamos nuestras politicas deterministas para poder comparar los dos motores.
+# The engine's random_agent uses random.Random() with no seed, so it is not
+# reproducible. We use our deterministic policies to compare the two engines.
 from kagworld.policies import make_random_policy, make_scripted_policy
 
 
@@ -52,7 +52,7 @@ def test_equivalence(n_steps=240, seed=1234, verbose=True):
     fast = FastEnv(configuration={"episodeSteps": n_steps + 2}, seed=seed)
     fast_obs = fast.reset()
 
-    # El seed resuelto tiene que coincidir; si no, las hierbas divergen.
+    # The resolved seed must match; otherwise the weeds diverge.
     assert real.info.get("seed") == fast.info["seed"], (
         f"seed real={real.info.get('seed')} fast={fast.info['seed']}")
 
@@ -78,19 +78,19 @@ def test_equivalence(n_steps=240, seed=1234, verbose=True):
             kb = json.dumps(b, sort_keys=True)
             for key in a:
                 if a[key] != b[key]:
-                    print(f"  campo divergente: {key}")
+                    print(f"  diverging field: {key}")
                     print(f"    real: {json.dumps(a[key])[:400]}")
                     print(f"    fast: {json.dumps(b[key])[:400]}")
-            raise AssertionError(f"estado divergente en t={t} (len {len(ka)} vs {len(kb)})")
+            raise AssertionError(f"state diverges at t={t} (len {len(ka)} vs {len(kb)})")
 
     if verbose:
-        print(f"OK: {n_steps} turnos identicos bit a bit (seed={seed})")
-        print(f"    dinero final real={[f['money'] for f in real_obs[0]['farms']]}")
-        print(f"    dinero final fast={[f['money'] for f in fast_obs[0]['farms']]}")
+        print(f"OK: {n_steps} turns identical bit for bit (seed={seed})")
+        print(f"    final money real={[f['money'] for f in real_obs[0]['farms']]}")
+        print(f"    final money fast={[f['money'] for f in fast_obs[0]['farms']]}")
     return True
 
 
 if __name__ == "__main__":
     for s in (1234, 99, 20260919):
         test_equivalence(n_steps=240, seed=s)
-    print("\nTODOS LOS SEEDS OK")
+    print("\nALL SEEDS OK")
