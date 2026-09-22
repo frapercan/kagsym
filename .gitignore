@@ -1,0 +1,77 @@
+# LISTA BLANCA. Se ignora todo y se rescata SOLO lo que corre en produccion:
+# el agente que se envia y el lazo que lo entrena. El historial de medidas, los
+# checkpoints, los agentes de terceros y los datos viven en el disco de trabajo
+# pero NO en el repositorio.
+#
+# OJO: en .gitignore un comentario al final de linea NO se separa del patron,
+# asi que cada regla va sola.
+*
+!.gitignore
+!README.md
+!LICENSE
+# el motor derivado exactamente: acciones, precondiciones, recompensa
+!ESPECIFICACION.md
+!pyproject.toml
+
+# ---- herramientas de medida y de construccion de la escalera ----
+!herramientas/
+herramientas/*
+!herramientas/*.py
+
+# ---- el paquete ----
+!kagsym/
+kagsym/*
+!kagsym/__init__.py
+# hechos del motor
+!kagsym/spec.py
+# clon exacto del motor
+!kagsym/fastenv.py
+# codificacion de la observacion
+!kagsym/obs.py
+# el vector aprendido y sus 30 parametros
+!kagsym/macro.py
+# conformacion de recompensa
+!kagsym/potencial.py
+# la recompensa
+!kagsym/recompensa.py
+# un paso = un dia
+!kagsym/entorno.py
+# N partidas en paralelo
+!kagsym/entorno_par.py
+# migracion de checkpoints
+!kagsym/migrar_ckpt.py
+# registro de metricas
+!kagsym/tracking.py
+# huella del codigo
+!kagsym/version.py
+
+!kagsym/exacto/
+kagsym/exacto/*
+!kagsym/exacto/__init__.py
+!kagsym/exacto/asignacion.py
+!kagsym/exacto/ejecutor.py
+!kagsym/exacto/mercado.py
+!kagsym/exacto/tareas.py
+
+!kagsym/redes/
+kagsym/redes/*
+!kagsym/redes/__init__.py
+!kagsym/redes/bloques.py
+!kagsym/redes/mundo.py
+
+!kagsym/cli/
+kagsym/cli/*
+!kagsym/cli/__init__.py
+!kagsym/cli/entrenar_e2e.py
+
+!kagsym/pruebas/
+kagsym/pruebas/*
+!kagsym/pruebas/__init__.py
+!kagsym/pruebas/test_asignacion.py
+!kagsym/pruebas/test_fastenv.py
+
+# nunca, aunque encajen arriba
+*.bak
+*.bak_*
+*.pyc
+__pycache__/
