@@ -514,6 +514,10 @@ WHEAT_TRIP_VALUE = 2.0      # a wheat pickup, likewise
 WATER_IDLE_VALUE = 0.4      # watering with no yield in sight
 FEED_VALUE = 2.0            # feeding: two days unfed and the animal escapes
 CARE_VALUE = 0.5            # caring for an animal
+# MULTI-TURN COMMITMENT, as a fraction of the best alternative. >= 1 means a
+# unit in flight never keeps its destination, which is how the assignment
+# behaved before this existed. Learned (`f_commit`).
+COMMIT_FRACTION = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -984,6 +988,29 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
             if sum(1 for j in range(len(tiles)) if value[i][j] > 0.0) > 1:
                 for _c in range(_k):
                     MASK_ACC[1 + N_OPS + _k + _c, pos[1], pos[0]] = 1.0
+
+    # RESERVED TILES. A unit already in flight keeps its destination while
+    # that destination is still worth at least COMMIT_FRACTION of the best
+    # tile open to it, and the tile is taken out of the pool so nobody can
+    # outbid it. With the fraction at its default of 2.0 nothing is ever
+    # reserved -the destination is one of the alternatives, so it cannot be
+    # twice the best of them- and the matching is the one of always.
+    if COMMIT_FRACTION < 1.0 and previous is not None:
+        for i, pos in enumerate(units):
+            t = previous.get(i)
+            if t is None or t not in tasks or t == pos:
+                continue                      # no errand, or already arrived
+            j = tiles.index(t)
+            if value[i][j] <= 0.0:
+                continue
+            _best = max(value[i][:len(tiles)])
+            if value[i][j] >= COMMIT_FRACTION * _best:
+                for i2 in range(n):           # the tile is reserved
+                    if i2 != i:
+                        value[i2][j] = 0.0
+                for j2 in range(len(tiles)):  # and the unit is committed
+                    if j2 != j:
+                        value[i][j2] = 0.0
 
     actions = []
     _assigned = set()

@@ -27,7 +27,7 @@ from . import spec
 N_LEVELS = 8         # how much of each thing
 CATEGORIES = ["land", "feed", "animal", "sell", "seed", "hand"]
 N_PRIORITIES = len(CATEGORIES)
-N_EXPOSED = 36       # the hand-set ones; see the block in `Macro`
+N_EXPOSED = 37       # the hand-set ones; see the block in `Macro`
 N_MARKET = 9         # one learned value multiplier per product
 N_TURN = 5           # coefficients of the PER-TURN selling rule
 N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
@@ -212,6 +212,20 @@ class Macro:
     f_water_idle: float = 0.5      # 0.4   watering with no yield in sight
     f_feed_value: float = 0.5      # 2.0   feeding an animal
     f_care_value: float = 0.5      # 0.5   caring for an animal
+    # ------------------------------------------------------------------
+    # MULTI-TURN COMMITMENT. The assignment is solved from scratch every turn,
+    # so a unit three steps into an errand can lose its tile to another unit
+    # that happens to value it more right now, and the three turns already
+    # walked are thrown away. Measured with `tools/why_pass.py`: 94.1% of all
+    # PASSes are a unit that HAD positively valued tiles and lost every one of
+    # them to somebody else.
+    #
+    # The dial is a FRACTION of the best alternative: a unit in flight keeps
+    # its destination while that destination is worth at least `commit` times
+    # the best tile still open to it. Since the destination is itself one of
+    # the alternatives, any value >= 1 means "never keep it", which is exactly
+    # today's behaviour and therefore the default. Learning can lower it.
+    f_commit: float = 0.5          # 2.0   >= 1 disables the commitment
 
     @staticmethod
     def default() -> "Macro":
@@ -309,6 +323,7 @@ PARAM_TABLE = [
     ("water_idle",        0.40,  "positive"),
     ("feed_value",        2.00,  "positive"),
     ("care_value",        0.50,  "positive"),
+    ("commit",            2.00,  "positive"),
 ]
 
 # Coefficients of the per-turn selling rule. They are NOT in PARAM_TABLE
@@ -412,6 +427,7 @@ def apply_params(macro: Macro) -> None:
     _T.WATER_IDLE_VALUE        = p["water_idle"]
     _T.FEED_VALUE              = p["feed_value"]
     _T.CARE_VALUE              = p["care_value"]
+    _T.COMMIT_FRACTION         = p["commit"]
     global PRIORITY_TEMP
     PRIORITY_TEMP = p["priority_temp"]
     global ACTIONS_PER_ANIMAL
