@@ -145,7 +145,7 @@ LIGAS = [
     ( 6,  6,    3,   3088,  1.03),   # L0  minima viable
     ( 8,  8,    3,   3291,  1.10),   # L1
     (10, 10,    3,   3602,  1.20),   # L2
-    (13, 13,    5,  10565,  3.54),   # L3  tras la discontinuidad
+    (13, 13,    5,  10565,  3.54),   # L3  after the discontinuity
     (21, 21,    5,  27639,  9.21),   # L4
     (24, 30,    3,  60635, 21.40),   # L5  escala de COMPETICION
     (24, 30,    5,  22873, 16.70),   # L6
@@ -166,65 +166,39 @@ def main():
     ap.add_argument("--steps", type=int, default=720)
     ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--minibatches", type=int, default=1,
-                    help="trozos por epoca. 1 = lote completo (como hasta ahora). "
-                         "Mismo computo, N veces mas pasos de optimizador.")
+                    help="chunks per epoch. 1 = full batch.")
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--gamma", type=float, default=0.995)
     ap.add_argument("--lam", type=float, default=0.95)
-    ap.add_argument("--sigma", type=float, default=0.15, help="sigma del canal de VALOR")
+    ap.add_argument("--sigma", type=float, default=0.15, help="sigma of the VALUE channel")
     ap.add_argument("--sigma-verb", type=float, default=0.03,
                     help="sigma de los canales de VERBO (logits)")
     ap.add_argument("--level", type=int, default=2, help="peldano de ESCALERA")
     ap.add_argument("--selfplay-quota", type=int, default=2,
-                    help="trabajadores SIEMPRE en autojuego, fuera del reparto "
-                         "por informacion")
+                    help="workers ALWAYS on self-play, outside the information split")
     ap.add_argument("--target-quota", type=int, default=3,
                     help="trabajadores SIEMPRE en los peldanos sin tope (el "
                          "rival de competicion)")
     ap.add_argument("--auto-curriculum", action="store_true",
-                    help="reparte los trabajadores entre los peldanos en "
-                         "proporcion a la INFORMACION que da cada uno, p*(1-p) "
-                         "de su tasa de victoria: maxima en el empate, CERO en "
-                         "los extremos. Sustituye a --desliza y su umbral de "
-                         "0,85, que era otra constante a ojo. Un peldano nunca "
-                         "probado arranca en p=0,5 -informacion maxima-, asi "
-                         "que la exploracion no necesita otro numero.")
+                    help="split workers across rungs in proportion to Bernoulli information p(1-p)"
+                         "probado arranca en p=0,5 -informacion maxima-, asi ")
     ap.add_argument("--rival-macros", default=None,
-                    help="rivales POR TRABAJADOR: rutas .npy separadas por coma, "
-                         "con '-' donde se quiera dejar el agente publico. "
-                         "Permite mezclar publicos con politicas NUESTRAS "
-                         "congeladas en la misma escalera. Sin esto, el banco "
-                         "sembrado solo entra por la via de --autojuego y con "
-                         "--rejilla se queda sin usar: sembrado y mudo.")
+                    help="opponents PER WORKER: comma-separated .npy paths, '-' to keep the public agent")
     ap.add_argument("--slide", type=float, default=0.0,
-                    help="tasa de victoria a partir de la cual un peldano se "
-                         "considera EXPRIMIDO y la escalera se desliza hacia "
-                         "arriba, quitandolo del muestreo. 0 = desactivado. "
-                         "Sin esto seguimos gastando presupuesto en rivales que "
-                         "ganamos siempre, y ahi el termino de victoria esta "
-                         "clavado en +1 y no da gradiente -el mismo problema de "
+                    help="win rate above which a rung is considered EXHAUSTED and the ladder slides up. 0 = off"
                          "saturacion, pero autoinfligido-.")
     ap.add_argument("--levels", default=None,
-                    help="peldanos de ESCALERA por TRABAJADOR, separados por "
-                         "coma: '2,4,5,2'. Mezcla ESTILOS de rival, no solo "
-                         "dificultad. Los publicos no se parecen -medido: v48 "
-                         "puntua mas (153.720) pero v16-rc5 es el que menos nos "
-                         "deja (36.139)-, asi que entrenar contra uno solo "
+                    help="LADDER rungs PER WORKER, comma-separated"
                          "arriesga aprender a batir a ESE en vez de a jugar.")
     ap.add_argument("--force-macro", action="store_true",
-                    help="re-aplica --init DESPUES de --resume. Sin esto el "
-                         "checkpoint machaca el macro pedido, en silencio.")
+                    help="re-apply --init AFTER --resume; without it the checkpoint silently overrides the requested macro")
     ap.add_argument("--rival-macro", default=None,
-                    help="ruta .npy: el rival es NUESTRO ejecutor con ese macro")
+                    help=".npy path: the opponent is OUR executor with that macro")
     ap.add_argument("--own-rival", action="store_true",
-                    help="en los peldanos reducidos el rival es NUESTRO ejecutor "
-                         "con el macro calibrado de esa escala "
-                         "(runs/ligas/macro_{h}h{d}d.npy). Necesario porque los "
-                         "agentes publicos son cintas de 719 pasos a 24h/dia y "
+                    help="on reduced rungs the opponent is OUR executor with the macro CEM found for that scale"
                          "hacen ~0 $ en cualquier otra escala.")
     ap.add_argument("--grid", default=None,
-                    help="rejilla MEZCLADA de escalas: 'h,d,tope;h,d,tope;...'. "
-                         "Cada trabajador juega una. Excluye --mezcla y --ligas.")
+                    help="rejilla MEZCLADA de escalas: 'h,d,tope;h,d,tope;...'. ")
     ap.add_argument("--mix", default=None,
                     help="horizontes MEZCLADOS en el mismo lote, en dias: '15,20,30'. "
                          "Cada trabajador juega uno. Excluye --ligas.")
@@ -235,40 +209,26 @@ def main():
                     help="limita NUESTROS peones (curriculo); None = sin tope")
     ap.add_argument("--init", default="runs/macro_vs_v48.npy")
     ap.add_argument("--init-net", default=None,
-                    help="checkpoint preentrenado del micro (modo directo)")
+                    help="pretrained micro checkpoint")
     ap.add_argument("--promote-rival", type=float, default=0.0,
-                    help="tasa de victoria a partir de la cual el rival se "
-                         "sustituye por una copia congelada de la politica "
+                    help="win rate above which the opponent is replaced by a frozen copy of the policy"
                          "actual. 0 = desactivado. Ataca un fallo medido: al "
-                         "saturar, el termino terminal de victoria se vuelve "
-                         "CONSTANTE y deja de informar -igual que perdiendo el "
-                         "100 %% contra v48-. En L1 la tasa llego a 0,988 en el "
-                         "update 120 y los 480 updates siguientes no anadieron "
-                         "nada. Es un control de CURRICULO, no un parametro de "
-                         "la politica: no lo aprende el modelo porque no es una "
-                         "decision del juego. 0,9 deja la varianza de la senal "
                          "binaria en 0,09 de su maximo 0,25.")
     ap.add_argument("--verb-head", action="store_true",
-                    help="da a la red la cabeza de VERBOS aunque el modo no sea "
-                         "'ops'. Es lo que permite el hibrido: la heuristica "
-                         "sigue proponiendo sus casillas (modo residuo) y la red "
-                         "decide verbo y valor en las que la heuristica declara "
-                         "vacias y el motor considera legales -5,81 por turno "
-                         "frente a 8,94 ofrecidas-. Sin esta cabeza esas "
-                         "casillas son invisibles al aprendizaje y se pasa turno "
-                         "el 52,8 %% de las veces, contra el 5,3 %% de v48.")
+                    help="give the network the VERB head"
+                         "frente a 8,94 ofrecidas-. Sin esta cabeza esas ")
     ap.add_argument("--mode", default="residuo", choices=("residuo", "directo", "ops"))
     ap.add_argument("--resume", default=None,
                     help="continuar desde un checkpoint de RL en vez de reempezar")
     ap.add_argument("--value-epochs", type=int, default=0,
-                    help="epocas extra SOLO para el critico (0 = como antes)")
+                    help="extra epochs for the critic only (0 = none)")
     ap.add_argument("--value-weight", type=float, default=0.5)
     ap.add_argument("--lr", type=float, default=None,
                     help="lr del TRONCO; si se omite, el del checkpoint (o 3e-4)")
     ap.add_argument("--lr-heads", type=float, default=None,
                     help="lr de las cabezas; por defecto = --lr")
     ap.add_argument("--kl-target", type=float, default=0.0,
-                    help="si >0, el lr se ajusta solo para mantener este kl/dim")
+                    help="if >0, the lr self-adjusts to hold this kl/dim")
     # 1.8e-4 was the threshold from when KL was measured WITHOUT normalising
     # dimension. Al normalizarlo, el KL sano de este problema vive en 1e-2 a
     # 4e-2, i.e. ninety times above: epochs ALWAYS aborted after
@@ -287,79 +247,41 @@ def main():
     # rollout y la recalculada-, asi que un umbral de 2x el objetivo corta antes
     # de dar el primer paso util.
     ap.add_argument("--jepa-warmup", type=int, default=0,
-                    help="updates iniciales en los que SOLO se entrena la "
-                         "representacion (JEPA + critico), con la politica "
-                         "quieta. El codificador es el 82 %% de los parametros "
-                         "y hoy se forma unicamente con el gradiente de "
-                         "politica, que es escaso y ruidoso. Se alimenta de los "
-                         "mismos rollouts, asi que no cuesta interaccion extra.")
+                    help="initial updates training representation only (policy frozen)")
     ap.add_argument("--freeze-trunk", type=int, default=0,
-                    help="updates tras el calentamiento en los que el TRONCO "
-                         "queda congelado y solo se mueven las cabezas, para "
-                         "que aprendan sobre una representacion estable en vez "
+                    help="updates after warmup during which the TRUNK stays frozen"
                          "de sobre un objetivo movil.")
     ap.add_argument("--jepa-weight", type=float, default=0.0,
-                    help="peso de la perdida JEPA: predecir el EMBEDDING futuro "
-                         "del propio codificador a 1,2,3,5,8,13 dias, con el "
-                         "objetivo detenido. A diferencia de --peso-aux, que "
-                         "predice unidades crudas del rival, aqui lo "
-                         "impredecible desaparece del objetivo porque el "
-                         "embedding solo retiene lo que el codificador juzga "
+                    help="weight of the JEPA loss: predict the future EMBEDDING with a stopped gradient"
                          "relevante. Vigilar `2_salud/jepa_sd`: si cae a cero, "
                          "colapso.")
     ap.add_argument("--ctx-micro", default="3x3",
                     choices=("1x1", "3x3", "3x3x2", "5x5", "attn"),
-                    help="forma del contexto espacial de la cabeza micro. Aqui "
-                         "vino el salto medido: 1x1 -> 3x3 dio 1.397 -> 1.949 $.")
+                    help="spatial context shape of the micro head")
     ap.add_argument("--aux-weight", type=float, default=0.0,
-                    help="peso de la perdida AUXILIAR: predecir la oferta del "
-                         "rival de MANANA desde el estado de HOY. 0 = apagada. "
-                         "Obliga al codificador a modelar como crece su granja, "
-                         "que es lo que el critico no puede anticipar hoy -su "
-                         "liquidacion aporta el 99,1 %% de la varianza diaria-. "
-                         "El config traia `peso_aux: 0.1` para una perdida que "
-                         "nunca se cableo.")
+                    help="weight of the AUXILIARY loss: predict the opponent supply at Fibonacci horizons"
+                         "Obliga al codificador a modelar como crece su granja, ")
     ap.add_argument("--rival-flow", action="store_true",
-                    help="alimenta la entrada `hist` con la OFERTA INMINENTE "
-                         "del rival por producto en 4 horizontes, en vez de "
+                    help="feed the `hist` input with the opponent IMMINENT SUPPLY"
                          "ceros. Esa entrada existia (N_HIST = 4 x productos) y "
-                         "nunca se conecto. Es predecible desde su tablero, que "
-                         "se observa entero, y es lo causalmente anterior a "
                          "nuestro ingreso en un mercado compartido.")
     ap.add_argument("--factored-ratio", action="store_true",
                     help="un cociente de importancia POR CABEZA (macro y micro) "
-                         "en vez de uno solo sobre la suma de las 1.632 "
-                         "dimensiones. Evita que el ruido de exploracion del "
-                         "macro -cuyo condicionamiento aporta +1 $ de 953- "
-                         "recorte el gradiente del micro, que aporta el resto.")
+                         "macro -cuyo condicionamiento aporta +1 $ de 953- ")
     ap.add_argument("--sigma-floor-micro", type=float, default=0.0,
-                    help="suelo del sigma APRENDIDO de la cabeza micro. 0 = sin "
-                         "suelo. Se deja apagado a proposito: el suelo del macro "
-                         "existe porque se midio que estrechar perjudica alli; "
-                         "para el micro no hay esa medida todavia, y meter el "
-                         "numero antes de tenerla seria inventarse una constante.")
+                    help="floor of the LEARNED micro sigma. 0 = no floor")
     ap.add_argument("--sigma-floor", type=float, default=0.12,
-                    help="suelo de log_sigma del MACRO. Medido el 2026-09-21: "
-                         "estrechar la busqueda cuesta 26 puntos de tasa de "
-                         "acierto (3,3 ee) y el gradiente se extingue solo en "
-                         "44 iteraciones si se deja saturar la distribucion.")
+                    help="floor of the MACRO log_sigma: narrowing exploration measured -26 points")
     ap.add_argument("--kl-max", type=float, default=0.12,
-                    help="si la politica se aleja mas que esto (kl/dim), se "
-                         "abortan las epocas. Medido: 6x --kl-objetivo.")
+                    help="abort the epoch if the policy moves further than this (kl/dim)")
     ap.add_argument("--selfplay", action="store_true",
                     help="rival = instantanea congelada de uno mismo")
     ap.add_argument("--refresh", type=int, default=25,
-                    help="cada cuantos updates se congela una version nueva")
+                    help="how many updates between freezing a new version")
     ap.add_argument("--bank-seed", type=str, default=None,
-                    help="rutas .npy separadas por coma con las que SEMBRAR el "
-                         "banco de rivales. Sin esto el banco solo guarda fotos "
-                         "de uno mismo, que son el mismo linaje: si la politica "
-                         "se mete en un nicho, sus propias copias se lo premian. "
-                         "Sembrarlo con vectores que produjeron optimizadores "
-                         "DISTINTOS (CEM, coordenadas, calibraciones de otra "
-                         "escala) da rivales que fallan de formas distintas.")
+                    help="comma-separated .npy paths to SEED the opponent bank")
     ap.add_argument("--bank", type=int, default=4,
-                    help="cuantas versiones antiguas se guardan como rivales")
+                    help="how many old versions are kept as opponents")
     ap.add_argument("--out", default="runs/e2e.pt")
     ap.add_argument("--run-name", default="e2e-control")
     a = ap.parse_args()
@@ -374,8 +296,8 @@ def main():
     _T.MICRO_MODE = a.mode
     if a.kl_target > 0 and a.kl_max < a.kl_target:
         raise SystemExit(f"--kl-max {a.kl_max:g} es MENOR que --kl-objetivo "
-                         f"{a.kl_target:g}: el controlador subiria el KL "
-                         f"hasta el objetivo y el aborto lo cortaria en cada "
+                         f"{a.kl_target:g}: the controller would raise KL "
+                         f"to the target and the abort would cut it on every "
                          f"epoca. Usa --kl-max >= 2x --kl-objetivo.")
     if a.hand_cap is not None:
         from kagsym import macro as _M
@@ -398,7 +320,7 @@ def main():
         # pretraining and threw away all accumulated RL. Only valid if the
         # architecture has not
         # cambiado: hoy N_GLOBAL paso de 75 a 88 y N_MACRO de 7 a 13, y con eso
-        # las formas no encajan. Se carga lo que encaje y se dice que se reusa.
+        # the shapes do not fit. What fits is loaded and the reuse reported.
         d0 = torch.load(a.resume, map_location="cpu", weights_only=False)
         from kagsym.migrate_ckpt import load_tolerant
         _n_reusados, _n_total, _azar = load_tolerant(net, d0["sd"], a.resume)
@@ -464,7 +386,7 @@ def main():
     _niveles = ([int(x) for x in a.levels.split(',')] if a.levels else None)
     if _niveles:
         from kagsym.environment import LADDER as _ESC
-        print('rivales por trabajador: ' + ', '.join(
+        print('opponents per worker: ' + ', '.join(
             str(_ESC[min(n, len(_ESC)-1)]) for n in _niveles), flush=True)
     if a.lr is None:
         a.lr = 3e-4
@@ -473,11 +395,11 @@ def main():
         _lr_explicito = True
     _lrc = a.lr_heads if a.lr_heads is not None else a.lr
     # `--lr-cabezas` A SOLAS tambien manda. Sin esto, `_lr_explicito` solo se
-    # activaba con `--lr`, asi que al reanudar se restauraban los dos lr del
-    # checkpoint y el cambio pedido se perdia EN SILENCIO -misma clase de fallo
-    # que `--init` machacado por `--resume`, que costo `--forzar-macro`-. Y aqui
-    # lo que importa es el RATIO cabezas/tronco: el controlador de KL reescala
-    # los dos grupos a la vez, asi que el ratio es lo unico que sobrevive.
+    # was activated by `--lr`, so on resume both lrs from the checkpoint were
+    # restored and the requested change was lost SILENTLY -the same class of
+    # bug as `--init` clobbered by `--resume`, which cost `--force-macro`-.
+    # What matters here is the heads/trunk RATIO: the KL controller rescales
+    # both groups together, so the ratio is the only thing that survives.
     if a.lr_heads is not None:
         _lr_explicito = True
     # 0 tronco | 1 macro | 2 micro | 3 critico+auxiliares
@@ -543,14 +465,14 @@ def main():
                 opt.param_groups[0]["lr"] = a.lr
                 opt.param_groups[1]["lr"] = _lrc
                 print(f"  lr EXPLICITO ({a.lr:.1e} / {_lrc:.1e}, ratio "
-                      f"{_lrc/a.lr:.1f}x), manda sobre el del checkpoint",
+                      f"{_lrc/a.lr:.1f}x), overrides the checkpoint's",
                       flush=True)
             print(f"  optimizador restaurado: lr tronco "
                   f"{opt.param_groups[0]['lr']:.2e} cabezas "
                   f"{opt.param_groups[1]['lr']:.2e}", flush=True)
         except Exception as e:
-            print(f"  AVISO: no se pudo restaurar el optimizador ({e}); "
-                  f"se sigue con los lr de fabrica", flush=True)
+            print(f"  WARNING: could not restore the optimizer ({e}); "
+                  f"continuing with factory lrs", flush=True)
     elif a.resume and "opt" in d0:
         print(f"  optimizador NO restaurado: la arquitectura cambio "
               f"({_n_reusados}/{_n_total} tensores). Momentos a cero.", flush=True)
@@ -569,7 +491,7 @@ def main():
             net.micro.bias[0] = 1.0
         print("  sesgo de valor repuesto a 1.0 (rescate de la inaccion)",
               flush=True)
-    print(f"huella del codigo: {fingerprint()}", flush=True)
+    print(f"code fingerprint: {fingerprint()}", flush=True)
     print(f"dispositivo: {dev} | rival: {LADDER[a.level]} | init: {a.init}", flush=True)
 
     from kagsym import spec
@@ -586,11 +508,11 @@ def main():
         print(f"macro FORZADO a {a.init}", flush=True)
     _pasos = a.steps
     if a.mix:
-        # MEZCLADO, no secuencial. En secuencia la politica entrena solo a un
-        # horizonte y olvida el anterior -medido dos veces: margen real de
-        # -82,7 % a -98,3 %-. Se evitan los horizontes muy cortos a proposito:
+        # MIXED, not sequential. In sequence the policy trains at one horizon
+        # only and forgets the previous one -measured twice: real margin from
+        # -82.7% to -98.3%-. Very short horizons are avoided on purpose:
         # a 5 dias no-hacer-nada da 3.000 $ y nuestra heuristica 2.920, o sea
-        # que actuar DESTRUYE valor y la leccion que se aprende ahi es "no
+        # that acting DESTROYS value and the lesson learned there is "do
         # hagas nada".
         _dias = [int(x) for x in a.mix.split(",")]
         _pasos = [d * 24 for d in _dias]
@@ -636,7 +558,7 @@ def main():
                           mode=a.mode, tope_peones=a.hand_cap, hours=_horas)
     if a.grid:
         env.set_rival_cap(_rivtope)
-        print(f"tope del RIVAL por peldano: {_rivtope}", flush=True)
+        print(f"OPPONENT cap per rung: {_rivtope}", flush=True)
         if a.own_rival:
             # A real opponent on every rung. Measured: v48 makes $60,426 at
             # 24h x 30d and $0-30 at any other scale, because its tape is
@@ -663,7 +585,7 @@ def main():
                   f"peldanos; publico en los demas", flush=True)
             for (_h, _d, _), _v in zip(_rej, _riv):
                 print(f"   {_h}h x {_d}d: "
-                      + ("ejecutor con macro calibrado" if _v is not None
+                      + ("executor with calibrated macro" if _v is not None
                          else "v48-fast-routes"), flush=True)
     # Ranges of env indices belonging to each worker, i.e. to each rung of the
     # grid. The parallel env hands out envs in order, `per_proc[k]`
@@ -674,7 +596,7 @@ def main():
         for _m in env.por_proc:
             _GRUPOS.append((_o, _o + _m))
             _o += _m
-        print(f"ventaja normalizada por peldano: {len(_GRUPOS)} grupos "
+        print(f"advantage normalised per rung: {len(_GRUPOS)} groups "
               f"{[b - a_ for a_, b in _GRUPOS]}", flush=True)
     if a.rival_macros:
         _rm = []
@@ -692,19 +614,19 @@ def main():
                       _rm[i % len(_rm)]) for i in range(len(_rm))]
             _pool_p = [None] * len(_pool)
             _asig = list(range(len(_pool)))
-        print("rivales por trabajador (macro): " + ", ".join(
+        print("opponents per worker (macro): " + ", ".join(
             ("publico" if x is None else "NUESTRO") for x in _rm), flush=True)
     elif a.rival_macro:
         env.set_rival_macro(list(np.load(a.rival_macro)))
-        print(f"rival = nuestro ejecutor con {a.rival_macro}", flush=True)
+        print(f"opponent = our executor with {a.rival_macro}", flush=True)
     _liga = a.league0
     _en_liga = 0
     _RIV_ULT = [0.0]
 
     def _monta_liga(idx):
-        """Crea el entorno de la liga `idx`: horas, dias y tope del rival.
+        """Build the environment for league `idx`: hours, days and opponent cap.
 
-        Cambiar horas o dias obliga a recrear los trabajadores, porque
+        Changing hours or days forces recreating the workers, because
         `spec.TURNS_PER_DAY` y `spec.EPISODE_STEPS` son globales POR PROCESO.
         """
         hours, days, cap, _marg, _techo = LIGAS[idx]
@@ -769,7 +691,7 @@ def main():
     _salvavidas = {"ret": None, "sd": None, "opt": None, "rescates": 0}
     _grad_normas = []
     _ultima_promo = -10**9
-    ret_ep = []          # retornos de EPISODIOS CERRADOS, no sumas por update
+    ret_ep = []          # returns of CLOSED EPISODES, not per-update sums
     acum = np.zeros(a.envs, dtype=np.float64)
 
     if a.selfplay:
@@ -803,13 +725,13 @@ def main():
                 _d = np.array(_Mc().to_vector(), dtype=np.float64)
                 _d[: _v.shape[0]] = _v
                 print(f"  semilla {os.path.basename(_p)}: {_v.shape[0]} dims "
-                      f"-> {N_MACRO}, rellenada con los defectos", flush=True)
+                      f"-> {N_MACRO}, padded with the defaults", flush=True)
                 _v = _d
             _seed_vectors.append((os.path.basename(_p)[:-4], [float(x) for x in _v]))
         except Exception as _e:
             print(f"  semilla ignorada {_p}: {_e}", flush=True)
     if _seed_vectors:
-        print(f"banco sembrado con {len(_seed_vectors)} rivales diversos: "
+        print(f"bank seeded with {len(_seed_vectors)} diverse opponents: "
               f"{', '.join(n for n, _ in _seed_vectors)}", flush=True)
 
     t0 = time.time()
@@ -850,8 +772,8 @@ def main():
             print(f"  [upd {upd}] rival -> {_nom} ({_tipo}), poblacion de "
                   f"{len(_pool)}", flush=True)
         G, B, H, AM, AU, LP, V, R, D, MS = [], [], [], [], [], [], [], [], [], []
-        LPMA, LPMI = [], []          # log-prob por cabeza, para el cociente factorizado
-        HF = []                      # oferta del rival por dia (objetivo auxiliar)
+        LPMA, LPMI = [], []          # log-prob per head, for the factored ratio
+        HF = []                      # opponent supply per day (auxiliary target)
         JZ = []                      # proyecciones JEPA por dia (objetivo, detenido)
         for _ in range(a.days):
             g, b, hf = env.encode()
@@ -919,7 +841,7 @@ def main():
         _vsd = (1 - _w) * _vsd + _w * _b_sd
         # CRITIC R2 in flight. Measured separately, its ceiling with enough
         # data is 0.900 and in flight it was at 0.675: the gap is training, not
-        # ruido. Sin registrarlo no hay forma de ver si se cierra.
+        # noise. Without logging it there is no way to see whether it closes.
         _vr = ret.reshape(-1); _vp = Vn.reshape(-1)
         _sse = float(((_vr - _vp) ** 2).sum())
         _sst = float(((_vr - _vr.mean()) ** 2).sum())
@@ -1003,7 +925,7 @@ def main():
         # ceiling of 0.900, and that gap is documented as training, not noise.
         _N = len(fadv)
         # The POLICY always at full batch: splitting it multiplies its KL by 24
-        # (medido) y el controlador tendria que deshacerlo recortando el lr.
+        # (measured) and the controller would have to undo it by cutting the lr.
         # `--minilotes` afecta SOLO al critico, mas abajo.
         _nm, _tam = 1, _N
         for _ep in range(a.epochs):
@@ -1128,9 +1050,9 @@ def main():
             # MAGNITUDE, not how far the POLICY moves. Measured: 80 stable
             # updates (win ~0.5, $44,000) and then a cliff
             # -win 0.015, 7 514 $- del que no se recupera. Un solo update malo
-            # destruye la politica; esto lo corta antes de que ocurra.
+            # destroys the policy; this cuts it before that happens.
             with torch.no_grad():
-                # Sobre el LOTE COMPLETO, con un forward propio. Con minilotes,
+                # Over the WHOLE BATCH, with its own forward. With minibatches,
                 # `lp` es el del ULTIMO trozo y `flp` el de todo: compararlos
                 # seria comparar formas distintas.
                 _s = net(fg, fb, fh)
@@ -1164,7 +1086,7 @@ def main():
                 _sd = float(_d.std())
             if upd % 5 == 0 or upd == 1:
                 print(f"    [diag] kl/dim={kl:.2e}  sd(lp-flp)={_sd:.2f}  "
-                      f"saturacion del cociente={_sat:.1%}  dims={_nd}", flush=True)
+                      f"ratio saturation={_sat:.1%}  dims={_nd}", flush=True)
             # THE WORST HEAD, not the mean. Aggregate KL dilutes: measured,
             # `kl_micro` reached 0.112 while the aggregate stayed below the
             # 0.06 cut and the guard did not fire, with saturation rising to
@@ -1240,14 +1162,15 @@ def main():
                       f"micro {opt.param_groups[2]['lr']:.2e} (kl {kl_mi:.3f})  "
                       f"kl/dim {kl:.3f} -> objetivo {a.kl_target}", flush=True)
 
-        # Epocas EXTRA solo para el critico. Medido: su techo con datos
-        # suficientes es R2 = 0.900 y en vuelo va por 0.675; el hueco es de
-        # entrenamiento, no de ruido. Compartir las epocas con la politica hace
-        # que esta tire del tronco y el valor no llegue a ajustar.
-        # MINILOTES SOLO PARA EL CRITICO. Medido: trocear la POLITICA en 8
-        # multiplica su KL por 24 y satura el cociente al 100 % -el controlador
-        # tendria que recortar el lr en la misma proporcion y el movimiento neto
-        # se quedaria igual-. El critico no tiene ese problema: es una regresion
+        # EXTRA epochs for the critic only. Measured: its ceiling with enough
+        # data is R2 = 0.900 and in flight it sits at 0.675; the gap is
+        # training, not noise. Sharing epochs with the policy makes the policy
+        # pull on the trunk and the value never finishes fitting.
+        # MINIBATCHES FOR THE CRITIC ONLY. Measured: splitting the POLICY into
+        # 8 multiplies its KL by 24 and saturates the ratio at 100% -the
+        # controller would have to cut the lr in the same proportion and the
+        # net movement would be unchanged-. The critic does not have that
+        # problem: it is a regression
         # y no entra en el cociente de importancia, asi que mas pasos pequenos
         # solo le hacen bien. Su R2 va por 0,80 con techo medido en 0,900.
         _nmv = max(1, int(a.minibatches))
@@ -1334,11 +1257,11 @@ def main():
                          if j == _j_ref] or [_k_ref], _red_congelada)
                     env.forget_results()
                     print(f"  [upd {upd}] peldano {_k_ref} lo ganabamos al "
-                          f"{_wpp3[_k_ref]:.0%}: se releva por NUESTRA politica "
-                          f"actual. Los demas se conservan porque aun ensenan",
+                          f"{_wpp3[_k_ref]:.0%}: relieved by OUR current policy. "
+                          f"The rest are kept because they still teach",
                           flush=True)
             except Exception as _e:
-                print(f"  aviso: no se pudo relevar el autojuego ({_e})",
+                print(f"  warning: could not relieve self-play ({_e})",
                       flush=True)
         # ------- AUTOMATIC CURRICULUM -------
         if a.auto_curriculum and upd % max(1, a.refresh) == 0 and _niveles:
@@ -1415,7 +1338,7 @@ def main():
                         _res = {}
                         for j in _asig:
                             _res[j] = _res.get(j, 0) + 1
-                        print(f"  [upd {upd}] CURRICULO: reparto por informacion "
+                        print(f"  [upd {upd}] CURRICULUM: split by information "
                               f"-> " + ", ".join(
                                   f"p{j}x{n}" for j, n in sorted(_res.items())),
                               flush=True)
@@ -1440,10 +1363,10 @@ def main():
                     env.raise_level(_niveles)
                     env.forget_results()
                     print(f"  [upd {upd}] ESCALERA DESLIZADA: el peldano mas "
-                          f"facil se ganaba al {_wpp[0]:.0%}; sale del muestreo. "
+                          f"easiest was won at {_wpp[0]:.0%}; dropped from sampling. "
                           f"topes ahora {_rivtope}", flush=True)
             except Exception as _e:
-                print(f"  aviso: no se pudo deslizar la escalera ({_e})", flush=True)
+                print(f"  warning: could not slide the ladder ({_e})", flush=True)
         if (a.promote_rival > 0 and upd % 5 == 0
                 and upd - _ultima_promo >= a.refresh):
             # The minimum separation is `--refresh`. Without it promotion
@@ -1480,46 +1403,47 @@ def main():
                   f"{time.time()-t0:.0f}s", flush=True)
             _ph = getattr(env, "money_by_horizon", lambda: {})()
             if len(_ph) > 1:
-                print("        x_inaccion por peldano: " + "  ".join(
+                print("        x_inaction per rung: " + "  ".join(
                     f"{k} {v/3000.0:.2f}" for k, v in sorted(
                         _ph.items(), key=lambda kv: kv[1])), flush=True)
-            # ASCENSO Y DESCENSO. El descenso importa tanto como el ascenso:
-            # es lo que impide que la politica olvide las ligas ya ganadas.
-            # `PERMANENCIA` evita el trasiego: una liga se juzga con al menos
+            # PROMOTION AND DEMOTION. Demotion matters as much as promotion:
+            # it is what stops the policy forgetting leagues already won.
+            # `TENURE` prevents churn: a league is judged over at least
             # ese numero de updates dentro.
             if a.leagues:
                 _en_liga += 1
                 if _en_liga >= PERMANENCIA:
                     # DESCENSO POR INACCION, no por victoria. La victoria no
-                    # detecta el colapso: medido, una liga en autojuego ascendio
-                    # cuatro peldanos con win=1,00 mientras el dinero se quedaba
+                    # detects collapse: measured, a self-play league climbed
+                    # four rungs at win=1.00 while money stayed
                     # en 3.000 $ -la caja inicial- y el margen real caia a
                     # -98,3 %. `x_inaccion` si lo detecta, y a CUALQUIER escala:
-                    # 1,0 significa que la politica no hace nada.
+                    # 1.0 means the policy is doing nothing.
                     _inac = env.mean_money() / 3000.0
                     _RIV_ULT[0] = float((env.rival_stats() or {}).get("dinero", 0.0) or 0.0)
-                    # Y NO SE ASCIENDE ESTANDO INERTE. Un peldano se pasa
+                    # AND NO PROMOTION WHILE INERT. A rung is passed
                     # PRODUCIENDO valor, no sobreviviendo a un rival aun peor:
                     # en L0 el publico hace 171 $, asi que se gana 1,00 con
                     # x_inaccion 0,99 -por debajo de no hacer nada-. Ascender
-                    # ahi es justo la promocion degenerada que hundio las ligas
+                    # there is exactly the degenerate promotion that sank the
+                    # leagues
                     # anteriores, sin autojuego de por medio.
                     # Umbral RELATIVO al techo de la liga, no absoluto.
                     # ASCENSO = LIGA DOMINADA, no "gano mas de lo que pierdo".
-                    # Dos condiciones: el MARGEN alcanza el 90 % de lo mejor
+                    # Two conditions: the MARGIN reaches 90% of the best
                     # demostrado en esa liga, y la politica esta VIVA. Promover
-                    # a medio aprender es lo que hizo cascada en los intentos
+                    # half-learned is what cascaded in earlier attempts
                     # anteriores.
                     # SOBRE LA INACCION, no sobre cero. Tercera vez que esta
-                    # regla se rompe por la misma clase de fallo: el liston se
+                    # rule breaks by the same class of bug: the bar is
                     # cruzaba sin producir nada.
                     #   - por victoria: el rival de L0 hace 4 $, se gana 1,00 quieto
-                    #   - por margen:   margen 2.973 con solo conservar la caja
+                    #   - by margin:   margin 2,973 just by keeping the cash
                     #   - por x_inaccion bruto: el techo de L0 es 1,03 y la
-                    #     inaccion 1,00, asi que TODO el rango aprendible es un
-                    #     3 % y cualquier umbral por debajo de 1,0 lo cruza
+                    #     inaction 1.00, so the WHOLE learnable range is 3%
+                    #     and any threshold below 1.0 crosses it
                     #     una politica inerte.
-                    # Lo que hay que exigir es el 90 % del margen APRENDIBLE,
+                    # What must be demanded is 90% of the LEARNABLE margin,
                     # que es lo que hay por encima de no hacer nada.
                     _techo_l = LIGAS[_liga][4]
                     _obj_inac = 1.0 + FRAC_TECHO * max(0.0, _techo_l - 1.0)
@@ -1542,28 +1466,28 @@ def main():
             if usar_ml:
                 try:
                     import mlflow
-                    # QUE SE REGISTRA Y POR QUE. Durante toda una sesion de
-                    # depuracion, win_rate y dinero no diagnosticaron NADA: son
+                    # WHAT IS LOGGED AND WHY. Through a whole debugging
+                    # session, win_rate and money diagnosed NOTHING: they are
                     # el resultado, no la causa. Cada diagnostico real salio de
                     # estas otras, que estaban solo en el log:
                     #   kl/dim          crecio de 0,036 a 0,363 -> divergencia
                     #   saturacion      99,4% -> el cociente de PPO era ruido
-                    #   lr_*            el controlador estrangulando el paso
-                    #   micro_w_norma   la cabeza no viajaba (0,013 en 40 updates)
+                    #   lr_*            the controller strangling the step
+                    #   micro_w_norm    the head was not travelling (0.013 in 40 updates)
                     #   dims_activas    cuantas dimensiones deciden de verdad
                     # GUARD DE INACCION. `startingMoney` son 3.000 $ y no
                     # hacer NADA acaba exactamente en 3.000. Medido: las ligas
                     # en autojuego convergieron a 3.000 clavados a TODO
-                    # horizonte -la politica se sentaba sobre la caja- porque
+                    # horizon -the policy sat on the cash- because
                     # la instantanea congelada hacia 2.588, o sea PEOR que la
-                    # inaccion, y ganarle no exigia hacer nada. `win` decia
+                    # inaction, and beating it required doing nothing. `win` said
                     # 1,00 y el margen real era -98,3 %.
                     _din = env.mean_money()
                     _inercia = _din / float(
                         spec.DEFAULT_CONFIG.get("startingMoney", 3000) or 3000)
-                    # Solo cuando el horizonte es UNICO. Con mezcla, `liga` es
+                    # Only when the horizon is SINGLE. When mixed, `league` is
                     # constante y sobra, y el dinero promediado entre 15/20/30
-                    # dias no significa nada: se desglosa.
+                    # days means nothing: it is broken down.
                     _extra = {}
                     if a.leagues:
                         _extra["liga"] = float(_liga)
@@ -1571,12 +1495,12 @@ def main():
                     if len(_porh) > 1:
                         # POR PELDANO, y en multiplos de la inaccion ademas de
                         # en dolares. La inaccion son 3.000 $ a CUALQUIER
-                        # escala -no gastar deja la caja quieta-, asi que
+                        # scale -not spending leaves the cash still- so
                         # x_inaccion SI es comparable entre peldanos mientras
-                        # que el dinero crudo no lo es: un peldano de 24 turnos
+                        # that raw money is not: a 24-turn rung
                         # no puede ganar lo que uno de 720, y promediarlos
                         # esconde exactamente lo que hay que vigilar, que es si
-                        # ALGUN peldano se ha vuelto inerte.
+                        # SOME rung has gone inert.
                         for _d, _v in _porh.items():
                             _extra[f"dinero_{_d}"] = float(_v)
                             _extra[f"x_inaccion_{_d}"] = float(_v) / 3000.0
@@ -1587,8 +1511,8 @@ def main():
                     else:
                         _extra["sobre_inaccion"] = float(_inercia)
                     if len(_porh) > 1:
-                        # Con rejilla, el promedio no sirve de aviso: mezcla
-                        # peldanos de 24 y de 720 turnos. Se avisa por peldano.
+                        # With a grid the average is useless as a warning: it
+                        # mixes 24-turn and 720-turn rungs. Warn per rung.
                         _inertes = [k for k, v in _porh.items()
                                     if v / 3000.0 < 1.02]
                         if _inertes and upd > 20:
@@ -1602,28 +1526,28 @@ def main():
                               flush=True)
                     # DASHBOARD EN CUATRO GRUPOS. Antes eran 19 metricas
                     # planas mezclando "voy ganando" con "la maquinaria esta
-                    # sana", sin lineas de referencia y con varias rotas por la
-                    # mezcla de horizontes. El prefijo numerado las agrupa en
-                    # la interfaz y fija el orden de lectura.
+                    # healthy", with no reference lines and several broken by
+                    # the mix of horizons. The numbered prefix groups them in
+                    # the UI and fixes the reading order.
                     _RIV = float(rv.get("dinero", 0.0) or 0.0)
                     _m = {
-                        # 1_RESULTADO: lo unico que dice si vamos ganando.
+                        # 1_RESULT: the only thing that says whether we are winning.
                         "1_resultado/win_rate": float(wr),
                         "1_resultado/margen_pct": (100.0 * (_din - _RIV) / _RIV
                                                    if _RIV > 0 else 0.0),
                         # x1 = no hacer nada. MEDIDO: la inaccion deja los
                         # 3.000 $ iniciales a CUALQUIER horizonte. (El "245 $"
                         # que se cito antes era otra cosa: unidades quietas
-                        # pero la capa de mercado comprando, que pierde.)
+                        # but the market layer buying, which loses.)
                         "1_resultado/x_inaccion": _din / 3000.0,
                         # 2_SALUD: si la maquinaria aprende.
                         "2_salud/critico_r2": float(_r2),
                         "2_salud/kl_por_dim": float(kl),
                         "2_salud/saturacion": float(_sat),
                         "2_salud/epocas_corridas": float(a.epochs - kl_cortes),
-                        # 3_CONTEXTO: contra que se esta midiendo.
+                        # 3_CONTEXT: what we are being measured against.
                         "3_contexto/dinero_rival": _RIV,
-                        # 4_DIAG: solo se miran cuando algo falla.
+                        # 4_DIAG: only looked at when something fails.
                         "4_diag/lr_tronco": float(opt.param_groups[0]["lr"]),
                         "4_diag/lr_cabezas": float(opt.param_groups[1]["lr"]),
                         "4_diag/dims_activas": float(_nd),
@@ -1634,8 +1558,8 @@ def main():
                         _m["1_resultado/dinero"] = _din
                     # MERMA POR HORIZONTE: cuanto le quitamos al rival
                     # respecto a lo que hace contra un PASIVO en ESE MISMO
-                    # horizonte. Es la unica senal competitiva que se mueve
-                    # mientras perdemos todas las partidas. Con la base de 30
+                    # horizon. It is the only competitive signal that moves
+                    # while we lose every episode. With the 30-day base
                     # dias aplicada a partidas de 15 mentia: leia "paliza"
                     # cuando solo era que la partida era corta.
                     _rporh = getattr(env, "rival_by_horizon", lambda: {})()
@@ -1643,7 +1567,7 @@ def main():
                         _b = BASE_PER_HORIZON.get(_d, {}).get(a.level, 0.0)
                         if _b > 0:
                             _m[f"3_contexto/merma_{_d}d_pct"] = 100.0 * (1.0 - _rv_d / _b)
-                    # Escenario: siempre presentes, para poder seguir el curso.
+                    # Scenario: always present, so the run can be followed.
                     _m["3_contexto/liga"] = float(_liga) if a.leagues else -1.0
                     _m["3_contexto/nivel_rival"] = float(a.level)
                     for _k, _v in _extra.items():
@@ -1651,14 +1575,15 @@ def main():
                             else "3_contexto/") + _k] = float(_v)
                     with torch.no_grad():
                         _m["4_diag/micro_w_norma"] = float(net.micro.weight.norm())
-                        # SIGMA DEL MACRO. Medido el 2026-09-21: estrechar la
+                        # MACRO SIGMA. Measured: narrowing
                         # busqueda cuesta 26 puntos de tasa de acierto (3,3 ee),
-                        # asi que sigma cayendo es una ALARMA, no una senal de
+                        # so sigma falling is an ALARM, not a sign of
                         # convergencia. Se vigila junto a su suelo.
                         # NORMA DEL GRADIENTE, antes de recortar. Es el
-                        # diagnostico directo del fallo que mas nos ha costado:
-                        # con log_prob sobre la muestra sin detach, mu se
-                        # cancela y esto vale 0.000e+00 mientras el resto
+                        # the direct diagnostic for the most expensive bug we
+                        # have had: with log_prob over the sample without
+                        # detach, mu cancels and this reads 0.000e+00 while the
+                        # rest
                         # parece normal. El sintoma indirecto -"el despliegue
                         # no se mueve"- tardo 5.456 episodios en leerse.
                         if _grad_normas:
@@ -1668,7 +1593,7 @@ def main():
                                 np.mean([g < 1e-9 for g in _gg]))
                         if a.jepa_weight > 0 and JZ:
                             # VIGILANTE DE COLAPSO. Si el codificador emite
-                            # siempre el mismo vector, predecirlo es trivial y
+                            # always the same vector, predicting it is trivial and
                             # no se aprende nada. Esto cae a cero si pasa.
                             _z = torch.cat(JZ)
                             _m["2_salud/jepa_sd"] = float(_z.std(0).mean())
@@ -1680,18 +1605,18 @@ def main():
                         except Exception:
                             pass
                         # WIN RATE POR PELDANO. Cada trabajador juega uno, asi
-                        # que sin esto el deslizamiento decide con una cifra que
+                        # that without this the sliding decides on a figure that
                         # nadie puede auditar: la media de los once esconde un
                         # peldano ganado al 100 % junto a otro perdido al 100 %.
                         try:
                             # INDEXADO POR PELDANO, no por trabajador. El
                             # currículo reasigna trabajadores a peldanos, asi
-                            # que `_wr[k]` es "lo que juega el trabajador k
-                            # AHORA", no un peldano fijo. Registrarlo por k
-                            # dejaba las etiquetas congeladas mientras el
+                            # that `_wr[k]` is "what worker k plays
+                            # NOW", not a fixed rung. Logging it by k left the
+                            # labels frozen while the
                             # contenido cambiaba: la tabla parecia decir que
-                            # empatabamos contra el rival mas duro cuando ese
-                            # peldano ni siquiera se estaba jugando.
+                            # we were drawing against the hardest opponent
+                            # when that rung was not even being played.
                             _wpp2 = env.win_rate_per_rung()
                             _rpp2 = env.rival_per_rung()
                             _map = (_asig if _asig else list(range(len(_wpp2))))
@@ -1714,10 +1639,10 @@ def main():
                             _m["2_salud/sigma_micro_verbo"] = float(_sm[1:].mean())
                         _m["2_salud/sigma_suelo"] = float(a.sigma_floor)
                         # x_inaccion: 1.0 = la politica esta INERTE. Cuatro
-                        # colapsos distintos se habrian visto de un vistazo.
+                        # different collapses would have been visible at a glance.
                         _m["1_resultado/x_inaccion"] = float(_din) / 3000.0
-                        # cuanto del macro depende del ESTADO. Si es ~0 la
-                        # cabeza emite una constante y no condiciona nada.
+                        # how much of the macro depends on the STATE. If it is
+                        # ~0 the head emits a constant and conditions nothing.
                         _m["2_salud/macro_w_norma"] = float(net.macro_mu.weight.norm())
                         if getattr(net, "n_ops", 0):
                             _m["2_salud/verbo_senal_ruido"] = float(
@@ -1725,14 +1650,15 @@ def main():
                     mlflow.log_metrics(_m, step=_upd0 + upd)
                 except Exception:
                     pass
-        # Guardar el MEJOR por retorno de episodio, no el ultimo. En el run
-        # anterior el update 40 era mejor que el 55 y lo sobrescribi.
-        # ULTIMO estado, sin condiciones. Guardar solo "el mejor por retorno"
-        # dejaba el checkpoint congelado en el update 16 durante 100 updates:
-        # en auto-juego el retorno es RELATIVO y deja de subir en cuanto el
-        # rival se fortalece, aunque el agente siga mejorando -medido, el margen
-        # contra el 2945 mejoro de -98.7 % a -82.8 % en ese mismo tramo-.
-        # Sin esto, una noche sin supervision no acumula nada.
+        # Save the BEST by episode return, not the last. In an earlier run
+        # update 40 was better than 55 and it got overwritten.
+        # The LAST state, unconditionally. Saving only "the best by return"
+        # left the checkpoint frozen at update 16 for 100 updates: in self-play
+        # the return is RELATIVE and stops rising as soon as the opponent gets
+        # stronger, even while the agent keeps improving -measured, the margin
+        # against a strong public agent improved from -98.7% to -82.8% over
+        # that same stretch-. Without this, an unattended night accumulates
+        # nothing.
         if upd % 10 == 0 or upd == a.updates:
             torch.save({"sd": net.state_dict(), "cfg": vars(cfg), "init": vec0,
                         "upd": upd, "huella": fingerprint(), "huella_modelo": model_fingerprint(),
@@ -1741,9 +1667,9 @@ def main():
         if ret_ep and len(ret_ep) >= 40:
             _r80 = float(np.mean(ret_ep[-80:]))
             _prev = _salvavidas["ret"]
-            # CAIDA RELATIVA A LA MAGNITUD, no fraccion del valor: con
+            # DROP RELATIVE TO MAGNITUDE, not a fraction of the value: with
             # retornos NEGATIVOS `r < 0.5*prev` se invierte -de -0,8 a -0,7 es
-            # una MEJORA y disparaba el rescate-. Asi vale para los dos signos.
+            # an IMPROVEMENT and fired the rescue-. This works for both signs.
             _umbral = _prev - 0.5 * abs(_prev) if _prev is not None else None
             if _prev is not None and _r80 < _umbral and _salvavidas["sd"] is not None:
                 net.load_state_dict(_salvavidas["sd"])
@@ -1756,8 +1682,8 @@ def main():
                 _salvavidas["rescates"] += 1
                 ret_ep.clear()
                 print(f"  [upd {upd}] RESCATE {_salvavidas['rescates']}: el retorno "
-                      f"cayo de {_prev:.1f} a {_r80:.1f}; se restaura el ultimo "
-                      f"estado bueno y se halva el ritmo", flush=True)
+                      f"fell from {_prev:.1f} to {_r80:.1f}; restoring the last "
+                      f"good state and halving the pace", flush=True)
             elif _prev is None or _r80 > _prev:
                 _salvavidas["ret"] = _r80
                 _salvavidas["sd"] = {k: v.detach().cpu().clone()
