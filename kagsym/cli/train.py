@@ -475,14 +475,22 @@ def main():
             # checkpoint's. Without this, restoring the optimizer silently
             # clobbered the lr change the operator came to make.
             if _lr_explicit:
-                opt.param_groups[0]["lr"] = a.lr
-                opt.param_groups[1]["lr"] = _lrc
+                # ALL FOUR GROUPS. It used to write 0 and 1 only, so the MICRO
+                # head -group 2, the one that decides- kept whatever lr the
+                # checkpoint carried. Since the checkpoints of a stalled run
+                # carry a collapsed lr, every resume inherited a frozen head
+                # and `--lr` could not lift it: measured, a resume asking for
+                # 3e-5 ran its micro head at 1.0e-6 from the first update, and
+                # the macro followed it down through the `macro <= micro`
+                # relation.
+                for _ix in range(len(opt.param_groups)):
+                    opt.param_groups[_ix]["lr"] = a.lr if _ix == 0 else _lrc
                 print(f"  EXPLICIT lr ({a.lr:.1e} / {_lrc:.1e}, ratio "
-                      f"{_lrc/a.lr:.1f}x), overrides the checkpoint's",
-                      flush=True)
-            print(f"  optimizer restored: trunk lr "
-                  f"{opt.param_groups[0]['lr']:.2e}, heads "
-                  f"{opt.param_groups[1]['lr']:.2e}", flush=True)
+                      f"{_lrc/a.lr:.1f}x) on all {len(opt.param_groups)} "
+                      f"groups, overrides the checkpoint's", flush=True)
+            print(f"  optimizer restored: trunk {opt.param_groups[0]['lr']:.2e}"
+                  f"  macro {opt.param_groups[1]['lr']:.2e}"
+                  f"  micro {opt.param_groups[2]['lr']:.2e}", flush=True)
         except Exception as e:
             print(f"  WARNING: could not restore the optimizer ({e}); "
                   f"continuing with factory lrs", flush=True)
@@ -1119,12 +1127,34 @@ def main():
         # saturation on the first update. KL is already measured every epoch,
         # so it closes the loop, not me.
         if a.kl_target > 0:
+            # SYMMETRIC IN LOG SPACE. It used to be 0.7 above 2x the target,
+            # 1.1 below half of it, 1.0 in between -and that is a RATCHET, the
+            # same bug that was already fixed once for the trunk: one brake
+            # needs 3.5 accelerations to undo, so the lr falls even when the KL
+            # does not ask for it.
+            #
+            # Measured over the 900-update run: `kl_micro` had a MEDIAN of
+            # 0.0071 against a target of 0.010 -below target- and yet the head
+            # lr spent 56% of the updates pinned at the 1e-6 floor, a median
+            # 49x slower than the trunk. With 15% of updates braking and 30%
+            # accelerating, the drift in log space is
+            # 0.15*ln(0.7) + 0.30*ln(1.1) = -0.025 per update: a 12x decay
+            # every 100 updates until it hits the floor. Both policy heads were
+            # frozen: `micro_w_norm` moved +1.4% and `macro_w_norm` +0.8% in
+            # 900 updates, with the critic healthy at R2 0.88 and gradient
+            # norms of 300-400. The gradient was there; it was multiplied by
+            # nothing.
+            #
+            # The anchor stays MEASURED: 0.7 at twice the target. The exponent
+            # that reproduces it is 1/2, and the upward factor then comes out
+            # as its inverse for free, so nothing new is chosen. At the target
+            # the factor is exactly 1.
+            _F_DOWN = 0.7                       # measured anchor, at 2x target
             def _factor(_k):
-                if _k > 2.0 * a.kl_target:
-                    return 0.7
-                if _k < 0.5 * a.kl_target:
-                    return 1.1
-                return 1.0
+                if _k <= 0.0:
+                    return 1.0 / _F_DOWN
+                return max(_F_DOWN, min(1.0 / _F_DOWN,
+                                        (a.kl_target / _k) ** 0.5))
             _fma, _fmi = _factor(kl_ma), _factor(kl_mi)
             # group 1 = macro, group 2 = micro: each with ITS own loop.
             for _ix, _f2 in ((1, _fma), (2, _fmi)):
@@ -1145,6 +1175,25 @@ def main():
             # number: the macro may go as fast as the micro, never faster.
             opt.param_groups[1]["lr"] = min(opt.param_groups[1]["lr"],
                                             opt.param_groups[2]["lr"])
+            # AND NO HEAD SLOWER THAN ITS OWN TRUNK. The per-head loop assumes
+            # the KL it measures is the one that head produced. Measured, it is
+            # not: with the micro head at the 1e-6 floor -a 40x to 80x slower
+            # than the trunk- its KL was still 0.037, 3.7x the target. A head
+            # moving at 1e-6 cannot produce that; the trunk did, because it
+            # feeds both heads and the features move underneath them.
+            #
+            # So braking a head below its trunk does not reduce the KL the
+            # controller is reading. It only stops the head from learning,
+            # which is exactly what was observed: 56% of updates at the floor,
+            # `micro_w_norm` +1.4% in 900 updates, and money flat.
+            #
+            # This is a RELATION, not a number: the total KL still governs the
+            # trunk, and the head loop can only allocate MORE speed to a head
+            # whose own divergence is low, never less than the ground it
+            # stands on.
+            for _ix in (1, 2):
+                opt.param_groups[_ix]["lr"] = max(opt.param_groups[_ix]["lr"],
+                                                  opt.param_groups[0]["lr"])
             # THE TRUNK IS CONTROLLED BY THE TOTAL KL, which is what it
             # genuinely produces: it feeds both heads, so its effect on the
             # policy is the whole, not the minimum of two loops that belong to
