@@ -28,6 +28,10 @@ kagsym/*
 !kagsym/fastenv.py
 # codificacion de la observacion
 !kagsym/obs.py
+# lazo exterior sobre el objetivo de KL
+!kagsym/outer.py
+# memoria episodica no parametrica del valor
+!kagsym/memory.py
 # el vector aprendido y sus 30 parametros
 !kagsym/macro.py
 # conformacion de recompensa
@@ -48,16 +52,10 @@ kagsym/*
 !kagsym/symbolic/
 kagsym/symbolic/*
 !kagsym/symbolic/__init__.py
-!kagsym/symbolic/asignacion.py
-!kagsym/symbolic/ejecutor.py
-!kagsym/symbolic/mercado.py
-!kagsym/symbolic/tareas.py
 
 !kagsym/nets/
 kagsym/nets/*
 !kagsym/nets/__init__.py
-!kagsym/nets/bloques.py
-!kagsym/nets/mundo.py
 
 !kagsym/cli/
 kagsym/cli/*
