@@ -1,20 +1,21 @@
-"""El vector de decision macro: lo unico que la politica decide.
+"""The macro decision vector: everything the policy decides once per day.
 
-Por que existe este fichero. La capa guionizada acumulo once constantes puestas
-a ojo -cuantos animales por unidad de capacidad, que fraccion de la caja en mano
-de obra, cuanto margen exigir a un peon, a partir de que saturacion expandir...-.
-Eso viola el principio del proyecto ("nada adivinado") y, peor, ocupa justo el
-sitio donde deberia decidir el aprendizaje: son decisiones de ESTRATEGIA, no de
-mecanica.
+Why this file exists. The scripted layer accumulated eleven hand-set constants
+-how many animals per unit of attention, what fraction of the cash goes to
+labour, what margin to demand from a hand, at what saturation to expand...-.
+That violates the project's principle ("nothing guessed") and, worse, it
+occupies exactly the place where learning should decide: those are STRATEGY
+decisions, not mechanics.
 
-La mecanica -rutas, asignacion optima, legalidad, regar el dia que se planta,
-reserva de comida, liquidacion final- es derivable del motor y se queda en el
-ejecutor. Lo que no es derivable es CUANTO de cada cosa, y sobre todo cuando
-volcar al mercado compartido, que depende del rival. Eso es este vector.
+Mechanics -routes, optimal assignment, legality, watering the day you plant,
+the feed reserve, final liquidation- is derivable from the engine and stays in
+the executor. What is not derivable is HOW MUCH of each thing, and above all
+WHEN to dump into the shared market, which depends on the opponent. That is
+this vector.
 
-Todas las componentes viven en [0,1] para que una politica gaussiana recortada
-pueda emitirlas sin escalas inventadas. La traduccion a cantidades exactas la
-hace `resolver`, que es donde estan los limites reales del motor.
+Every component lives in [0,1] so that a clipped Gaussian policy can emit them
+without invented scales. The translation into exact quantities happens in the
+resolver functions below, which is where the engine's real limits live.
 """
 from __future__ import annotations
 
@@ -23,12 +24,12 @@ from dataclasses import dataclass, fields
 
 from . import spec
 
-N_LEVELS = 8        # cuanto de cada cosa
+N_LEVELS = 8         # how much of each thing
 CATEGORIES = ["land", "feed", "animal", "sell", "seed", "hand"]
 N_PRIORITIES = len(CATEGORIES)
-N_EXPOSED = 30       # las que estaban a ojo; ver el bloque en `Macro`
-N_MARKET = 9        # un multiplicador de valor por producto, aprendido
-N_TURN = 5          # coeficientes de la regla de venta POR TURNO
+N_EXPOSED = 30       # the hand-set ones; see the block in `Macro`
+N_MARKET = 9         # one learned value multiplier per product
+N_TURN = 5           # coefficients of the PER-TURN selling rule
 N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
 # El coste del peon 16 del dia es 987 $ el solo -medido-, pero eso es una razon
 # ECONOMICA que la busqueda puede descubrir sola, no un limite del motor: el
@@ -39,10 +40,10 @@ N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
 
 @dataclass
 class Macro:
-    """Objetivos, no ordenes. El ejecutor decide como alcanzarlos."""
+    """Targets, not orders. The executor decides how to reach them."""
 
     tiles: float = 0.3333   # -> escala sobre el techo de riego, SIN borde
-                               #    (exp(logit(1/3)) = 0.5, el valor de antes)
+                               #    (exp(logit(1/3)) = 0.5, the previous value)
     animals: float = 0.5      # -> fraccion de la capacidad de atencion dedicada a ganado
     hands: float = 0.35       # -> peones objetivo por dia
     venta: float = 0.25        # -> agresividad: 0 vender ya, 1 acumular al maximo
@@ -50,14 +51,15 @@ class Macro:
     expandir: float = 0.25     # -> saturacion exigida antes de comprar tierra
     adherencia: float = 0.25   # -> cuanto se premia conservar el destino de ayer
     fertilizar: float = 0.0    # -> cuanto vale fertilizar frente a las demas tareas
-    # PRIORIDADES. Los siete de arriba dicen CUANTO de cada cosa; estos dicen
-    # QUE SE SACRIFICA cuando no llega para todo, que es el 31 % de los turnos:
-    # medido, la falta de caja impide comprar tierra en el 31 %, pienso en el
-    # 19 % y animales en el 15 %. Hoy eso lo deciden cuatro constantes mias
-    # (reserva de 300, 25 % de la caja, coste x1.5, 15 % en mano de obra) y el
-    # orden de una lista que escribi a mano.
+    # PRIORITIES. The seven above say HOW MUCH of each thing; these say WHAT
+    # GETS SACRIFICED when there is not enough for everything, which is 31% of
+    # turns: measured, lack of cash blocks buying land on 31%, feed on 19% and
+    # animals on 15%. That used to be decided by four hand-set constants (a
+    # $300 reserve, 25% of the cash, cost x1.5, 15% on labour) and the order of
+    # a list written by hand.
     #
-    # Pasan por softmax: lo que importa es el reparto relativo, no la escala.
+    # They go through a softmax: what matters is the relative split, not the
+    # scale.
     p_land: float = 0.5
     p_feed: float = 0.5
     p_animal: float = 0.5
@@ -65,17 +67,17 @@ class Macro:
     p_seed: float = 0.5
     p_hand: float = 0.5
     # ------------------------------------------------------------------
-    # LO QUE ESTABA A OJO. Auditoria del 2026-09-21: catorce constantes
-    # repartidas por mercado.py, tareas.py, ejecutor.py y este fichero
-    # nunca habian entrado en ninguna busqueda. Exponerlas subio el techo
-    # de la celda 12h x 5d de 939 a 1.258 $ (+34 %), mas que todo lo que
-    # se probo ese dia del lado del aprendizaje junto.
+    # WHAT USED TO BE HAND-SET. First audit: fourteen constants spread across
+    # market_ops.py, tasks.py, executor.py and this file had never entered any
+    # search. Exposing them raised the ceiling of the 12h x 5d cell from $939
+    # to $1,258 (+34%), more than everything tried that day on the learning
+    # side put together.
     #
-    # Viven aqui y no como globales porque el valor correcto DEPENDE DEL
-    # ESTADO -cuanta caja queda, cuantos dias, que rival- y eso es la
-    # definicion de lo que el docstring de arriba manda aprender.
+    # They live here and not as globals because the correct value DEPENDS ON
+    # THE STATE -how much cash is left, how many days, which opponent- and that
+    # is the definition of what the module docstring says must be learned.
     #
-    # Todas en [0,1]; `parametros()` las lleva a su rango real.
+    # All in [0,1]; `params()` maps them to their real range.
     f_labour: float = 0.137      # 0.15 / 1.09   -> reproduce el valor viejo
     f_seed: float = 0.479        # 0.50
     f_hand_margin: float = 0.359    # 3.0
@@ -89,21 +91,22 @@ class Macro:
     f_turns_init: float = 0.375     # 3.0
     f_turns_min: float = 0.333     # 2.0
     f_dig_value: float = 0.421      # 0.90
-    # INTERFAZ entre lo aprendido y lo simbolico: `expm1` es exponencial, asi
-    # que la ganancia decide si el mapa de la red SUGIERE o IMPONE, y el tope
-    # donde se corta. Nadie las busco nunca.
+    # INTERFACE between the learned and the symbolic: `expm1` is exponential,
+    # so the gain decides whether the network's map SUGGESTS or IMPOSES, and
+    # the cap decides where it is clipped. Nobody ever searched them.
     f_map_gain: float = 0.231  # 1.0
     f_map_cap: float = 0.655      # 20.0
     f_max_animal: float = 0.111     # 2  (el limite del motor es 10, no 2)
     f_residual_cap: float = 0.2784   # 3.0 -> exp(3) = 20x sobre la heuristica
-    # UMBRAL de las casillas que la heuristica declara vacias y el motor
-    # considera legales -5,81 por turno frente a 8,94 ofrecidas-. Es lo que
-    # esa casilla tiene que valer, en dolares emitidos por la red, para
-    # merecer ocupar una unidad. Aprendido como los otros 18: no hay forma de
-    # derivarlo del motor, asi que no puede ir a ojo.
-    # Por defecto 0.5 -> 2.500 $, muy por encima de cualquier tarea real, o
-    # sea que al arrancar NINGUNA casilla extra entra y la conducta es
-    # identica a la anterior. El entrenamiento lo baja si compensa.
+    # THRESHOLD for tiles the heuristic declares empty and the engine
+    # considers legal -5.81 per turn against 8.94 offered-. It is what such a
+    # tile has to be worth, in dollars emitted by the network, to deserve
+    # occupying a unit. Learned like the rest: there is no way to derive it
+    # from the engine, so it cannot be set by hand.
+    #
+    # The default 0.5 -> $2,500, far above any real task, so at startup NO
+    # extra tile enters and behaviour is identical to before. Training lowers
+    # it if it pays.
     f_extra_threshold: float = 0.5
     # CABEZA DE MERCADO: un multiplicador por producto sobre su valor de venta.
     #

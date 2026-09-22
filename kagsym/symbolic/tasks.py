@@ -421,7 +421,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         # Mando de fertilizar: 0 lo apaga, y lo decide la busqueda.
         from ..macro import peso_fertilizar
         _pf = peso_fertilizar(macro) if macro is not None else 0.0
-        if _pf > 0.0 or MICRO_MODE == "directo":
+        if _pf > 0.0:
             # FERTILIZAR, DESPUES de regar. Estaba ANTES y hacia `return`, asi que
             # una planta que necesitaba las dos cosas se fertilizaba y el riego
             # nunca llegaba a evaluarse: moria esa noche. El sintoma era plantar
@@ -540,7 +540,7 @@ FILTER_BY_INVENTORY = False
 # que da gradiente a una cabeza categorica. `_RNG_VERBO` se siembra por episodio
 # desde fuera para que las comparaciones sean pareadas.
 import numpy as np
-# "humgaro" (una tarea por unidad y turno) o "ruta" (valor de la secuencia).
+# The Hungarian is the only assignment method (see `assign_units`).
 METODO_ASIGNACION = "humgaro"
 
 # UMBRAL de las casillas EXTRA. Lo fija `macro.aplica_parametros` una vez por
@@ -664,7 +664,18 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
         for kind in ("COOP", "PASTURE"):
             if any(spec.ANIMALS[a]["structure"] == kind for a in ctx.pending_animals):
                 out.append((OPS_IX["BUILD_" + kind], ["BUILD_" + kind]))
-        if free_capacity > 0:
+        # NO SUSTAINABILITY CAP. There used to be `if free_capacity > 0`, and
+        # `free_capacity` comes from `sustainable_tiles`, MY estimate of how
+        # many tiles can be tended. That is not engine legality, it is an
+        # opinion, and it blocked planting on 17.9% of the empty tiles that had
+        # seed available (2,904 of 16,241 measured). If overplanting is costly
+        # the return will say so and the network will stop; if it is not, it
+        # can now do it.
+        #
+        # What IS kept is `plantable`: a crop that does not have time to mature
+        # yields ZERO by engine mechanics, exactly like not being able to plant
+        # on LOCKED. That is a fact, not an opinion.
+        if True:
             # UNA OPCION POR CULTIVO con semilla disponible y que dé tiempo a
             # madurar. La legalidad y la viabilidad las sigue poniendo el motor;
             # la PREFERENCIA pasa a la red.
@@ -723,13 +734,13 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
     free = free_capacity
     ctx = contexto_turno(obs, farm)
     _invs_turno = (obs["private"].get("inventories") or []
-                   if MICRO_MODE == "ops" else [])
+                   )
     _invs_turno = [iv for iv in _invs_turno if isinstance(iv, dict)] or [{}]
     for y in range(BOARD):
         for x in range(BOARD):
             if not unlocked(farm, x, y):
                 continue
-            if MICRO_MODE == "ops" and verb_map is not None:
+            if verb_map is not None:
                 # E2E: la LEGALIDAD la da el motor, el VERBO lo elige la red.
                 # OJO: solo se entra aqui CON mapa_ops. `MODO_MICRO` es global
                 # al proceso, asi que un agente SIN red -el rival de una liga,
@@ -821,26 +832,17 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
             if t is not None:
                 if value_map is not None:
                     import math
-                    if MICRO_MODE == "directo":
-                        # La red EMITE el valor; la heuristica desaparece. Es la
-                        # tesis e2e: que el valor de actuar en una casilla lo
-                        # decida el aprendizaje, no una tabla que escribi yo
-                        # ("regar vale 2x el precio", "desbrozar vale 0.9x
-                        # plantar"). Negativo = no merece la pena, y pierde
-                        # contra la columna ficticia del humgaro -> PASS.
-                        # La red emite en espacio symlog (donde se ajusto);
-                        # se deshace para volver a dolares.
-                        r = float(value_map[y][x])
-                        t = (math.copysign(math.expm1(
-                            abs(min(MAP_CAP, MAP_GAIN * r))), r), t[1])
-                    else:
-                        # MULTIPLICATIVO: residuo sobre la heuristica. Se
-                        # conserva para poder medir contra el, que es la unica
-                        # forma de saber si el modo directo aporta.
-                        r = float(value_map[y][x])
-                        _z = MAP_GAIN * r
-                        t = (t[0] * math.exp(max(-RESIDUAL_CAP,
-                                                 min(RESIDUAL_CAP, _z))), t[1])
+                    # THE NETWORK EMITS THE VALUE. This branch is only
+                    # reached for tiles where `tile_options` offered nothing
+                    # but `tile_task` did. Measured over 77,150 tile queries:
+                    # the vocabulary offered nothing on 37,010 and in NONE of
+                    # them did `tile_task` have anything to propose, so the
+                    # heuristic fallback that used to live here never fired.
+                    # The network emits in symlog space (where it was fitted);
+                    # it is undone to get back to dollars.
+                    r = float(value_map[y][x])
+                    t = (math.copysign(math.expm1(
+                        abs(min(MAP_CAP, MAP_GAIN * r))), r), t[1])
                 tasks[(x, y)] = t
                 if t[1][0] == "PLANT":
                     free -= 1
@@ -919,32 +921,6 @@ def _can_do(inv, op) -> bool:
     return True
 
 
-def _asignar_greedy(units, tasks, invs=None) -> list:
-    """Cada unidad, por orden, se queda la mejor tarea libre que le quede.
-
-    Se conserva para poder medir contra ella: es la version anterior de esta
-    capa, y sin la comparacion no hay forma de saber si el optimo aporta algo.
-    """
-    invs = invs or [{}] * len(units)
-    actions = []
-    tomadas = set()
-    for i, pos in enumerate(units):
-        inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
-        best, mejor_v = None, 0.0
-        for tile, (value, _op) in tasks.items():
-            if tile in tomadas or not _can_do(inv, _op):
-                continue
-            v = value * (STEP_DISCOUNT ** dist(pos, tile))
-            if v > mejor_v:
-                best, mejor_v = tile, v
-        if best is None:
-            actions.append(["PASS"])
-            continue
-        tomadas.add(best)
-        actions.append(_action_for(pos, best, tasks))
-    return actions
-
-
 # SIN IMPLEMENTAR, y se deja escrito para que no se vuelva a descubrir. Habia
 # aqui una constante ADHERENCIA = 0.0 -bonus por conservar el destino del turno
 # anterior- declarada y jamas leida: ajustarla no hacia absolutamente nada.
@@ -954,11 +930,12 @@ def _asignar_greedy(units, tasks, invs=None) -> list:
 # desperdicio -puede aparecer algo urgente-, asi que si algun dia se implementa,
 # el peso tiene que APRENDERSE como los otros 18, no fijarse a ojo.
 
-# "residuo": la red modula la valoracion escrita a mano.
-# "directo":  la red EMITE la valoracion; la OPERACION sigue siendo heuristica.
-# "ops":      la red emite valoracion Y operacion. La heuristica desaparece
-#             del tablero por completo: solo queda legalidad del motor.
-MICRO_MODE = "residuo"
+# KEPT FOR COMPATIBILITY; it no longer branches anything. Three modes existed
+# -"residuo", "directo", "ops"- so they could be measured against each other.
+# They are measured: `ops` -the network emits value AND verb- is the only one
+# with full learning freedom and the only one used. Historical scripts still
+# assign this, so the name survives without changing behaviour.
+MICRO_MODE = "ops"
 
 
 def _assign_hungarian(units, tasks, invs=None, previous=None, adherencia=0.0) -> list:
@@ -1004,76 +981,7 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, adherencia=0.0) ->
     return actions
 
 
-def _valor_ruta(start_, tiles, tasks, presup, inv, depth=4):
-    """Valor de la RUTA que arranca en `inicio`, no de la casilla sola.
-
-    El humgaro valora v * DESCUENTO^dist(unidad, casilla): decide una tarea y
-    vuelve a resolver el turno siguiente. Nunca valora que ir a una casilla te
-    deja AL LADO de otras tres. Medido en 12h x 5d: el ejecutor completa 62 de
-    las 102 tareas que caben pagando el camino -un 39 % de hueco- y ese hueco
-    vale +58 a +67 % de dinero, porque a este volumen los precios marginales
-    NO saturan (unidad 30a y 51a del trigo valen las dos 22,0 $).
-
-    Encadena hasta `prof` tareas por el vecino mas valioso por paso. No es el
-    optimo del problema de rutas -eso es un MIP- pero captura lo que falta:
-    el valor de agrupar.
-    """
-    total = 0.0
-    pos = start_
-    rest = [c for c in tiles if c != start_]
-    spent = 0
-    for _ in range(depth):
-        if pos is None:
-            break
-        d = dist(pos, start_) if pos is not start_ else 0
-        v_, op = tasks[pos]
-        if not _can_do(inv, op):
-            break
-        spent += 1 + (dist(pos, start_) if total else 0)
-        if spent > presup:
-            break
-        total += v_ * (STEP_DISCOUNT ** spent)
-        if not rest:
-            break
-        next_ = max(rest, key=lambda c: tasks[c][0] /
-                  (1.0 + dist(pos, c)) if _can_do(inv, tasks[c][1]) else -1e9)
-        if tasks[next_][0] <= 0:
-            break
-        rest.remove(next_); pos = next_
-    return total
-
-
-def _asignar_ruta(units, tasks, invs, previous, adherencia, presup):
-    """Como el humgaro, pero la matriz lleva valor de RUTA en vez de de casilla."""
-    tiles = list(tasks)
-    n = len(units); m = len(tiles) + n
-    value = [[0.0] * m for _ in range(n)]
-    invs = invs or [{}] * len(units)
-    for i, pos in enumerate(units):
-        inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
-        for j, c in enumerate(tiles):
-            v_, op = tasks[c]
-            if not _can_do(inv, op):
-                continue
-            travel = dist(pos, c)
-            if travel >= presup:
-                continue
-            r = _valor_ruta(c, tiles, tasks, presup - travel, inv)
-            value[i][j] = r * (STEP_DISCOUNT ** travel)
-            if adherencia and previous is not None and previous.get(i) == c:
-                value[i][j] *= (1.0 + adherencia)
-    actions = []
-    for i, j in enumerate(max_assignment(value)):
-        if j >= len(tiles) or value[i][j] <= 0.0:
-            actions.append(["PASS"])
-            if previous is not None: previous[i] = None
-        else:
-            actions.append(_action_for(units[i], tiles[j], tasks))
-            if previous is not None: previous[i] = tiles[j]
-    return actions
-
-
-def assign_units(obs, free_capacity: int, method: str = None,
+def assign_units(obs, free_capacity: int, method=None,
                  value_map=None, previous=None, macro=None, verb_map=None) -> list:
     """Una accion por unidad, maximizando el valor descontado del conjunto.
 
@@ -1081,7 +989,9 @@ def assign_units(obs, free_capacity: int, method: str = None,
     se resuelven exacto en 0.23 ms, frente a los ~83 ms de media que da la
     bolsa de 60 s para 720 turnos (ver `tests/test_assign.py`).
     """
-    method = method or METODO_ASIGNACION
+    # ONE METHOD ONLY. The greedy and the route assigner were kept to be
+    # measured against; they are measured and the Hungarian wins. Three
+    # unused paths are just surface for a bug to hide in.
     me = int(obs["player"])
     farm = obs["farms"][me]
     units = [tuple(farm["farmer"])] + [tuple(p) for p in farm["hands"]]
@@ -1090,14 +1000,8 @@ def assign_units(obs, free_capacity: int, method: str = None,
     if not tasks:
         return [["PASS"] for _ in units]
     invs = obs["private"].get("inventories", [])
-    if method == "greedy":
-        return _asignar_greedy(units, tasks, invs)
     adh = 0.0
     if macro is not None:
         from ..macro import assignment_stickiness
         adh = assignment_stickiness(macro)
-    if method == "ruta":
-        from .. import spec as _sp
-        presup = max(1, _sp.TURNS_PER_DAY - int(obs.get("hour", 0)))
-        return _asignar_ruta(units, tasks, invs, previous, adh, presup)
     return _assign_hungarian(units, tasks, invs, previous, adh)

@@ -20,9 +20,9 @@ RAIZ = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 # proposito: son el MOTOR -hechos, no politica- y ahi los numeros deben estar
 # fijos. `redes/` tampoco: es arquitectura, y sus tamanos se eligen por medida
 # (ver la tabla de arquitecturas), no son decisiones de juego.
-CASCADA = ["exacto/ejecutor.py", "exacto/tareas.py", "exacto/mercado.py",
-           "exacto/asignacion.py", "macro.py", "obs.py", "recompensa.py",
-           "entorno.py", "potencial.py", "entorno_par.py", "ligas.py"]
+CASCADA = ["symbolic/executor.py", "symbolic/tasks.py", "symbolic/market_ops.py",
+           "symbolic/assignment.py", "macro.py", "obs.py", "reward.py",
+           "environment.py", "potential.py", "parallel_env.py"]
 
 # lo que NO es decision: hechos del motor y guardas numericas
 EXENTO = ("spec.", "1e-6", "1e-9", "1e-12", "0.0)", "1.0)", "len(", "range(",
