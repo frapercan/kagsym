@@ -58,7 +58,7 @@ LADDER = [
     # is not the highest-scoring one, and training only against v48 left out
     # precisely the one we do worst against.
     "v16-rc5-high-score-8c-4s-premium-market-lead",
-    # ---- ten more public agents, downloaded with `herramientas/baja_escalera.py`.
+    # ---- ten more public agents, downloaded with `tools/download_ladder.py`.
     #
     # WHY THEY WERE NEEDED. With six rungs we won eight of eleven at 88-100% and
     # lost the last one 100%: the jump was too large and there was no filler.

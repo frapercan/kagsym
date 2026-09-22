@@ -42,7 +42,7 @@ exponer 8 decisiones estructurales         cuatro vivas, entre +23 % y +71 %
 Buscarlas con `grep` no basta: eso encuentra `SAT_ALTA = 0.85`, pero no un
 `min` que es un techo infranqueable, ni un bucle que reparte presupuesto y
 **tira lo que sobra**. Para eso está
-[`herramientas/auditoria_cascada.py`](herramientas/auditoria_cascada.py), que
+[`tools/audit_decisions.py`](tools/audit_decisions.py), que
 recorre el árbol de sintaxis y saca **todos** los puntos de decisión.
 
 Y una vez expuestas, **perturbar y medir**: leer el código no distingue una
@@ -113,8 +113,8 @@ mismo macro en los dos lados, la red hace 75.009 $ y el vector 33.164.
 
 ```bash
 pytest kagsym/tests -q          # el húngaro == scipy; FastEnv == el motor real
-python herramientas/vara.py ckpt.pt   # vara fija: v48 sin tope, 8 semillas
-python herramientas/auditoria_cascada.py
+python tools/yardstick.py ckpt.pt   # vara fija: v48 sin tope, 8 semillas
+python tools/audit_decisions.py
 ```
 
 `FastEnv` tiene que ser **indistinguible** del motor turno a turno. Si esa
@@ -145,4 +145,4 @@ decisión es la que es.
 ## Licencia
 
 MIT. No incluye agentes de terceros: la escalera de rivales se construye
-descargándolos con `herramientas/baja_escalera.py`.
+descargándolos con `tools/download_ladder.py`.

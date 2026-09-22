@@ -13,10 +13,10 @@
 !ESPECIFICACION.md
 !pyproject.toml
 
-# ---- herramientas de medida y de construccion de la escalera ----
-!herramientas/
-herramientas/*
-!herramientas/*.py
+# ---- measurement tools and ladder construction ----
+!tools/
+tools/*
+!tools/*.py
 
 # ---- el paquete ----
 !kagsym/

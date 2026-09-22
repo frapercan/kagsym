@@ -185,7 +185,7 @@ class Macro:
     # ------------------------------------------------------------------
     # THIRD BATCH. STRUCTURAL audit: the two before it looked for module
     # constants and literals; this one walks every decision site in the tree
-    # (`herramientas/auditoria_cascada.py`) and classifies it. Of 156 sites,
+    # (`tools/audit_decisions.py`) and classifies it. Of 156 sites,
     # these eight were policy decisions nobody could move.
     #
     # The worst is `seed_stock`: `seed_orders` ABORTS entirely if you
