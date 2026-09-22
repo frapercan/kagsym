@@ -1,35 +1,36 @@
-"""Arquitectura end-to-end: un embedding del mundo, dos politicas y una cabeza auxiliar.
+"""End-to-end architecture: one world embedding, two policies, auxiliary heads.
 
-               grid (50 canales: 25 mios + 25 del rival)
-               glob (75: tiempo, dinero, mercado, pueblo, mi privado)
-               hist (flujo REALIZADO del rival, despejado exacto)
+               grid (50 channels: 25 mine + 25 the opponent's)
+               glob (75: time, money, market, town, my private state)
+               hist (the opponent's REALISED flow, solved exactly)
                                   |
-                        CodificadorMundo
+                            WorldEncoder
                                   |
-                              h_t  (embedding compartido)
+                              h_t  (shared embedding)
                     +-------------+-------------+-------------+
                     |             |             |             |
-              cabeza MACRO   cabeza MICRO    critico     cabeza RIVAL
-              Beta^7 / dia   mapa 10x10      V(s)        flujo acumulado
-                                                          (auxiliar)
+               MACRO head    MICRO head      critic      RIVAL head
+               vector/day    10x10 map        V(s)     cumulative flow
+                                                         (auxiliary)
 
-Tres decisiones, cada una atada a algo medido:
+Three decisions, each tied to something measured:
 
-1. UN SOLO EMBEDDING para macro y micro. Las dos politicas leen el mismo estado;
-   lo que cambia es la resolucion de la decision, no la informacion. Compartir
-   tronco es ademas la unica forma de que la senal del micro -densa, cada turno-
-   ayude a formar la representacion que usa el macro -escasa, una vez al dia-.
+1. ONE EMBEDDING for macro and micro. Both policies read the same state; what
+   changes is the resolution of the decision, not the information. Sharing the
+   trunk is also the only way for the micro signal -dense, every turn- to help
+   shape the representation the macro uses -sparse, once a day-.
 
-2. EL RIVAL ENTRA POR TRES SITIOS: su tablero ya esta en `grid` (es publico),
-   el mercado compartido en `glob`, y su flujo realizado en `hist`. Lo unico
-   oculto de verdad es su cobertizo, sus semillas y lo que llevan sus unidades,
-   y eso se despeja EXACTO del inventario de mercado un turno despues.
+2. THE OPPONENT ENTERS THROUGH THREE PLACES: their board is already in `grid`
+   (it is public), the shared market in `glob`, and their realised flow in
+   `hist`. The only genuinely hidden parts are their shed, their seeds and what
+   their units carry, and those are solved EXACTLY from the market inventory
+   one turn later.
 
-3. LA CABEZA AUXILIAR PREDICE NIVEL ACUMULADO, NO TEMPORIZADO. Medido sobre
-   8360 transiciones retenidas: predecir el flujo turno a turno es PEOR que no
-   corregir (-26 %), mientras que el nivel de dinero del rival (+19 %) y su
-   gasto (+35 %) si se aciertan. Se le pide lo segundo. Las etiquetas son
-   exactas, asi que es supervision gratis que da forma al embedding.
+3. THE AUXILIARY HEAD PREDICTS A CUMULATIVE LEVEL, NOT TIMING. Measured over
+   8,360 held-out transitions: predicting the turn-by-turn flow is WORSE than
+   not correcting (-26%), while the opponent's money level (+19%) and spending
+   (+35%) are predicted well. It is asked for the latter. The labels are exact,
+   so it is free supervision that shapes the embedding.
 """
 from __future__ import annotations
 
@@ -44,8 +45,8 @@ from .. import obs as O
 from ..macro import N_MACRO
 from .blocks import SeparableBlock, ResBlock, symlog
 
-N_PRODUCTOS = 9
-N_HIST = 4 * N_PRODUCTOS      # flujo del rival en 4 ventanas hacia atras
+N_PRODUCTS = 9
+N_HIST = 4 * N_PRODUCTS      # opponent flow over 4 backward windows
 
 
 @dataclass
@@ -54,32 +55,33 @@ class WorldConfig:
     blocks: int = 6
     hidden: int = 256
     sigma_micro: float = 0.15   # se calibra midiendo cuantas asignaciones voltea
-    # E2E del tablero: ademas del valor por casilla, la red emite un logit por
-    # OPERACION legal. Medido 2026-09-20: elegir el verbo al azar entre los
-    # legales da 8 692 $ frente a 245 $ de no hacer nada (35x el suelo), asi que
-    # hay gradiente desde cero. Y un ranking FIJO al azar da 397 $: la operacion
-    # correcta depende del estado, que es justo lo que una heuristica escrita a
-    # mano -un ranking fijo- no puede capturar y una red condicionada si.
+    # END-TO-END BOARD PLAY: besides the per-tile value, the network emits one
+    # logit per LEGAL operation. Measured: picking the verb at random among the
+    # legal ones yields $8,692 against $245 for doing nothing (35x the floor),
+    # so there is gradient from scratch. A FIXED random ranking yields $397:
+    # the right operation depends on the state, which is exactly what a
+    # hand-written heuristic -a fixed ranking- cannot capture and a
+    # state-conditioned network can.
     con_ops: bool = False
-    # Sigma PROPIO para los canales de verbo. El 0.15 de `sigma_micro` se
-    # calibro "midiendo cuantas asignaciones voltea" sobre el canal de VALOR,
-    # en dolares-symlog; heredarlo para los logits de una eleccion entre 15
-    # verbos no tenia justificacion. Medido: con 0.15 la cabeza habia viajado
-    # 0.0059 en 200 pasos, senal/ruido 0.039 -el verbo seguia siendo 96 % ruido
-    # tras 50 updates- y llegar a taparlo pedia ~4 000 pasos.
+    # SEPARATE SIGMA for the verb channels. The 0.15 of `sigma_micro` was
+    # calibrated by "measuring how many assignments it flips" on the VALUE
+    # channel, in symlog dollars; inheriting it for the logits of a choice
+    # among 19 verbs had no justification. Measured: at 0.15 the head had moved
+    # 0.0059 in 200 steps, signal/noise 0.039 -the verb was still 96% noise
+    # after 50 updates- and covering that would have taken ~4,000 steps.
     sigma_ops: float = 0.03
-    # Forma de la convolucion del tronco. "denso" = la 3x3 de siempre; "sep" =
-    # separada en profundidad + punto, que MIDE lo mismo por 6,8x menos coste
-    # (ver SeparableBlock). El tronco es el 90,5 % de los parametros -1.960.192 de
-    # 2.165.558- y el 51 % del tiempo de juego perfilado, asi que 6,8x ahi son
-    # ~1,8x de partidas por hora en total.
+    # Trunk convolution shape. "denso" = the usual dense 3x3; "sep" = depthwise
+    # plus pointwise, which MEASURES the same at 6.8x less cost (see
+    # SeparableBlock). The trunk is 90.5% of the parameters -1,960,192 of
+    # 2,165,558- and 51% of profiled play time, so 6.8x there is ~1.8x more
+    # episodes per hour overall.
     #
-    # Cambiarlo INVALIDA los checkpoints densos: las formas no coinciden. El
-    # camino que no tira el entrenamiento es destilar (runs/ligas/destila_tronco.py).
-    # Forma del contexto de la CABEZA MICRO. Aqui vino el salto medido de la
-    # noche (1.397 -> 1.949 $ solo por pasar de 1x1 a 3x3), y coincide con lo
-    # que la sonda de arquitecturas ya decia: la mezcla que falta es GEOMETRIA
-    # LOCAL, no contexto global. "1x1" = sin contexto, como estaba.
+    # Changing it INVALIDATES dense checkpoints: the shapes do not match. The
+    # path that does not throw the training away is distillation.
+    # Context shape of the MICRO HEAD. This is where a measured jump came from
+    # ($1,397 -> $1,949 purely from moving 1x1 to 3x3), and it agrees with what
+    # the architecture probe already said: what is missing is LOCAL GEOMETRY,
+    # not global context. "1x1" = no context, as it used to be.
     ctx_micro: str = "3x3"
     conv: str = "denso"
     nucleo: int = 3          # tamano de la 3x3 separable; 7 amplia el campo receptivo
@@ -89,7 +91,7 @@ class WorldConfig:
 
 
 class CodificadorMundo(nn.Module):
-    """(grid, glob, hist) -> embedding espacial h y resumen global g."""
+    """(grid, glob, hist) -> spatial embedding h and global summary g."""
 
     def __init__(self, cfg: WorldConfig):
         super().__init__()
@@ -103,8 +105,8 @@ class CodificadorMundo(nn.Module):
                                           for _ in range(cfg.blocks)])
         else:
             self.blocks = nn.Sequential(*[ResBlock(w) for _ in range(cfg.blocks)])
-        # El vector global modula por FiLM en vez de entrar como canal: el dia,
-        # los precios y el dinero afectan a TODAS las casillas a la vez.
+        # The global vector modulates via FiLM instead of entering as a
+        # channel: the day, prices and money affect ALL tiles at once.
         self.glob_enc = nn.Sequential(
             nn.Linear(O.N_GLOBAL + N_HIST, cfg.hidden), nn.GELU(),
             nn.Linear(cfg.hidden, 2 * w))
@@ -122,7 +124,7 @@ class CodificadorMundo(nn.Module):
 
 
 class _TileAttention(nn.Module):
-    """Auto-atencion sobre las 100 casillas del tablero."""
+    """Self-attention over the 100 board tiles."""
 
     def __init__(self, w: int, cabezas: int = 4):
         super().__init__()
@@ -141,7 +143,7 @@ class _TileAttention(nn.Module):
 
 
 class E2EAgent(nn.Module):
-    """Todo conectado: un tronco, dos politicas, un critico y una cabeza auxiliar."""
+    """Everything wired: one trunk, two policies, a critic and auxiliary heads."""
 
     def __init__(self, cfg: WorldConfig):
         super().__init__()
@@ -151,119 +153,120 @@ class E2EAgent(nn.Module):
         self.cuerpo = nn.Sequential(
             nn.Linear(2 * w + hid, hid), nn.GELU(),
             nn.Linear(hid, hid), nn.GELU())
-        # Gaussiana en espacio LOGIT, no Beta. Motivo medido: remuestrear el
-        # macro cada dia es un paseo aleatorio sobre 30 dias y destruye la
-        # coherencia de la estrategia -se compra semilla que no se planta, se
-        # contratan peones sin trabajo-. El coste medido del ruido, con el MISMO
-        # vector: 40 972 $ fijo contra 18 967 $ muestreado (-54 %).
+        # Gaussian in LOGIT space, not Beta. Measured reason: resampling the
+        # macro every day is a random walk over 30 days and destroys strategic
+        # coherence -seed is bought that never gets planted, hands are hired
+        # with no work-. The measured cost of that noise, with the SAME vector:
+        # $40,972 fixed against $18,967 sampled (-54%).
         #
-        # Con una gaussiana en logit, la perturbacion `eps` se puede FIJAR POR
-        # EPISODIO y aplicar a los 30 dias: la media sigue dependiendo del
-        # estado -la politica puede subir `venta` al acercarse el cierre- pero
-        # el temblor aleatorio desaparece. Es explorar en el espacio de
-        # POLITICAS, no en el de acciones.
+        # With a Gaussian in logit space the perturbation `eps` can be FIXED
+        # PER EPISODE and applied to all 30 days: the mean still depends on the
+        # state -the policy can raise the sell aggressiveness as the close
+        # approaches- but the random jitter disappears. This is exploring in
+        # POLICY space, not in action space.
         self.macro_mu = nn.Linear(hid, N_MACRO)
         self.log_sigma = nn.Parameter(torch.full((N_MACRO,), float(np.log(0.35))))
 
-        # Canal 0 = valor de actuar en la casilla (symexp -> $).
-        # Canales 1.. = un logit por verbo de OPS_VOCAB.
-        # Van en UN solo tensor a proposito: PPO ya hace flatten(1).sum(-1)
-        # sobre el micro, asi que la perdida no cambia ni una linea.
+        # Channel 0 = value of acting on the tile (symexp -> $).
+        # Channels 1.. = one logit per verb of OPS_VOCAB.
+        # They live in ONE tensor on purpose: PPO already does
+        # flatten(1).sum(-1) over the micro, so the loss needs no change.
         from ..symbolic.tasks import N_OPS
         self.n_ops = N_OPS if cfg.con_ops else 0
-        # CAPACIDAD DE LA CABEZA QUE DECIDE. Medido el 2026-09-21 por
-        # descomposicion: el mapa micro aporta +952 $ de 953 y el macro +1, y
-        # sin embargo esta cabeza eran 2.064 parametros -el 0,1 % del modelo-
-        # contra 1,96 M del codificador. Una sonda LINEAL sobre el tronco para
-        # la unica salida que decide algo.
+        # CAPACITY OF THE HEAD THAT DECIDES. Measured by decomposition: the
+        # micro map contributes +$952 of 953 and the macro +1, and yet this
+        # head was 2,064 parameters -0.1% of the model- against 1.96M in the
+        # encoder. A LINEAR probe on the trunk for the only output that decides
+        # anything.
         #
-        # El 3x3 no es solo capacidad: da CONTEXTO ESPACIAL. En este tablero la
-        # decision de una casilla depende de sus vecinas -a quien riegas antes,
-        # donde plantas para no dispersar las unidades- y un 1x1 no puede ver
-        # eso por construccion.
+        # The 3x3 is not only capacity: it gives SPATIAL CONTEXT. On this board
+        # a tile's decision depends on its neighbours -whom you water first,
+        # where you plant so as not to scatter the units- and a 1x1 cannot see
+        # that by construction.
         #
-        # La ultima capa sigue arrancando en CERO, asi que la propiedad medida
-        # se conserva: el residuo empieza neutro y no se tira la valoracion
-        # exacta, que ya vale 75.157 $.
+        # The last layer still starts at ZERO, so the measured property holds:
+        # the residual starts neutral and does not throw away the exact
+        # valuation, which is already worth $75,157.
         _c = getattr(cfg, "ctx_micro", "3x3")
         if _c == "1x1":
             self.micro_ctx = nn.Identity()
         elif _c == "3x3x2":
-            # campo receptivo 5 con dos 3x3: mas barato que un 5x5 y con una
-            # no linealidad en medio.
+            # receptive field 5 from two 3x3s: cheaper than a 5x5 and with a
+            # nonlinearity in between.
             self.micro_ctx = nn.Sequential(
                 nn.Conv2d(w, w, 3, padding=1), nn.SiLU(),
                 nn.Conv2d(w, w, 3, padding=1), nn.SiLU())
         elif _c == "attn":
-            # ATENCION SOBRE LAS 100 CASILLAS, igualada en parametros al 3x3
-            # (~130 k contra 147 k) para que la comparacion aisle MEZCLA GLOBAL
-            # contra GEOMETRIA LOCAL y no capacidad.
+            # ATTENTION OVER THE 100 TILES, parameter-matched to the 3x3
+            # (~130k against 147k) so the comparison isolates GLOBAL MIXING
+            # against LOCAL GEOMETRY and not capacity.
             #
-            # Por que aqui y no en el tronco: la sonda vieja midio el tronco y
-            # puntuaba IMITAR al experto -que hoy sabemos que es el cuello de
-            # botella-, asi que no responde esta pregunta. Y la cabeza micro es
-            # donde la atencion tiene sentido: decide casilla por casilla y las
-            # casillas interactuan -una unidad solo hace una tarea, e ir a una
-            # es no ir a otra-. El 1x1 no ve vecinas, el 3x3 ve ocho, esto ve
-            # las cien.
+            # Why here and not in the trunk: the old probe measured the trunk
+            # and scored IMITATING the expert -which we now know is the
+            # bottleneck- so it does not answer this question. And the micro
+            # head is where attention makes sense: it decides tile by tile and
+            # tiles interact -a unit does one task, and going to one is not
+            # going to another-. The 1x1 sees no neighbours, the 3x3 sees
+            # eight, this sees all hundred.
             self.micro_ctx = _TileAttention(w)
         elif _c == "5x5":
             self.micro_ctx = nn.Sequential(nn.Conv2d(w, w, 5, padding=2), nn.SiLU())
         else:
             self.micro_ctx = nn.Sequential(nn.Conv2d(w, w, 3, padding=1), nn.SiLU())
         self.micro = nn.Conv2d(w, 1 + self.n_ops, 1)
-        # SIGMA DE LA CABEZA MICRO, APRENDIDO. Antes era `cfg.sigma_micro` y
-        # `cfg.sigma_ops`, dos constantes del config: la cabeza que NO aporta
-        # nada -la macro- exploraba de forma adaptativa y la que aporta el
-        # +952 $ de 953 lo hacia con un numero elegido a mano. Y ese numero se
-        # calibro cuando se creia secundaria.
+        # MICRO HEAD SIGMA, LEARNED. It used to be `cfg.sigma_micro` and
+        # `cfg.sigma_verb`, two config constants: the head that contributes
+        # NOTHING -the macro- explored adaptively, and the one contributing
+        # +$952 of 953 did so with a hand-picked number. And that number was
+        # calibrated back when it was believed to be secondary.
         #
-        # Se inicializa EXACTAMENTE en los valores de antes, asi que al
-        # arrancar la conducta es identica; a partir de ahi lo mueve PPO, con
-        # el mismo mecanismo que ya usa para el macro.
+        # It is initialised at EXACTLY the previous values, so behaviour at
+        # startup is identical; from there PPO moves it, with the same
+        # mechanism already used for the macro.
         _nc = 1 + self.n_ops
         _ini = torch.full((_nc, 1, 1), float(np.log(cfg.sigma_ops)))
         _ini[0] = float(np.log(cfg.sigma_micro))
         self.log_sigma_micro = nn.Parameter(_ini)
-        # CRITICO. Era `nn.Linear(hid, 1)`: 257 parametros, otra sonda lineal
-        # sobre el tronco. Y de el sale la VENTAJA que guia todo PPO, asi que
-        # su error se convierte en ruido de gradiente en las dos politicas.
-        # En L1 daba R2 0,96 y no urgia; en campeonato, con rival real y
-        # mercado compartido, es donde se espera que se rompa -alli la
-        # liquidacion del adversario aporta el 99,1 % de la varianza diaria-.
+        # CRITIC. It used to be `nn.Linear(hid, 1)`: 257 parameters, another
+        # linear probe on the trunk. And out of it comes the ADVANTAGE that
+        # guides all of PPO, so its error turns into gradient noise in both
+        # policies. At toy scale it gave R2 0.96 and was not urgent; at
+        # championship scale, with a real opponent and a shared market, is
+        # where it is expected to break -there the opponent's liquidation
+        # accounts for 99.1% of the daily variance-.
         self.critico = nn.Sequential(nn.Linear(hid, hid), nn.SiLU(),
                                      nn.Linear(hid, 1))
-        # CABEZA AUXILIAR, de vuelta con OBJETIVO NUEVO. La anterior predecia
-        # los productos del rival, que ya estan en la entrada -su tablero se
-        # codifica entero-, asi que era una tarea trivial que no obligaba al
-        # codificador a nada. Y ademas nadie cableo su perdida: no recibia
-        # gradiente y se quedaba en su inicializacion.
+        # AUXILIARY HEAD, back with a NEW TARGET. The previous one predicted
+        # the opponent's products, which are already in the input -their board
+        # is encoded in full- so it was a trivial task that forced the encoder
+        # to do nothing. And nobody wired its loss: it received no gradient and
+        # stayed at its initialisation.
         #
-        # Ahora predice lo que el rival tendra LISTO a 1, 2, 3, 5, 8 y 13 dias
-        # vista, desde el estado de HOY. Su oferta de hoy si es entrada, asi que acertar manana exige
-        # modelar como crece su granja -que madura, que acaba de plantar-, que
-        # es exactamente lo que el codificador no representaba.
+        # It now predicts what the opponent will have READY at 1, 2, 3, 5, 8
+        # and 13 days ahead, from TODAY's state. Their supply today is an
+        # input, so getting tomorrow right requires modelling how their farm
+        # grows -what is maturing, what was just planted- which is exactly what
+        # the encoder did not represent.
         #
-        # Por que importa: su liquidacion aporta el 99,1 % de la varianza de la
-        # recompensa diaria, y por eso meterla en el shaping hundia el critico
-        # a R2 -2,535. La leccion fue "el shaping solo puede llevar lo que el
-        # estado predice"; esto ataca la otra mitad, enseñar al estado a
-        # predecirlo.
-        # JEPA. La cabeza auxiliar de arriba predice UNIDADES CRUDAS del
-        # rival, y parte de eso es impredecible desde nuestra observacion -su
-        # cobertizo es privado, su politica no la vemos-. Forzar al codificador
-        # a predecir ruido gasta capacidad; es el defecto que yo mismo senale
-        # al elegir ese objetivo.
+        # Why it matters: their liquidation accounts for 99.1% of the variance
+        # of the daily reward, which is why putting it in the shaping sank the
+        # critic to R2 -2.535. The lesson was "shaping can only carry what the
+        # state predicts"; this attacks the other half, teaching the state to
+        # predict it.
+        # JEPA. The auxiliary head above predicts RAW opponent units, and part
+        # of that is unpredictable from our observation -their shed is private,
+        # we do not see their policy-. Forcing the encoder to predict noise
+        # spends capacity; that is the flaw in choosing that target.
         #
-        # Aqui se predice el EMBEDDING futuro del propio codificador, con el
-        # objetivo DETENIDO (stop-gradient). Lo impredecible desaparece del
-        # objetivo porque el embedding solo retiene lo que el codificador
-        # considera relevante.
+        # Here the target is the FUTURE EMBEDDING of the encoder itself, with a
+        # STOPPED gradient. What is unpredictable disappears from the target
+        # because the embedding only retains what the encoder considers
+        # relevant.
         #
-        # Receta sin codificador de momento (predictor + stop-grad). El riesgo
-        # es el COLAPSO: si el codificador emite siempre el mismo vector,
-        # predecirlo es trivial. Se vigila con la desviacion de las
-        # proyecciones, que se registra como `2_salud/jepa_sd`.
+        # No momentum encoder for now (predictor + stop-grad). The risk is
+        # COLLAPSE: if the encoder always emits the same vector, predicting it
+        # is trivial. It is watched through the standard deviation of the
+        # projections, logged as `2_salud/jepa_sd`.
         self.d_jepa = 64
         self.jepa_proy = nn.Linear(hid, self.d_jepa)
         from ..obs import AUX_HORIZONS as _HZ
@@ -274,25 +277,26 @@ class E2EAgent(nn.Module):
         from ..obs import N_AUX_RIVAL as _NAUX
         self.n_aux = _NAUX
         self.aux_rival = nn.Linear(hid, _NAUX)
-        # (nota historica) La version anterior fue retirada: la perdida del
-        # entrenador es `l_pi + peso_valor * l_v` y nadie toca su salida, asi
-        # que no recibia gradiente de nada -se quedaba en su inicializacion
-        # para siempre- y solo costaba tiempo en cada pasada. Queda ademas
-        # `peso_aux: 0.1` en el config, que era el peso de esa perdida que
-        # nunca se cableo: el fosil de un diseno a medias.
-        # El micro arranca en residuo CERO: la valoracion exacta ya vale 75 157 $
-        # y empezar por debajo de ese punto seria tirar la busqueda.
+        # (historical note) The previous version was withdrawn: the trainer's
+        # loss is `l_pi + value_weight * l_v` and nobody touches its output, so
+        # it received gradient from nothing -it stayed at its initialisation
+        # forever- and only cost time on every pass. `aux_weight: 0.1` also
+        # remains in the config, the weight of a loss that was never wired: the
+        # fossil of a half-finished design.
+        # The micro starts at ZERO residual: the exact valuation is already
+        # worth $75,157 and starting below that point would throw the search
+        # away.
         nn.init.zeros_(self.micro.weight)
         nn.init.zeros_(self.micro.bias)
         if self.n_ops:
-            # En modo "ops" el cero NO es neutro: symexp(0) = 0, el humgaro
-            # prefiere su columna ficticia y TODAS las unidades hacen PASS.
-            # Medido: 225 $, que es exactamente el suelo de no hacer nada.
-            # El arranque correcto es "actuar vale algo positivo y todos los
-            # verbos son igual de probables", que es la politica aleatoria
-            # legal: 8 692 $ +- 4 003 sobre 6 semillas, 35x ese suelo.
-            # No es una heuristica: no dice QUE hacer, solo que hacer algo
-            # legal bate a quedarse quieto.
+            # Zero is NOT neutral here: symexp(0) = 0, the Hungarian prefers
+            # its dummy column and ALL units PASS. Measured: $225, which is
+            # exactly the floor of doing nothing.
+            # The correct start is "acting is worth something positive and
+            # every verb is equally likely", which is the legal random policy:
+            # $8,692 +- 4,003 over 6 seeds, 35x that floor. It is not a
+            # heuristic: it does not say WHAT to do, only that doing something
+            # legal beats standing still.
             with torch.no_grad():
                 self.micro.bias[0] = 1.0
 
@@ -313,15 +317,15 @@ class E2EAgent(nn.Module):
             "valor": self.critico(z).squeeze(-1),
         }
 
-    def macro_from(self, salida, eps):
-        """Accion macro y su log-prob, con la perturbacion `eps` dada.
+    def macro_from(self, out, eps):
+        """Macro action and its log-prob, for the given perturbation `eps`.
 
-        `eps` se muestrea UNA VEZ por episodio y se reutiliza los 30 dias. La
-        log-probabilidad se evalua sobre la marginal gaussiana de cada paso, que
-        es lo que PPO necesita; la correlacion temporal solo cambia COMO se
-        exploran las trayectorias, no la distribucion de cada accion.
+        `eps` is sampled ONCE per episode and reused across all 30 days. The
+        log-probability is evaluated on each step's Gaussian marginal, which is
+        what PPO needs; the temporal correlation only changes HOW trajectories
+        are explored, not the distribution of each action.
         """
-        mu = salida["macro_mu"]
+        mu = out["macro_mu"]
         sigma = self.log_sigma.exp()
         pre = mu + sigma * eps
         a = torch.sigmoid(pre)
@@ -329,17 +333,17 @@ class E2EAgent(nn.Module):
               - (torch.log(a + 1e-8) + torch.log1p(-a + 1e-8))).sum(-1)
         return a, lp
 
-    def macro_logprob(self, salida, a):
-        """Recalcula la log-prob de una accion ya tomada (fase de actualizacion)."""
-        mu = salida["macro_mu"]
+    def macro_logprob(self, out, a):
+        """Recompute the log-prob of an action already taken (update phase)."""
+        mu = out["macro_mu"]
         sigma = self.log_sigma.exp()
         a = a.clamp(1e-6, 1 - 1e-6)
         pre = torch.log(a) - torch.log1p(-a)
         return (torch.distributions.Normal(mu, sigma).log_prob(pre)
                 - (torch.log(a) + torch.log1p(-a))).sum(-1)
 
-    def inicializa_macro_en(self, vector, concentration: float = 6.0) -> None:
-        """Centra la Beta inicial en un vector conocido (el que encontro el CEM)."""
+    def init_macro_at(self, vector, concentration: float = 6.0) -> None:
+        """Centre the initial macro on a known vector (the one CEM found)."""
         with torch.no_grad():
             nn.init.zeros_(self.macro_mu.weight)
             for i, m in enumerate(list(vector)[:N_MACRO]):

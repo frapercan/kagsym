@@ -363,7 +363,7 @@ def main():
                       sigma_ops=a.sigma_verb, ctx_micro=a.ctx_micro)
     net = E2EAgent(cfg).to(dev)
     vec0 = list(np.load(a.init))
-    net.inicializa_macro_en(vec0)
+    net.init_macro_at(vec0)
     from kagsym.symbolic import tasks as _T
     _T.MICRO_MODE = a.mode
     if a.kl_target > 0 and a.kl_max < a.kl_target:
@@ -412,7 +412,7 @@ def main():
         from kagsym.migrate_ckpt import load_tolerant
         current = net.state_dict()
         _nok, _ntot, _ = load_tolerant(net, d0["sd"], a.init_net)
-        net.inicializa_macro_en(vec0)        # la cabeza de macro, desde el vector
+        net.init_macro_at(vec0)        # la cabeza de macro, desde el vector
         net.to(dev)
         print(f"micro preentrenado desde {a.init_net}: "
               f"{_nok}/{_ntot} tensores reusados", flush=True)
@@ -569,12 +569,12 @@ def main():
     # Rollouts repartidos: medido 632 pasos/s en serie contra 10 069 en paralelo
     # con 48 entornos y 10 procesos (15.9x). El arranque son 1-3 s, una vez.
     if a.force_macro:
-        # DESPUES del resume a proposito: `inicializa_macro_en` corre antes y el
+        # DESPUES del resume a proposito: `init_macro_at` corre antes y el
         # checkpoint lo pisa. Medido: pedi el macro del CEM de 5 dias
         # ([0.121, 0.754, 0.057, ...]) y la red emitia el de backbone6
         # ([0.01, 0.24, 0.02, ...]), o sea el de 30 dias. El experimento no
         # probaba lo que yo creia y nada avisaba.
-        net.inicializa_macro_en(vec0)
+        net.init_macro_at(vec0)
         print(f"macro FORZADO a {a.init}", flush=True)
     _pasos = a.steps
     if a.mix:
