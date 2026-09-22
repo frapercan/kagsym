@@ -1296,6 +1296,22 @@ def main():
             v_pred = net(_g, _b, _h)["value"]
             l = torch.nn.functional.smooth_l1_loss(v_pred, (_r - _vmu) / _vsd)
             opt.zero_grad(); l.backward()
+            # THE TRUNK DOES NOT MOVE IN THESE EPOCHS. The critic sits on the
+            # shared trunk, so its loss produces gradient there too, and these
+            # epochs run OUTSIDE the KL loop: every extra critic epoch was
+            # moving the policy with nothing measuring how far. That is the
+            # documented fight between critic and policy over one trunk -the
+            # one that took the critic's R2 from 0.675 to -0.405 when the
+            # trunk lr was lowered to stop it- and it is why this option was
+            # left off by default and therefore never used.
+            #
+            # With the gradient cut to the critic's own group, the option is
+            # safe to turn on: the value head fits better on the features it
+            # already has, and the policy does not move a millimetre.
+            for _gi, _grp in enumerate(opt.param_groups):
+                if _gi < 3:
+                    for _prm in _grp["params"]:
+                        _prm.grad = None
             _gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 0.5)
             _grad_norms.append(float(_gn))
             opt.step()
