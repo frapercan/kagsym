@@ -697,6 +697,14 @@ def main():
     # costs 54% of the return ($40,972 fixed -> $18,967 sampled), because 30
     # days of random jitter destroy the farm's coherence.
     eps = torch.randn(a.envs, N_MACRO, device=dev)
+    # Per-channel floor for the micro sigma, as a fraction of its own
+    # initialisation -- see the clamp below for why it is a relation.
+    _FLOOR_FRAC = float(a.sigma_floor) / 0.35
+    _micro_floor = (net.log_sigma_micro.detach().clone()
+                    + float(np.log(_FLOOR_FRAC)))
+    if a.sigma_floor_micro > 0:          # an explicit absolute floor wins
+        _micro_floor = torch.full_like(_micro_floor,
+                                       float(np.log(a.sigma_floor_micro)))
     # Channels of the micro map: value + verbs + 2K assignment keys. Read
     # from the head itself, not recomputed, so adding channels never leaves
     # the rollout shape and the network disagreeing in silence.
@@ -1088,9 +1096,22 @@ def main():
                 if a.sigma_floor > 0:
                     with torch.no_grad():
                         net.log_sigma.clamp_(min=float(np.log(a.sigma_floor)))
-                        if a.sigma_floor_micro > 0:
-                            net.log_sigma_micro.clamp_(
-                                min=float(np.log(a.sigma_floor_micro)))
+                        # THE MICRO HEAD ALSO GETS A FLOOR. It had none: the
+                        # guard protected the macro -measured worth +$1 of
+                        # 953- and left the head worth the other $952 free to
+                        # narrow to zero. And narrowing is not convergence
+                        # here: it was measured to cost 26 points of win rate
+                        # at 3.3 se.
+                        #
+                        # The floor is a RELATION, not a new number: the same
+                        # fraction of its own initialisation that the macro
+                        # floor already is of the macro's (0.12 of 0.35).
+                        # Applied per channel, so the value channel and the
+                        # verbs keep their different scales. Inert at the
+                        # current operating point -the sigmas sit at 0.150 and
+                        # 0.030 against floors of 0.051 and 0.010- so it only
+                        # acts if a run starts collapsing.
+                        net.log_sigma_micro.clamp_(min=_micro_floor)
 
             # KL DIVERGENCE ABORT. Gradient clipping limits the step's
             # MAGNITUDE, not how far the POLICY moves. Measured: 80 stable
