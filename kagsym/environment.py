@@ -356,8 +356,7 @@ class DayEnv:
                 self.agents[i].macro = Macro.from_vector(macros[i])
             env, counter = self.envs[i], self.counter[i]
             from .symbolic import tasks as _Tm
-            if _Tm.MICRO_MODE == "ops":
-                _Tm.enable_mask()
+            _Tm.enable_mask()
             util = total = 0
             for _ in range(spec.TURNS_PER_DAY):
                 if env.done:
@@ -398,8 +397,7 @@ class DayEnv:
                     pass
                 if d or env.done:
                     break
-            if _Tm.MICRO_MODE == "ops":
-                self._masks[i] = _Tm.collect_mask()
+            self._masks[i] = _Tm.collect_mask()
             if total:
                 self.utiles.append(util / total)
             if self.potential and not env.done:
@@ -457,8 +455,6 @@ class DayEnv:
         None when there is nothing to mask.
         """
         from .symbolic import tasks as _Tm
-        if _Tm.MICRO_MODE != "ops":
-            return None
         z = np.zeros((1 + _Tm.N_OPS, spec.BOARD, spec.BOARD), dtype=np.float32)
         return np.stack([m if m is not None else z for m in self._masks])
 

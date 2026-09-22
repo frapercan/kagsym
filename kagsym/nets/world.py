@@ -62,7 +62,7 @@ class WorldConfig:
     # the right operation depends on the state, which is exactly what a
     # hand-written heuristic -a fixed ranking- cannot capture and a
     # state-conditioned network can.
-    con_ops: bool = False
+    con_ops: bool = True
     # SEPARATE SIGMA for the verb channels. The 0.15 of `sigma_micro` was
     # calibrated by "measuring how many assignments it flips" on the VALUE
     # channel, in symlog dollars; inheriting it for the logits of a choice
@@ -266,7 +266,7 @@ class E2EAgent(nn.Module):
         # No momentum encoder for now (predictor + stop-grad). The risk is
         # COLLAPSE: if the encoder always emits the same vector, predicting it
         # is trivial. It is watched through the standard deviation of the
-        # projections, logged as `2_salud/jepa_sd`.
+        # projections, logged as `2_health/jepa_sd`.
         self.d_jepa = 64
         self.jepa_proy = nn.Linear(hid, self.d_jepa)
         from ..obs import AUX_HORIZONS as _HZ

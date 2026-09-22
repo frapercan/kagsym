@@ -21,7 +21,7 @@ import multiprocessing as mp
 import numpy as np
 
 
-def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
+def _worker(conn, n_envs, steps, seed0, macro_vec, level,
                 tope_peones=None, hours=None, idx0=0, n_total=None):
     import os
     import sys
@@ -41,7 +41,6 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
         # Like HAND_CAP: a per-process global, it does not arrive from the parent.
         from . import spec as _S
         _S.set_turns_per_day(hours)
-    _T.MICRO_MODE = mode
     # The cap lives in a module global and workers are separate PROCESSES:
     # setting it in the parent does not reach here. It must be passed
     # explicitly.
@@ -164,7 +163,7 @@ class ParallelEnv:
     """The same interface as `DayEnv`, spread across processes."""
 
     def __init__(self, n_envs, n_procs=8, steps=720, seed0=1, macro=None, level=2,
-                 mode="residuo", tope_peones=None, hours=None):
+                 tope_peones=None, hours=None):
         self.n_procs = min(n_procs, n_envs)
         self.n = n_envs
         # HORIZON PER WORKER. `steps` may be a list: each process plays
@@ -231,7 +230,7 @@ class ParallelEnv:
                             args=(hijo, m, self.steps_proc[k], seed0, vec,
                                   (level[k % len(level)]
                                    if isinstance(level, (list, tuple)) else level),
-                                  mode, self.tope_proc[k],
+                                  self.tope_proc[k],
                                   self.hours_proc[k], off, n_envs),
                             daemon=True)
             p.start()

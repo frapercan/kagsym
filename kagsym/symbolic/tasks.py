@@ -946,7 +946,6 @@ def _can_do(inv, op) -> bool:
 # They are measured: `ops` -the network emits value AND verb- is the only one
 # with full learning freedom and the only one used. Historical scripts still
 # assign this, so the name survives without changing behaviour.
-MICRO_MODE = "ops"
 
 
 def _assign_hungarian(units, tasks, invs=None, previous=None, adherencia=0.0) -> list:

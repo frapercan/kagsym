@@ -26,7 +26,6 @@ def instrumenta(ckpt):
     import kagsym.macro as _M
     d = torch.load(ckpt, map_location="cpu", weights_only=False)
     ops = bool((d.get("cfg") or {}).get("con_ops", False))
-    T.MICRO_MODE = "ops" if ops else "residuo"
     spec.set_turns_per_day(H); spec.set_episode_steps(H * D); _M.HAND_CAP = None
     net = E2EAgent(WorldConfig(device="cpu", con_ops=ops))
     load_strict(net, d["sd"], ckpt); net.eval()

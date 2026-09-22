@@ -64,7 +64,7 @@ if __name__ == "__main__":
         ut = H * D * (1 + TOPE)
         CAJA = int(caja if caja else max(100, round(ut * RATIO / 50) * 50))
         spec.set_turns_per_day(H); spec.set_episode_steps(H*D)
-        _M.HAND_CAP = TOPE; T.MICRO_MODE = "residuo"
+        _M.HAND_CAP = TOPE
         inc = play(BASE, BASE, SEM_VAL, H, D, CAJA)
         mu, sg = BASE.astype(float).copy(), np.full(N_MACRO, 0.25)
         best, pts_max = None, -1e9

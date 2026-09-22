@@ -35,7 +35,6 @@ SEM_VAL   = list(range(301, 313))      # frescas, las mismas que juzgan la rejil
 POB, ELITE, ITERS = 24, 6, 8
 
 spec.set_turns_per_day(H); spec.set_episode_steps(H*D); _M.HAND_CAP = TOPE
-T.MICRO_MODE = "residuo"
 RIV = list(np.load(INIT))
 
 def play(vec, seeds):
