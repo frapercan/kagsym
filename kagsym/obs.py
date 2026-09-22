@@ -433,8 +433,8 @@ def _shed_access(board: int):
 #
 # Y es predecible desde lo que vemos: su tablero se observa entero, asi que no
 # le pedimos adivinar su estrategia, solo leer su cosecha.
-VENTANAS_RIVAL = (1, 2, 4, 8)          # dias vista
-N_HIST_RIVAL = len(VENTANAS_RIVAL) * len(spec.PRODUCTS)
+RIVAL_WINDOWS = (1, 2, 4, 8)          # dias vista
+N_HIST_RIVAL = len(RIVAL_WINDOWS) * len(spec.PRODUCTS)
 
 # HORIZONTES DE LA TAREA AUXILIAR, en Fibonacci. Predecir solo manana es casi
 # trivial -el crecimiento de un dia es determinista- y no obliga al codificador
@@ -450,7 +450,7 @@ def rival_ready(obs, opp: int = None) -> np.ndarray:
     """Unidades por producto que el rival tiene LISTAS hoy. Es el objetivo
     auxiliar: se le pide predecir este vector a 1, 2, 3, 5, 8 y 13 dias."""
     f = rival_flow(obs, opp)
-    return f.reshape(len(VENTANAS_RIVAL), -1)[0].copy()
+    return f.reshape(len(RIVAL_WINDOWS), -1)[0].copy()
 
 
 def rival_flow(obs, opp: int = None) -> np.ndarray:
@@ -458,7 +458,7 @@ def rival_flow(obs, opp: int = None) -> np.ndarray:
     me = int(obs.get("player", 0))
     opp = (1 - me) if opp is None else opp
     dia = int(obs.get("day", 0))
-    out = np.zeros((len(VENTANAS_RIVAL), len(spec.PRODUCTS)), dtype=np.float32)
+    out = np.zeros((len(RIVAL_WINDOWS), len(spec.PRODUCTS)), dtype=np.float32)
     try:
         tiles = obs["farms"][opp]["tiles"]
     except Exception:
@@ -487,7 +487,7 @@ def rival_flow(obs, opp: int = None) -> np.ndarray:
             j = spec.PRODUCTS.index(prod) if prod in spec.PRODUCTS else None
             if j is None:
                 continue
-            for k, v in enumerate(VENTANAS_RIVAL):
+            for k, v in enumerate(RIVAL_WINDOWS):
                 if missing <= v:
                     out[k, j] += max(listo, 1.0)
     return out.reshape(-1)
