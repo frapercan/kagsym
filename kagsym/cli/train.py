@@ -177,6 +177,13 @@ def main():
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--gamma", type=float, default=0.995)
     ap.add_argument("--lam", type=float, default=0.95)
+    ap.add_argument("--episodic", type=int, default=0,
+                    help="entries in the non-parametric value memory. 0 = off, "
+                         "and the trainer is then identical to before it "
+                         "existed. See kagsym/memory.py: it blends the critic "
+                         "with a kernel regression over RETURNS ACTUALLY "
+                         "OBSERVED, and fits how much to trust it -alpha- "
+                         "against the batch, so a useless memory reports 0.")
     ap.add_argument("--sigma", type=float, default=0.15, help="sigma of the VALUE channel")
     ap.add_argument("--sigma-verb", type=float, default=0.03,
                     help="sigma of the VERB channels (logits)")
@@ -316,6 +323,12 @@ def main():
     cfg = WorldConfig(device=dev, sigma_micro=a.sigma, n_keys=a.keys,
                       sigma_ops=a.sigma_verb, ctx_micro=a.ctx_micro)
     net = E2EAgent(cfg).to(dev)
+    mem = None
+    if a.episodic > 0:
+        from ..memory import EpisodicValue
+        mem = EpisodicValue(cfg.hidden, a.episodic, dev)
+        print(f"episodic memory: {a.episodic} entries of {cfg.hidden} dims "
+              f"({a.episodic * cfg.hidden * 2 / 2**20:.0f} MB)", flush=True)
     vec0 = list(np.load(a.init))
     net.init_macro_at(vec0)
     if a.kl_target > 0 and a.kl_max < a.kl_target:
@@ -829,6 +842,7 @@ def main():
             print(f"  [upd {upd}] opponent -> {_name} ({_kind}), population "
                   f"of {len(_pool)}", flush=True)
         G, B, H, AM, AU, LP, V, R, D, MS = [], [], [], [], [], [], [], [], [], []
+        Z = []                       # trunk latent per day, key of the memory
         LPMA, LPMI = [], []          # log-prob per head, for the factored ratio
         HF = []                      # opponent supply per day (auxiliary target)
         JZ = []                      # JEPA projections per day (target, stopped)
@@ -855,6 +869,8 @@ def main():
                 _lp_mi = _lpu.flatten(1).sum(-1)
                 if a.jepa_weight > 0:
                     JZ.append(s["jepa_z"].detach())
+                if mem is not None:
+                    Z.append(s["z"])
             rec, fin = env.step_day(maps=au.cpu().numpy(), macros=am.cpu().numpy())
             # The mask is only known AFTER playing the day: it says which
             # dimensions genuinely influenced some decision. The log-prob is
@@ -880,17 +896,63 @@ def main():
             R.append(rec); D.append(fin)
         with torch.no_grad():
             g, b, hf = env.encode()
-            ult = (net(torch.from_numpy(g).to(dev),
-                      torch.from_numpy(b).to(dev))["value"] * _vsd + _vmu)
+            _s_ult = net(torch.from_numpy(g).to(dev),
+                         torch.from_numpy(b).to(dev))
+            ult = _s_ult["value"] * _vsd + _vmu
 
         R = np.array(R); D = np.array(D); Vn = torch.stack(V).cpu().numpy()
-        adv = np.zeros_like(R); acc = 0.0; u = ult.cpu().numpy()
+        u = ult.cpu().numpy()
+        # THE BASELINE, OPTIONALLY NON-PARAMETRIC. `Vn` stays as it is -it is
+        # the critic's own prediction and the R2 below measures exactly that-;
+        # what the advantage and the value target use is `Vb`, which is the
+        # critic blended with a kernel regression over returns that were really
+        # observed. With --episodic 0 they are the same array and nothing here
+        # changes by a single bit.
+        Vb, _minfo = Vn, None
+        if mem is not None and Z:
+            # Return-to-go ACTUALLY OBSERVED, and the mask of where it is known:
+            # a step is only usable if a terminal came at or after it inside the
+            # window. With --days equal to the episode that is everything; with
+            # a mixed grid it is not, and a truncated return would be a lie.
+            Gr = np.zeros_like(R); Vld = np.zeros(R.shape, dtype=bool)
+            _ag = np.zeros(R.shape[1]); _seen = np.zeros(R.shape[1], dtype=bool)
+            for t in reversed(range(a.days)):
+                _ag = np.where(D[t], 0.0, _ag)      # beyond a terminal is another episode
+                _seen = np.where(D[t], True, _seen)
+                _ag = R[t] + a.gamma * _ag
+                Gr[t] = _ag; Vld[t] = _seen
+            _mz = torch.stack(Z).reshape(-1, Z[0].shape[-1])
+            _mv = torch.from_numpy(Vn.reshape(-1).astype(np.float32)).to(dev)
+            _mg = torch.from_numpy(Gr.reshape(-1).astype(np.float32)).to(dev)
+            _md = torch.from_numpy(Vld.reshape(-1)).to(dev)
+            # The two halves of the fit split BY ENVIRONMENT, i.e. by episode:
+            # the 30 days of one env share a seed and a rival, so splitting by
+            # step would put the same episode on both sides and the held-out
+            # verdict would be reading its own training data.
+            _hf = np.zeros(R.shape, dtype=bool); _hf[:, ::2] = True
+            _vb, _minfo = mem.apply(_mz, _mv, _mg, _md, upd,
+                                    torch.from_numpy(_hf.reshape(-1)).to(dev))
+            Vb = _vb.cpu().numpy().reshape(Vn.shape)
+            u = mem.predict(_s_ult["z"], ult).cpu().numpy()
+            # AFTER the query, never before: the memory must hold past episodes
+            # only, which is what makes the fit out-of-sample. Seeds are unique
+            # per episode, so nothing in it can share this batch's luck.
+            mem.add(_mz[_md], _mg[_md])
+            if upd % 5 == 0 or upd == 1:
+                print(f"    [mem] n={_minfo['n']}  k={_minfo['k']}  "
+                      f"hl={_minfo['hl']:.0f}  alpha={_minfo['alpha']:.3f}  "
+                      f"share={_minfo['share']:.2f}  "
+                      f"mse_mem/mse_V={_minfo['r_mem']:.2f}  "
+                      f"gain={_minfo['gain']:+.3f}"
+                      + (f"  EDGE:{_minfo['edge']}" if _minfo["edge"] else ""),
+                      flush=True)
+        adv = np.zeros_like(R); acc = 0.0
         for t in reversed(range(a.days)):
-            next_ = u if t == a.days - 1 else Vn[t + 1]
-            delta = R[t] + a.gamma * next_ * (1 - D[t]) - Vn[t]
+            next_ = u if t == a.days - 1 else Vb[t + 1]
+            delta = R[t] + a.gamma * next_ * (1 - D[t]) - Vb[t]
             acc = delta + a.gamma * a.lam * (1 - D[t]) * acc
             adv[t] = acc
-        ret = adv + Vn
+        ret = adv + Vb
         _b_mu = float(ret.mean()); _b_sd = float(ret.std()) + 1e-6
         _vn += 1
         _w = 1.0 / min(_vn, 100)
@@ -1810,6 +1872,15 @@ def main():
                             # happens.
                             _z = torch.cat(JZ)
                             _m["2_health/jepa_sd"] = float(_z.std(0).mean())
+                        if _minfo is not None and _minfo["n"] > 0:
+                            # alpha is the whole verdict: fitted against the
+                            # batch, it is 0 when the memory adds nothing.
+                            _m["3_mem/alpha"] = _minfo["alpha"]
+                            _m["3_mem/gain_mse"] = _minfo["gain"]
+                            _m["3_mem/mse_ratio"] = _minfo["r_mem"]
+                            _m["3_mem/k"] = float(_minfo["k"])
+                            _m["3_mem/half_life"] = float(_minfo["hl"])
+                            _m["3_mem/entries"] = float(_minfo["n"])
                         try:
                             if _explore == _explore:
                                 _m["2_health/verb_explore_pct"] = 100.0 * _explore

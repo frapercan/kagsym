@@ -327,6 +327,10 @@ class E2EAgent(nn.Module):
     def forward(self, grid, glob, hist=None):
         h, z = self.tronco(grid, glob, hist)
         return {
+            # The trunk latent, exposed so the episodic value memory can key on
+            # exactly what the critic reads -- same information, one estimator
+            # parametric and one not.
+            "z": z,
             "macro_mu": self.macro_mu(z),
             "rival": self.aux_rival(z),
             "jepa_p": self.jepa_pred(z).reshape(-1, self.n_hz, self.d_jepa),
