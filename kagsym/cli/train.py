@@ -115,9 +115,9 @@ BASE_PER_HORIZON = {
 # DEADLOCK: it could not be crossed even playing perfectly. The first two are
 # discarded.
 #
-# On the cap axis: 1 and 2 are degenerate and 13 is indistinguishable from uncapped
-# (175,984 against 176,422), so fibonacci samples that axis badly -all the
-# gradiente vive en 9-12- y van los valores medidos.
+# On the cap axis: 1 and 2 are degenerate and 13 is indistinguishable from
+# uncapped (175,984 against 176,422), so fibonacci samples that axis badly -all
+# the gradient lives in 9-12- and the measured values are used instead.
 # (hours per day, days, opponent cap, CEILING as a multiple of inaction).
 #
 # The ceiling is the BEST achievable in that league, measured with the
@@ -179,39 +179,43 @@ def main():
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--sigma", type=float, default=0.15, help="sigma of the VALUE channel")
     ap.add_argument("--sigma-verb", type=float, default=0.03,
-                    help="sigma de los canales de VERBO (logits)")
+                    help="sigma of the VERB channels (logits)")
     ap.add_argument("--level", type=int, default=2, help="LADDER rung")
     ap.add_argument("--selfplay-quota", type=int, default=2,
                     help="workers ALWAYS on self-play, outside the information split")
     ap.add_argument("--target-quota", type=int, default=3,
-                    help="workers ALWAYS on the uncapped rungs (the competition opponent)"
-                         "rival de competicion)")
+                    help="workers ALWAYS on the uncapped rungs (the "
+                         "competition opponent)")
     ap.add_argument("--auto-curriculum", action="store_true",
-                    help="split workers across rungs in proportion to Bernoulli information p(1-p)"
+                    help="split workers across rungs in proportion to the "
+                         "Bernoulli information p(1-p), so the rung being "
                          "tested starts at p=0.5 -maximum information-")
     ap.add_argument("--rival-macros", default=None,
                     help="opponents PER WORKER: comma-separated .npy paths, '-' to keep the public agent")
     ap.add_argument("--slide", type=float, default=0.0,
-                    help="win rate above which a rung is considered EXHAUSTED and the ladder slides up. 0 = off"
-                         "saturacion, pero autoinfligido-.")
+                    help="win rate above which a rung is considered EXHAUSTED "
+                         "and the ladder slides up. 0 = off")
     ap.add_argument("--levels", default=None,
-                    help="LADDER rungs PER WORKER, comma-separated"
-                         "arriesga aprender a batir a ESE en vez de a jugar.")
+                    help="LADDER rungs PER WORKER, comma-separated. Training "
+                         "against a single opponent risks learning to beat "
+                         "THAT one instead of learning to play")
     ap.add_argument("--force-macro", action="store_true",
                     help="re-apply --init AFTER --resume; without it the checkpoint silently overrides the requested macro")
     ap.add_argument("--rival-macro", default=None,
                     help=".npy path: the opponent is OUR executor with that macro")
     ap.add_argument("--own-rival", action="store_true",
-                    help="on reduced rungs the opponent is OUR executor with the macro CEM found for that scale"
-                         "hacen ~0 $ en cualquier otra escala.")
+                    help="on reduced rungs the opponent is OUR executor with "
+                         "the macro CEM found for that scale, because the "
+                         "public agents make ~$0 at any other scale")
     ap.add_argument("--grid", default=None,
-                    help="rejilla MEZCLADA de escalas: 'h,d,tope;h,d,tope;...'. ")
+                    help="MIXED grid of scales: 'h,d,cap;h,d,cap;...', one "
+                         "rung per worker; cap 0 = uncapped opponent")
     ap.add_argument("--mix", default=None,
-                    help="MIXED horizons in the same batch, in days: '15,20,30'"
-                         "Cada trabajador juega uno. Excluye --ligas.")
+                    help="MIXED horizons in the same batch, in days: "
+                         "'15,20,30'. One per worker; excludes --leagues")
     ap.add_argument("--leagues", action="store_true",
-                    help="currículo: asciende ganando, desciende perdiendo")
-    ap.add_argument("--league0", type=int, default=0, help="liga inicial")
+                    help="curriculum: promote on winning, relegate on losing")
+    ap.add_argument("--league0", type=int, default=0, help="starting league")
     ap.add_argument("--hand-cap", type=int, default=None,
                     help="limit OUR hands (curriculum); None = uncapped")
     ap.add_argument("--init", default="runs/macro_vs_v48.npy")
@@ -222,24 +226,24 @@ def main():
                          "0 = disabled. It attacks a measured failure"
                          "binaria en 0,09 de su maximo 0,25.")
     ap.add_argument("--resume", default=None,
-                    help="continuar desde un checkpoint de RL en vez de reempezar")
+                    help="continue from an RL checkpoint instead of restarting")
     ap.add_argument("--value-epochs", type=int, default=0,
                     help="extra epochs for the critic only (0 = none)")
     ap.add_argument("--value-weight", type=float, default=0.5)
     ap.add_argument("--lr", type=float, default=None,
-                    help="lr del TRONCO; si se omite, el del checkpoint (o 3e-4)")
+                    help="lr of the TRUNK; if omitted, the checkpoint's (or 3e-4)")
     ap.add_argument("--lr-heads", type=float, default=None,
-                    help="lr de las cabezas; por defecto = --lr")
+                    help="lr of the heads; defaults to --lr")
     ap.add_argument("--kl-target", type=float, default=0.0,
                     help="if >0, the lr self-adjusts to hold this kl/dim")
     # 1.8e-4 was the threshold from when KL was measured WITHOUT normalising
-    # dimension. Al normalizarlo, el KL sano de este problema vive en 1e-2 a
-    # 4e-2, i.e. ninety times above: epochs ALWAYS aborted after
-    # the first one -"[KL short 1]" on every update of the whole session- and at
-    # the controller kept lowering the lr to reach a target 111 times larger
-    # than the abort threshold. The two dials pulling in opposite directions:
-    # the trunk lr ended at 6.6e-6, 45 times below the
-    # the same time each batch gave ONE single gradient step.
+    # by dimension. Normalised, the healthy KL of this problem lives at 1e-2 to
+    # 4e-2, i.e. ninety times above: epochs ALWAYS aborted after the first one
+    # -"[KL short 1]" on every update of the whole session- and at the same
+    # time the controller kept lowering the lr to reach a target 111 times
+    # larger than the abort threshold. Two dials pulling in opposite
+    # directions: the trunk lr ended at 6.6e-6, 45 times below nominal, and
+    # each batch gave ONE single gradient step.
     #
     # The default is now 2x the target, which is standard PPO practice: the
     # abort is a safety net for the odd batch, not the normal regime. A/B
@@ -267,8 +271,9 @@ def main():
                     choices=("1x1", "3x3", "3x3x2", "5x5", "attn"),
                     help="spatial context shape of the micro head")
     ap.add_argument("--aux-weight", type=float, default=0.0,
-                    help="weight of the AUXILIARY loss: predict the opponent supply at Fibonacci horizons"
-                         "Obliga al codificador a modelar como crece su granja, ")
+                    help="weight of the AUXILIARY loss: predict the opponent's "
+                         "supply at Fibonacci horizons, which forces the "
+                         "encoder to model how their farm grows")
     ap.add_argument("--rival-flow", action="store_true",
                     help="feed the `hist` input with the opponent IMMINENT SUPPLY"
                          "ceros. Esa entrada existia (N_HIST = 4 x productos) y "
@@ -283,7 +288,7 @@ def main():
     ap.add_argument("--kl-max", type=float, default=0.12,
                     help="abort the epoch if the policy moves further than this (kl/dim)")
     ap.add_argument("--selfplay", action="store_true",
-                    help="rival = instantanea congelada de uno mismo")
+                    help="opponent = a frozen snapshot of ourselves")
     ap.add_argument("--refresh", type=int, default=25,
                     help="how many updates between freezing a new version")
     ap.add_argument("--bank-seed", type=str, default=None,
@@ -301,20 +306,20 @@ def main():
     vec0 = list(np.load(a.init))
     net.init_macro_at(vec0)
     if a.kl_target > 0 and a.kl_max < a.kl_target:
-        raise SystemExit(f"--kl-max {a.kl_max:g} es MENOR que --kl-objetivo "
-                         f"{a.kl_target:g}: the controller would raise KL "
-                         f"to the target and the abort would cut it on every "
-                         f"epoca. Usa --kl-max >= 2x --kl-objetivo.")
+        raise SystemExit(f"--kl-max {a.kl_max:g} is SMALLER than --kl-target "
+                         f"{a.kl_target:g}: the controller would raise KL to "
+                         f"the target and the abort would cut it on every "
+                         f"epoch. Use --kl-max >= 2x --kl-target.")
     if a.hand_cap is not None:
         from kagsym import macro as _M
         _M.HAND_CAP = a.hand_cap
         print(f"OUR hand cap: {a.hand_cap}", flush=True)
-    # ESCALA DEL OBJETIVO DE VALOR. `fret` va en unidades crudas (media ~20,
-    # sd ~8) y la perdida era smooth_l1 con beta=1.0: TODO error mayor de 1
-    # unit fell into pure L1 regime, with a +-1 gradient carrying no magnitude
-    # of error. Measured on a toy regression with perfect linear signal and
-    # this same scale: R2 = -16.58 that way, against +0.826 normalised. It explains
-    # el critico en -0,405 sin culpar al tronco.
+    # SCALE OF THE VALUE TARGET. `fret` is in raw units (mean ~20, sd ~8) and
+    # the loss was smooth_l1 with beta=1.0: EVERY error larger than 1 unit fell
+    # into the pure L1 regime, with a +-1 gradient carrying no magnitude of
+    # error. Measured on a toy regression with perfect linear signal and this
+    # same scale: R2 = -16.58 that way, against +0.826 normalised. It explains
+    # a critic stuck at -0.405 without the trunk being at fault.
     #
     # The critic predicts NORMALISED and is denormalised for GAE, which needs
     # raw units because `ret = adv + Vn` bootstraps from V.
@@ -323,18 +328,18 @@ def main():
     d0 = {}
     if a.resume:
         # CONTINUE, do not restart. Each run used to start from the supervised
-        # pretraining and threw away all accumulated RL. Only valid if the
-        # architecture has not
-        # cambiado: hoy N_GLOBAL paso de 75 a 88 y N_MACRO de 7 a 13, y con eso
-        # the shapes do not fit. What fits is loaded and the reuse reported.
+        # pretraining and threw away all accumulated RL. It is only valid if
+        # the architecture has not changed: N_GLOBAL went from 75 to 88 and
+        # N_MACRO from 7 to 13, and with that the shapes do not fit. What fits
+        # is loaded and the reuse is reported.
         d0 = torch.load(a.resume, map_location="cpu", weights_only=False)
         from kagsym.migrate_ckpt import load_tolerant
         _n_reused, _n_total, _random_ = load_tolerant(
             net, d0["sd"], a.resume, macro_fields=d0.get("macro_fields"))
         net.to(dev)
-        print(f"reanudado desde {a.resume}: {_n_reused}/{_n_total} tensores "
-              f"reusados (update {d0.get('upd','?')}, "
-              f"retorno {d0.get('ret', float('nan')):.2f})", flush=True)
+        print(f"resumed from {a.resume}: {_n_reused}/{_n_total} tensors "
+              f"reused (update {d0.get('upd','?')}, "
+              f"return {d0.get('ret', float('nan')):.2f})", flush=True)
     elif a.init_net:
         # Start from a micro head that ALREADY reconstructs the valuation by
         # supervision. TOLERANT, like `--resume`: the pretraining may have a
@@ -349,8 +354,8 @@ def main():
             net, d0["sd"], a.init_net, macro_fields=d0.get("macro_fields"))
         net.init_macro_at(vec0)        # the macro head, from the vector
         net.to(dev)
-        print(f"micro preentrenado desde {a.init_net}: "
-              f"{_nok}/{_ntot} tensores reusados", flush=True)
+        print(f"micro pretrained from {a.init_net}: "
+              f"{_nok}/{_ntot} tensors reused", flush=True)
     # TWO RATES. Measured starting from scratch: after 40 updates
     # `micro.weight` was 0.013 and the verb logits 0.008, against a sampling
     # sigma of 0.15 -noise crushed the learned signal 19 to 1- meaning the head
@@ -462,8 +467,8 @@ def main():
             _state["state"] = _new_state
             opt.load_state_dict(_state)
             if _outside:
-                print(f"  momentos reiniciados en {len(_outside)} de {len(_ps)} "
-                      f"tensores (cambiaron de forma); el resto conserva Adam",
+                print(f"  moments reset on {len(_outside)} of {len(_ps)} "
+                      f"tensors (they changed shape); the rest keep Adam",
                       flush=True)
             # Adam's MOMENTS are always restored -they are what prevents the
             # huge first step- but an explicitly requested lr OVERRIDES the
@@ -472,18 +477,18 @@ def main():
             if _lr_explicit:
                 opt.param_groups[0]["lr"] = a.lr
                 opt.param_groups[1]["lr"] = _lrc
-                print(f"  lr EXPLICITO ({a.lr:.1e} / {_lrc:.1e}, ratio "
+                print(f"  EXPLICIT lr ({a.lr:.1e} / {_lrc:.1e}, ratio "
                       f"{_lrc/a.lr:.1f}x), overrides the checkpoint's",
                       flush=True)
-            print(f"  optimizador restaurado: lr tronco "
-                  f"{opt.param_groups[0]['lr']:.2e} cabezas "
+            print(f"  optimizer restored: trunk lr "
+                  f"{opt.param_groups[0]['lr']:.2e}, heads "
                   f"{opt.param_groups[1]['lr']:.2e}", flush=True)
         except Exception as e:
             print(f"  WARNING: could not restore the optimizer ({e}); "
                   f"continuing with factory lrs", flush=True)
     elif a.resume and "opt" in d0:
-        print(f"  optimizador NO restaurado: la arquitectura cambio "
-              f"({_n_reused}/{_n_total} tensores). Momentos a cero.", flush=True)
+        print(f"  optimizer NOT restored: the architecture changed "
+              f"({_n_reused}/{_n_total} tensors). Moments zeroed.", flush=True)
     if a.resume and _n_reused < _n_total and getattr(net, "n_ops", 0):
         # INACTION RESCUE. If the architecture changed, the reinitialised
         # input layers send noise into the value head, which emits negatives;
@@ -497,10 +502,10 @@ def main():
         # positive", which is the only start you can escape from.
         with torch.no_grad():
             net.micro.bias[0] = 1.0
-        print("  sesgo de valor repuesto a 1.0 (rescate de la inaccion)",
-              flush=True)
+        print("  value bias reset to 1.0 (inaction rescue)", flush=True)
     print(f"code fingerprint: {fingerprint()}", flush=True)
-    print(f"dispositivo: {dev} | rival: {LADDER[a.level]} | init: {a.init}", flush=True)
+    print(f"device: {dev} | opponent: {LADDER[a.level]} | init: {a.init}",
+          flush=True)
 
     from kagsym import spec
     from kagsym.macro import Macro
@@ -510,18 +515,18 @@ def main():
         # AFTER the resume on purpose: `init_macro_at` runs earlier and the
         # checkpoint overwrites it. Measured: the 5-day CEM macro was requested
         # ([0.121, 0.754, 0.057, ...]) and the network emitted the pretrained
-        # one ([0.01, 0.24, 0.02, ...]), i.e. the 30-day vector. The experiment
-        # probaba lo que yo creia y nada avisaba.
+        # one ([0.01, 0.24, 0.02, ...]), i.e. the 30-day vector. The
+        # experiment was not testing what it was meant to test and nothing
+        # said so.
         net.init_macro_at(vec0)
-        print(f"macro FORZADO a {a.init}", flush=True)
+        print(f"macro FORCED to {a.init}", flush=True)
     _steps = a.steps
     if a.mix:
         # MIXED, not sequential. In sequence the policy trains at one horizon
         # only and forgets the previous one -measured twice: real margin from
         # -82.7% to -98.3%-. Very short horizons are avoided on purpose:
-        # at 5 days doing nothing gives $3,000 and our heuristic $2,920, i.e.
-        # that acting DESTROYS value and the lesson learned there is "do
-        # hagas nada".
+        # at 5 days doing nothing gives $3,000 and our heuristic $2,920, so
+        # acting DESTROYS value and the lesson learned there is "do nothing".
         _days = [int(x) for x in a.mix.split(",")]
         _steps = [d * 24 for d in _days]
         a.days = max(_days)
@@ -589,7 +594,7 @@ def main():
                     _riv.append(list(np.load(_f)))
             env.set_rival_macro(_riv)
             _n = sum(1 for v in _riv if v is not None)
-            print(f"rival = NUESTRO ejecutor calibrado en {_n}/{len(_grid)} "
+            print(f"opponent = OUR calibrated executor on {_n}/{len(_grid)} "
                   f"rungs; public agent on the rest", flush=True)
             for (_h, _d, _), _v in zip(_grid, _riv):
                 print(f"   {_h}h x {_d}d: "
@@ -623,7 +628,7 @@ def main():
             _pool_p = [None] * len(_pool)
             _assign = list(range(len(_pool)))
         print("opponents per worker (macro): " + ", ".join(
-            ("publico" if x is None else "NUESTRO") for x in _rm), flush=True)
+            ("public" if x is None else "OURS") for x in _rm), flush=True)
     elif a.rival_macro:
         env.set_rival_macro(list(np.load(a.rival_macro)))
         print(f"opponent = our executor with {a.rival_macro}", flush=True)
@@ -635,7 +640,7 @@ def main():
         """Build the environment for league `idx`: hours, days and opponent cap.
 
         Changing hours or days forces recreating the workers, because
-        `spec.TURNS_PER_DAY` y `spec.EPISODE_STEPS` son globales POR PROCESO.
+        `spec.TURNS_PER_DAY` and `spec.EPISODE_STEPS` are PER-PROCESS globals.
         """
         hours, days, cap, _margin, _ceiling = LEAGUES[idx]
         spec.set_turns_per_day(hours)
@@ -647,9 +652,9 @@ def main():
                             hand_cap=a.hand_cap,
                             hours=hours)
         e.set_rival_cap(cap)
-        print(f"LIGA {idx}/{len(LEAGUES)-1}: {hours}h x {days}d, rival v48 "
-              f"tope {cap if cap is not None else 'sin tope'} "
-              f"({steps} pasos)", flush=True)
+        print(f"LEAGUE {idx}/{len(LEAGUES)-1}: {hours}h x {days}d, v48 "
+              f"capped at {cap if cap is not None else 'nothing'} "
+              f"({steps} steps)", flush=True)
         return e
 
     if a.leagues:
@@ -709,7 +714,8 @@ def main():
         # making the same money ($36,385 against $36,295), which is where a
         # binary signal has maximum information.
         env.set_selfplay(net)
-        print("rival: AUTO-JUEGO (instantanea congelada de la politica)", flush=True)
+        print("opponent: SELF-PLAY (a frozen snapshot of the policy)",
+              flush=True)
 
     import copy
     bank = []
@@ -749,7 +755,7 @@ def main():
     # offset joins it back up.
     _upd0 = int(d0.get("upd", 0) or 0) if a.resume else 0
     if _upd0:
-        print(f"el eje de pasos continua desde {_upd0}", flush=True)
+        print(f"the step axis continues from {_upd0}", flush=True)
     for upd in range(1, a.updates + 1):
         if a.selfplay and upd % a.refresh == 0:
             # A bank of older versions: without it the policy can forget how
@@ -772,17 +778,17 @@ def main():
                 # time makes the gradient see them in series, which is how it
                 # forgets to beat what it already knew how to beat.
                 env.set_rival_macro([v for _, v in _seed_vectors])
-                _name = f"{len(_seed_vectors)} diversos a la vez"
+                _name = f"{len(_seed_vectors)} diverse ones at once"
             else:
                 rival = E2EAgent(cfg)
                 rival.load_state_dict(_target)
                 env.set_selfplay(rival)
-            print(f"  [upd {upd}] rival -> {_name} ({_kind}), poblacion de "
-                  f"{len(_pool)}", flush=True)
+            print(f"  [upd {upd}] opponent -> {_name} ({_kind}), population "
+                  f"of {len(_pool)}", flush=True)
         G, B, H, AM, AU, LP, V, R, D, MS = [], [], [], [], [], [], [], [], [], []
         LPMA, LPMI = [], []          # log-prob per head, for the factored ratio
         HF = []                      # opponent supply per day (auxiliary target)
-        JZ = []                      # proyecciones JEPA por dia (objetivo, detenido)
+        JZ = []                      # JEPA projections per day (target, stopped)
         for _ in range(a.days):
             g, b, hf = env.encode()
             # The `hist` input carried ZEROS from the start despite being
@@ -827,12 +833,12 @@ def main():
             G.append(g); B.append(b); H.append(h)
             AM.append(am); AU.append(au); LP.append(lp)
             LPMA.append(lp_m); LPMI.append(_lp_mi)
-            V.append(s["valor"] * _vsd + _vmu)
+            V.append(s["value"] * _vsd + _vmu)
             R.append(rec); D.append(fin)
         with torch.no_grad():
             g, b, hf = env.encode()
             ult = (net(torch.from_numpy(g).to(dev),
-                      torch.from_numpy(b).to(dev))["valor"] * _vsd + _vmu)
+                      torch.from_numpy(b).to(dev))["value"] * _vsd + _vmu)
 
         R = np.array(R); D = np.array(D); Vn = torch.stack(V).cpu().numpy()
         adv = np.zeros_like(R); acc = 0.0; u = ult.cpu().numpy()
@@ -913,7 +919,7 @@ def main():
         fms = torch.cat(MS) if MS else None
         fadv = torch.from_numpy(adv.reshape(-1).astype(np.float32)).to(dev)
         fret = torch.from_numpy(ret.reshape(-1).astype(np.float32)).to(dev)
-        kl_cortes = 0
+        kl_cuts = 0
         # (the safety net is initialised before the loop)
         # SAFETY NET. The KL guard limits how far the policy moves in one
         # update, but it does not repair what already broke: measured, a single
@@ -934,7 +940,7 @@ def main():
         _N = len(fadv)
         # The POLICY always at full batch: splitting it multiplies its KL by 24
         # (measured) and the controller would have to undo it by cutting the lr.
-        # `--minilotes` afecta SOLO al critico, mas abajo.
+        # `--minibatches` affects ONLY the critic, further down.
         _nm, _size = 1, _N
         for _ep in range(a.epochs):
             _order = torch.randperm(_N, device=dev) if _nm > 1 else None
@@ -992,7 +998,7 @@ def main():
                     l_pi = -torch.min(ratio * _fadv,
                                       ratio.clamp(1 - a.clip, 1 + a.clip) * _fadv).mean()
                 l_v = torch.nn.functional.smooth_l1_loss(
-                    s["valor"], (_fret - _vmu) / _vsd)
+                    s["value"], (_fret - _vmu) / _vsd)
                 l_aux = torch.zeros((), device=dev)
                 if a.aux_weight > 0 and _fhf is not None:
                     # symlog: supply ranges from 0 to >100 units and an error
@@ -1056,13 +1062,13 @@ def main():
 
             # KL DIVERGENCE ABORT. Gradient clipping limits the step's
             # MAGNITUDE, not how far the POLICY moves. Measured: 80 stable
-            # updates (win ~0.5, $44,000) and then a cliff
-            # -win 0.015, 7 514 $- del que no se recupera. Un solo update malo
+            # updates (win ~0.5, $44,000) and then a cliff -win 0.015,
+            # $7,514- there is no recovering from. A single bad update
             # destroys the policy; this cuts it before that happens.
             with torch.no_grad():
-                # Over the WHOLE BATCH, with its own forward. With minibatches,
-                # `lp` es el del ULTIMO trozo y `flp` el de todo: compararlos
-                # seria comparar formas distintas.
+                # Over the WHOLE BATCH, with its own forward. With
+                # minibatches, `lp` is that of the LAST chunk and `flp` that of
+                # everything: comparing them would compare different shapes.
                 _s = net(fg, fb, fh)
                 _l2 = torch.distributions.Normal(_s["micro"], SIG()).log_prob(fau)
                 if fms is not None:
@@ -1104,7 +1110,7 @@ def main():
             # It adds no new number: it uses the per-head KLs already computed
             # for the lr controllers.
             if max(kl, kl_ma, kl_mi) > a.kl_max:
-                kl_cortes += 1
+                kl_cuts += 1
                 break
 
         # STEP SIZE CONTROLLED BY MEASURED KL. Guessing the lr by hand failed
@@ -1193,7 +1199,7 @@ def main():
                 _g, _b, _h, _r = fg[_sv], fb[_sv], fh[_sv], fret[_sv]
             else:
                 _g, _b, _h, _r = fg, fb, fh, fret
-            v_pred = net(_g, _b, _h)["valor"]
+            v_pred = net(_g, _b, _h)["value"]
             l = torch.nn.functional.smooth_l1_loss(v_pred, (_r - _vmu) / _vsd)
             opt.zero_grad(); l.backward()
             _gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 0.5)
@@ -1285,7 +1291,7 @@ def main():
                         _pool_p[_assign[_k4]] = (0.7 * _p4 + 0.3 * _v4
                                                if _p4 is not None else _v4)
                 _info = [( (p4 * (1.0 - p4)) if p4 is not None else 0.25 )
-                         for p4 in _pool_p]          # sin medir -> p=0.5
+                         for p4 in _pool_p]          # unmeasured -> p=0.5
                 # FIXED QUOTAS, outside the information split. `p(1-p)`
                 # measures where the ESTIMATE is most uncertain, not where the
                 # objective is, and that fails at both extremes:
@@ -1372,7 +1378,7 @@ def main():
                     env.forget_results()
                     print(f"  [upd {upd}] LADDER SLID: the easiest rung "
                           f"easiest was won at {_wpp[0]:.0%}; dropped from sampling. "
-                          f"topes ahora {_rival_cap}", flush=True)
+                          f"caps now {_rival_cap}", flush=True)
             except Exception as _e:
                 print(f"  warning: could not slide the ladder ({_e})", flush=True)
         if (a.promote_rival > 0 and upd % 5 == 0
@@ -1396,17 +1402,17 @@ def main():
                 # still full of wins against the old opponent.
                 env.forget_results()
                 _last_promo = upd
-                print(f"  [upd {upd}] RIVAL PROMOCIONADO (win={_wr:.3f} >= "
-                      f"{a.promote_rival}): pasa a ser una copia de la "
-                      f"politica actual", flush=True)
+                print(f"  [upd {upd}] OPPONENT PROMOTED (win={_wr:.3f} >= "
+                      f"{a.promote_rival}): it becomes a copy of the current "
+                      f"policy", flush=True)
         if upd % 5 == 0 or upd == 1:
             wr = env.win_rate()
             rv = env.rival_stats()
             ret = float(np.mean(ret_ep[-80:])) if ret_ep else float("nan")
             print(f"upd {upd:4d}/{a.updates}  win={wr:.3f}  ret={ret:7.2f}  "
-                  + (f"[KL corto {kl_cortes}] " if kl_cortes else "")
-                  + f"$={env.mean_money():7.0f} vs {rv['dinero']:7.0f}  "
-                  f"cult={rv['cultivos']:4.1f}r  uds={rv['unidades']:4.1f}r  "
+                  + (f"[KL cut {kl_cuts}] " if kl_cuts else "")
+                  + f"$={env.mean_money():7.0f} vs {rv['money']:7.0f}  "
+                  f"cult={rv['crops']:4.1f}r  uds={rv['units']:4.1f}r  "
                   f"macro={[round(float(x),2) for x in fam.mean(0)]}  "
                   f"{time.time()-t0:.0f}s", flush=True)
             _ph = getattr(env, "money_by_horizon", lambda: {})()
@@ -1416,19 +1422,19 @@ def main():
                         _ph.items(), key=lambda kv: kv[1])), flush=True)
             # PROMOTION AND DEMOTION. Demotion matters as much as promotion:
             # it is what stops the policy forgetting leagues already won.
-            # `TENURE` prevents churn: a league is judged over at least
-            # ese numero de updates dentro.
+            # `STAY` prevents churn: a league is judged over at least that
+            # many updates inside it.
             if a.leagues:
                 _in_league += 1
                 if _in_league >= STAY:
-                    # DESCENSO POR INACCION, no por victoria. La victoria no
-                    # detects collapse: measured, a self-play league climbed
-                    # four rungs at win=1.00 while money stayed
-                    # en 3.000 $ -la caja inicial- y el margen real caia a
+                    # RELEGATION BY INACTION, not by defeat. Winning does not
+                    # detect collapse: measured, a self-play league climbed
+                    # four rungs at win=1.00 while money stayed at $3,000 -the
+                    # starting cash- and the real margin fell to
                     # -98.3%. `x_inaction` does detect it, at ANY scale:
                     # 1.0 means the policy is doing nothing.
                     _inaction = env.mean_money() / 3000.0
-                    _RIV_ULT[0] = float((env.rival_stats() or {}).get("dinero", 0.0) or 0.0)
+                    _RIV_ULT[0] = float((env.rival_stats() or {}).get("money", 0.0) or 0.0)
                     # AND NO PROMOTION WHILE INERT. A rung is passed by
                     # PRODUCING value, not by outliving an even worse opponent:
                     # on L0 the public agent makes $171, so a 1.00 win rate is
@@ -1441,32 +1447,35 @@ def main():
                     # demonstrated in that league, and the policy is ALIVE.
                     # Promoting half-learned is what cascaded in earlier
                     # attempts.
-                    # anteriores.
-                    # SOBRE LA INACCION, no sobre cero. Tercera vez que esta
-                    # rule breaks by the same class of bug: the bar is
-                    # cruzaba sin producir nada.
-                    #   - por victoria: el rival de L0 hace 4 $, se gana 1,00 quieto
-                    #   - by margin:   margin 2,973 just by keeping the cash
-                    #   - por x_inaccion bruto: el techo de L0 es 1,03 y la
-                    #     inaction 1.00, so the WHOLE learnable range is 3%
-                    #     and any threshold below 1.0 crosses it
-                    #     una politica inerte.
+                    #
+                    # OVER INACTION, not over zero. This is the third time this
+                    # rule breaks through the same class of bug: the bar was
+                    # crossed without producing anything.
+                    #   - by win rate:      the L0 opponent makes $4, so 1.00
+                    #                       is won standing still
+                    #   - by margin:        margin 2,973 just by keeping cash
+                    #   - by raw x_inaction: the L0 ceiling is 1.03 and
+                    #                       inaction 1.00, so the WHOLE
+                    #                       learnable range is 3% and any
+                    #                       threshold below 1.0 promotes an
+                    #                       inert policy
                     # What must be demanded is 90% of the LEARNABLE margin,
-                    # que es lo que hay por encima de no hacer nada.
+                    # which is whatever sits above doing nothing.
                     _ceiling_l = LEAGUES[_league][4]
                     _target_inaction = 1.0 + CEILING_FRAC * max(0.0, _ceiling_l - 1.0)
                     _margin_now = _money - _RIV_ULT[0]
                     if _inaction >= _target_inaction and _league < len(LEAGUES) - 1:
                         _league += 1
-                        print(f"  [upd {upd}] ASCIENDE: x_inaccion {_inaction:.3f} "
-                              f">= {_target_inaction:.3f} (techo {_ceiling_l:.2f}), "
-                              f"margen {_margin_now:.0f} ->", flush=True)
+                        print(f"  [upd {upd}] PROMOTED: x_inaction "
+                              f"{_inaction:.3f} >= {_target_inaction:.3f} "
+                              f"(ceiling {_ceiling_l:.2f}), margin "
+                              f"{_margin_now:.0f} ->", flush=True)
                     elif _inaction < 0.35 * LEAGUES[_league][4] and _league > 0:
                         _league -= 1
-                        print(f"  [upd {upd}] DESCIENDE: politica inerte "
-                              f"(x_inaccion {_inaction:.2f}) ->", flush=True)
+                        print(f"  [upd {upd}] RELEGATED: inert policy "
+                              f"(x_inaction {_inaction:.2f}) ->", flush=True)
                     else:
-                        _in_league = STAY - 1   # sigue midiendo
+                        _in_league = STAY - 1   # keep measuring
                         _league = _league
                     if _in_league >= STAY:
                         env.close_(); env = _build_league(_league); _in_league = 0
@@ -1476,26 +1485,27 @@ def main():
                     import mlflow
                     # WHAT IS LOGGED AND WHY. Through a whole debugging
                     # session, win_rate and money diagnosed NOTHING: they are
-                    # el resultado, no la causa. Cada diagnostico real salio de
-                    # estas otras, que estaban solo en el log:
-                    #   kl/dim          crecio de 0,036 a 0,363 -> divergencia
-                    #   saturacion      99,4% -> el cociente de PPO era ruido
+                    # the result, not the cause. Every real diagnosis came out
+                    # of these others, which were only in the log:
+                    #   kl/dim          grew from 0.036 to 0.363 -> divergence
+                    #   saturation      99.4% -> PPO's ratio was noise
                     #   lr_*            the controller strangling the step
-                    #   micro_w_norm    the head was not travelling (0.013 in 40 updates)
-                    #   dims_activas    cuantas dimensiones deciden de verdad
-                    # GUARD DE INACCION. `startingMoney` son 3.000 $ y no
-                    # hacer NADA acaba exactamente en 3.000. Medido: las ligas
-                    # en autojuego convergieron a 3.000 clavados a TODO
-                    # horizon -the policy sat on the cash- because
-                    # la instantanea congelada hacia 2.588, o sea PEOR que la
-                    # inaction, and beating it required doing nothing. `win` said
-                    # 1,00 y el margen real era -98,3 %.
+                    #   micro_w_norm    the head was not travelling (0.013 in
+                    #                   40 updates)
+                    #   active_dims     how many dimensions really decide
+                    # INACTION GUARD. `startingMoney` is $3,000 and doing
+                    # NOTHING ends exactly at 3,000. Measured: the self-play
+                    # leagues converged to a flat 3,000 at EVERY horizon -the
+                    # policy sat on the cash- because the frozen snapshot made
+                    # 2,588, i.e. WORSE than inaction, and beating it required
+                    # doing nothing. `win` said 1.00 and the real margin was
+                    # -98.3%.
                     _money = env.mean_money()
                     _inertia = _money / float(
                         spec.DEFAULT_CONFIG.get("startingMoney", 3000) or 3000)
                     # Only when the horizon is SINGLE. When mixed, `league` is
-                    # constante y sobra, y el dinero promediado entre 15/20/30
-                    # days means nothing: it is broken down.
+                    # constant and redundant, and money averaged across
+                    # 15/20/30 days means nothing: it is broken down instead.
                     _extra = {}
                     if a.leagues:
                         _extra["league"] = float(_league)
@@ -1523,35 +1533,35 @@ def main():
                         _inert = [k for k, v in _by_horizon.items()
                                     if v / 3000.0 < 1.02]
                         if _inert and upd > 20:
-                            print(f"  AVISO upd {upd}: INERTES {len(_inert)}/"
+                            print(f"  WARNING upd {upd}: INERT {len(_inert)}/"
                                   f"{len(_by_horizon)} -> " + ", ".join(
                                       f"{k} {_by_horizon[k]/3000.0:.2f}x"
                                       for k in _inert), flush=True)
                     elif _inertia < 1.05 and upd > 20:
-                        print(f"  AVISO upd {upd}: dinero {_money:.0f} ~ "
-                              f"no-hacer-nada ({_inertia:.2f}x). Politica inerte.",
+                        print(f"  WARNING upd {upd}: money {_money:.0f} ~ "
+                              f"doing-nothing ({_inertia:.2f}x). Inert policy.",
                               flush=True)
-                    # DASHBOARD EN CUATRO GRUPOS. Antes eran 19 metricas
-                    # planas mezclando "voy ganando" con "la maquinaria esta
-                    # healthy", with no reference lines and several broken by
-                    # the mix of horizons. The numbered prefix groups them in
-                    # the UI and fixes the reading order.
-                    _RIV = float(rv.get("dinero", 0.0) or 0.0)
+                    # DASHBOARD IN FOUR GROUPS. It used to be 19 flat metrics
+                    # mixing "am I winning" with "is the machinery healthy",
+                    # with no reference lines and several broken by the mix of
+                    # horizons. The numbered prefix groups them in the UI and
+                    # fixes the reading order.
+                    _RIV = float(rv.get("money", 0.0) or 0.0)
                     _m = {
                         # 1_RESULT: the only thing that says whether we are winning.
                         "1_result/win_rate": float(wr),
                         "1_result/margin_pct": (100.0 * (_money - _RIV) / _RIV
                                                    if _RIV > 0 else 0.0),
-                        # x1 = no hacer nada. MEDIDO: la inaccion deja los
-                        # 3.000 $ iniciales a CUALQUIER horizonte. (El "245 $"
-                        # que se cito antes era otra cosa: unidades quietas
-                        # but the market layer buying, which loses.)
+                        # x1 = doing nothing. MEASURED: inaction leaves the
+                        # initial $3,000 at ANY horizon. (The "$245" quoted
+                        # earlier was something else: units standing still but
+                        # the market layer buying, which loses.)
                         "1_result/x_inaction": _money / 3000.0,
-                        # 2_SALUD: si la maquinaria aprende.
+                        # 2_HEALTH: whether the machinery is learning.
                         "2_health/critic_r2": float(_r2),
                         "2_health/kl_per_dim": float(kl),
                         "2_health/saturation": float(_sat),
-                        "2_health/epochs_run": float(a.epochs - kl_cortes),
+                        "2_health/epochs_run": float(a.epochs - kl_cuts),
                         # 3_CONTEXT: what we are being measured against.
                         "3_context/rival_money": _RIV,
                         # 4_DIAG: only looked at when something fails.
@@ -1599,9 +1609,10 @@ def main():
                             _m["2_health/grad_zero_pct"] = 100.0 * float(
                                 np.mean([g < 1e-9 for g in _gg]))
                         if a.jepa_weight > 0 and JZ:
-                            # VIGILANTE DE COLAPSO. Si el codificador emite
-                            # always the same vector, predicting it is trivial and
-                            # no se aprende nada. Esto cae a cero si pasa.
+                            # COLLAPSE WATCHDOG. If the encoder always emits
+                            # the same vector, predicting it is trivial and
+                            # nothing is learned. This falls to zero if that
+                            # happens.
                             _z = torch.cat(JZ)
                             _m["2_health/jepa_sd"] = float(_z.std(0).mean())
                         try:
@@ -1644,8 +1655,9 @@ def main():
                         if _sm.shape[0] > 1:
                             _m["2_health/sigma_micro_verb"] = float(_sm[1:].mean())
                         _m["2_health/sigma_floor"] = float(a.sigma_floor)
-                        # x_inaccion: 1.0 = la politica esta INERTE. Cuatro
-                        # different collapses would have been visible at a glance.
+                        # x_inaction: 1.0 = the policy is INERT. Four
+                        # different collapses would have been visible at a
+                        # glance with this on the dashboard.
                         _m["1_result/x_inaction"] = float(_money) / 3000.0
                         # how much of the macro depends on the STATE. If it is
                         # ~0 the head emits a constant and conditions nothing.
@@ -1668,15 +1680,16 @@ def main():
         if upd % 10 == 0 or upd == a.updates:
             torch.save({"sd": net.state_dict(), "cfg": vars(cfg), "init": vec0,
                         "macro_fields": _MACRO_FIELDS,
-                        "upd": upd, "huella": fingerprint(), "huella_modelo": model_fingerprint(),
+                        "upd": upd, "fingerprint": fingerprint(),
+                        "model_fingerprint": model_fingerprint(),
                         "opt": opt.state_dict()}, a.out + ".ultimo")
-        # --- red de seguridad: comprobar y, si toca, rescatar ---
+        # --- safety net: check and, if due, rescue ---
         if ret_ep and len(ret_ep) >= 40:
             _r80 = float(np.mean(ret_ep[-80:]))
             _prev = _lifeline["ret"]
             # DROP RELATIVE TO MAGNITUDE, not a fraction of the value: with
-            # retornos NEGATIVOS `r < 0.5*prev` se invierte -de -0,8 a -0,7 es
-            # an IMPROVEMENT and fired the rescue-. This works for both signs.
+            # NEGATIVE returns `r < 0.5*prev` inverts -from -0.8 to -0.7 is an
+            # IMPROVEMENT and fired the rescue-. This works for both signs.
             _threshold = _prev - 0.5 * abs(_prev) if _prev is not None else None
             if _prev is not None and _r80 < _threshold and _lifeline["sd"] is not None:
                 net.load_state_dict(_lifeline["sd"])
@@ -1703,7 +1716,9 @@ def main():
                 best = r80
                 torch.save({"sd": net.state_dict(), "cfg": vars(cfg),
                             "init": vec0, "macro_fields": _MACRO_FIELDS, "ret": r80, "upd": upd,
-                            "huella": fingerprint(), "huella_modelo": model_fingerprint(), "opt": opt.state_dict()}, a.out)
+                            "fingerprint": fingerprint(),
+                            "model_fingerprint": model_fingerprint(),
+                            "opt": opt.state_dict()}, a.out)
 
 
 if __name__ == "__main__":

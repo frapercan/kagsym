@@ -302,7 +302,7 @@ class ParallelEnv:
             r = self._riv[k]
             if not isinstance(r, dict):
                 continue
-            d = r.get("dinero")
+            d = r.get("money")
             if d is None or d != d:
                 continue
             out.setdefault(self._rung_label(k), []).append(float(d))
@@ -435,7 +435,7 @@ class ParallelEnv:
         out = []
         for d in self._riv:
             try:
-                out.append(float(d.get("dinero", float("nan"))))
+                out.append(float(d.get("money", float("nan"))))
             except Exception:
                 out.append(float("nan"))
         return out
@@ -462,8 +462,8 @@ class ParallelEnv:
     def rival_stats(self, last=50):
         vs = [r for r in self._riv if r]
         if not vs:
-            return {"dinero": float("nan"), "cultivos": float("nan"),
-                    "animales": float("nan"), "unidades": float("nan")}
+            return {"money": float("nan"), "crops": float("nan"),
+                    "animals": float("nan"), "units": float("nan")}
         return {k: self._media([r[k] for r in vs]) for k in vs[0]}
 
     def mean_unsold(self, last=50):

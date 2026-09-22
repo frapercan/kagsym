@@ -463,8 +463,8 @@ class DayEnv:
 
     def rival_stats(self, last=50):
         m = lambda v: float(np.mean(v[-last:])) if v else float("nan")
-        return {"dinero": m(self.rival_finals), "cultivos": m(self.riv_cult),
-                "animales": m(self.riv_anim), "unidades": m(self.rival_units)}
+        return {"money": m(self.rival_finals), "crops": m(self.riv_cult),
+                "animals": m(self.riv_anim), "units": m(self.rival_units)}
 
     def mean_unsold(self, last=50):
         """Units left in the shed at the close. They should be 0."""

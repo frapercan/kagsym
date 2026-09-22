@@ -314,7 +314,7 @@ class E2EAgent(nn.Module):
             "jepa_z": self.jepa_proy(z),
             "micro": (self.micro(self.micro_ctx(h)) if self.n_ops
                       else self.micro(self.micro_ctx(h)).squeeze(1)),
-            "valor": self.critic(z).squeeze(-1),
+            "value": self.critic(z).squeeze(-1),
         }
 
     def macro_from(self, out, eps):
