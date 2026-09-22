@@ -135,11 +135,32 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
 
             env.set_rival_policy(factory)
             conn.send(True)
-        elif cmd == "rival_tope":
+        elif cmd == "rival_cap":
+            # THE CAP APPLIES TO THE RUNG'S OWN AGENT. It used to hard-code
+            # `v48-fast-routes` here, and since a grid ALWAYS calls
+            # `set_rival_cap`, every worker ended up playing v48 no matter what
+            # `--levels` said: eleven rungs of opponent variety collapsed into
+            # one agent, and the ladder built for exactly that purpose never
+            # played a single episode of training.
+            #
+            # Measured with two workers on rungs 0 and 15, 30 days: before the
+            # cap call the opponent makes $3,000 (rung 0 is the PASSIVE agent,
+            # to the dollar) and $141,374 (rung 15). After it, $82,388 and
+            # $127,095 -the passive rung is now playing v48-.
             from .environment import public_with_cap as _pct, load_public as _cp
-            _n = "v48-fast-routes"
-            env.set_rival_policy(
-                (lambda: _cp(_n)) if data is None else (lambda t=data: _pct(_n, t)))
+            from .environment import LADDER as _L
+            _nm = _L[min(env.level, len(_L) - 1)]
+            if _nm is None:
+                # Rung 0 is the passive agent: it has no cap to apply, and
+                # forcing a public agent on it destroys the only rung whose
+                # opponent is policy-independent.
+                from kaggle_environments.envs.kaggriculture import (
+                    kaggriculture as _E)
+                env.set_rival_policy(lambda: _E.pass_agent)
+            elif data is None:
+                env.set_rival_policy(lambda n=_nm: _cp(n))
+            else:
+                env.set_rival_policy(lambda n=_nm, t=data: _pct(n, t))
             conn.send(True)
         elif cmd == "rival_macro":
             env.set_rival_macro(data)
@@ -358,7 +379,7 @@ class ParallelEnv:
         vals = (list(cap) if isinstance(cap, (list, tuple))
                 else [cap] * self.n_procs)
         for k, c in enumerate(self.conns):
-            c.send(("rival_tope", vals[k % len(vals)]))
+            c.send(("rival_cap", vals[k % len(vals)]))
         for c in self.conns:
             c.recv()
 
