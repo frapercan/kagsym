@@ -394,7 +394,7 @@ def land_orders(obs, macro=None) -> list:
     empty = sum(1 for row in farm["tiles"] for t in row if t is None)
     usables = sum(1 for y in range(spec.BOARD) for x in range(spec.BOARD)
                   if quadrant_of_xy(x, y) in farm["unlocked_quadrants"])
-    umbral = 0.25 if macro is None else float(macro.expandir)
+    umbral = 0.25 if macro is None else float(macro.expand)
     if usables and empty > usables * umbral:
         return []
     days = max(0, (turns_left(obs) + 1) // spec.TURNS_PER_DAY)

@@ -46,12 +46,12 @@ class Macro:
                                #    (exp(logit(1/3)) = 0.5, the previous value)
     animals: float = 0.5      # -> share of attention capacity given to livestock
     hands: float = 0.35       # -> target hands per day
-    venta: float = 0.25        # -> agresividad: 0 vender ya, 1 acumular al maximo
+    selling: float = 0.25        # -> agresividad: 0 vender ya, 1 acumular al maximo
     crop: float = 0.0       # -> sesgo hacia cultivo caro (1) o barato y rapido (0)
-    expandir: float = 0.25    # -> saturation required before buying land
-    adherencia: float = 0.3333 # -> stickiness scale, borderless
+    expand: float = 0.25    # -> saturation required before buying land
+    stickiness: float = 0.3333 # -> stickiness scale, borderless
                                #    (exp(logit(1/3)) = 0.5, the previous value)
-    fertilizar: float = 0.0    # -> cuanto vale fertilizar frente a las demas tareas
+    fertilize: float = 0.0    # -> cuanto vale fertilizar frente a las demas tareas
     # PRIORITIES. The seven above say HOW MUCH of each thing; these say WHAT
     # GETS SACRIFICED when there is not enough for everything, which is 31% of
     # turns: measured, lack of cash blocks buying land on 31%, feed on 19% and
@@ -427,7 +427,7 @@ def target_tiles(obs, macro: Macro) -> int:
     # were hired afterwards, and the farm could not grow. CEM did not choose a
     # granja de 7 casillas y 1.9 unidades: era la unica alcanzable.
     n_units = 1 + target_hands(obs, macro)
-    cultivables = sum(1 for y in range(spec.BOARD) for x in range(spec.BOARD)
+    plantable = sum(1 for y in range(spec.BOARD) for x in range(spec.BOARD)
                       if farm["tiles"][y][x] != "LOCKED")
     # half the budget goes on moving: measured 42.3% in the expert
     # SIN BORDE, como en `peones_objetivo`. Antes era
@@ -447,9 +447,9 @@ def target_tiles(obs, macro: Macro) -> int:
     # (exp(logit(1/3)) = 0.5), f = 0.5 asks for the whole watering ceiling, and
     # the extremes reach any farm the engine allows. The only clipping left is
     # the engine's.
-    techo_riego = n_units * spec.TURNS_PER_DAY * WATERING_FACTOR
-    deseadas = techo_riego * math.exp(_logit(macro.tiles))
-    return max(0, int(min(cultivables, deseadas)))
+    watering_cap = n_units * spec.TURNS_PER_DAY * WATERING_FACTOR
+    wanted = watering_cap * math.exp(_logit(macro.tiles))
+    return max(0, int(min(plantable, wanted)))
 
 
 def target_animals(obs, macro: Macro) -> int:
@@ -484,7 +484,7 @@ def sell_horizon(obs, macro: Macro) -> int:
     # holding produce longer is exactly the play that can pay against an
     # opponent who is not crashing the price.
     return max(1, int(round(spec.TURNS_PER_DAY
-                            * math.exp(_logit(macro.venta)))))
+                            * math.exp(_logit(macro.selling)))))
 
 
 def target_crop(obs, macro: Macro):
@@ -500,9 +500,9 @@ def target_crop(obs, macro: Macro):
         return None
     if macro.crop <= 0.0:
         return min(viable, key=lambda c: cycle_days(c))
-    por_valor = sorted(viable, key=lambda c: cycle_profit(obs, c) / max(1, cycle_days(c)))
-    i = min(len(por_valor) - 1, int(macro.crop * len(por_valor)))
-    return por_valor[i]
+    by_value = sorted(viable, key=lambda c: cycle_profit(obs, c) / max(1, cycle_days(c)))
+    i = min(len(by_value) - 1, int(macro.crop * len(by_value)))
+    return by_value[i]
 
 
 def assignment_stickiness(macro: Macro) -> float:
@@ -527,7 +527,7 @@ def assignment_stickiness(macro: Macro) -> float:
     # and therefore capped at 2.0 -a ceiling nobody searched-. Now it is
     # the same borderless form as every other parameter: f = 0.5 gives
     # 1.0, the old midpoint, and the extremes reach any value.
-    return math.exp(_logit(macro.adherencia))
+    return math.exp(_logit(macro.stickiness))
 
 
 def priorities(macro: Macro) -> dict:
@@ -556,7 +556,7 @@ def category_order(macro: Macro) -> list:
     return sorted(CATEGORIES, key=lambda c: -p[c])
 
 
-def peso_fertilizar(macro: Macro) -> float:
+def fertilize_weight(macro: Macro) -> float:
     """What fertilising is worth, as a multiplier of its computed value.
 
     It is a DIAL, not a switch. Tried as a global switch with the frozen vector
@@ -570,4 +570,4 @@ def peso_fertilizar(macro: Macro) -> float:
     """
     # Sin techo: el 3.0 de antes era un maximo elegido a ojo. 0.5 da 1.5, que
     # which is what the old midpoint gave.
-    return 1.5 * math.exp(_logit(macro.fertilizar))
+    return 1.5 * math.exp(_logit(macro.fertilize))

@@ -43,7 +43,7 @@ def unlocked(farm, x: int, y: int) -> bool:
 
 
 def step_toward(pos, target) -> str:
-    """Un movimiento greedy. No hay obstaculos: las casillas son todas pasables."""
+    """One greedy step. There are no obstacles: every tile is walkable."""
     x, y = pos
     tx, ty = target
     if x != tx:
@@ -57,7 +57,7 @@ def dist(a, b) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
-# --- valor de un cultivo ----------------------------------------------------
+# --- value of a crop --------------------------------------------------------
 def cycle_yield(crop: str) -> int:
     """Units a full cycle yields, per the engine's exact mechanics."""
     cd = spec.CROPS[crop]
@@ -79,7 +79,7 @@ def unit_price(obs, item: str) -> float:
 
 
 def cycle_profit(obs, crop: str) -> float:
-    """Beneficio neto de un ciclo al precio de mercado ACTUAL."""
+    """Net profit of one cycle at the CURRENT market price."""
     return cycle_yield(crop) * unit_price(obs, crop) - spec.CROPS[crop]["seed"]
 
 
@@ -89,17 +89,17 @@ def days_left(obs) -> int:
 
 
 def plantable(obs, crop: str) -> bool:
-    """No tiene sentido plantar lo que no dara tiempo a cosechar."""
+    """There is no point planting what there will be no time to harvest."""
     return cycle_days(crop) < days_left(obs)
 
 
 def growth_factor(obs, crop: str) -> float:
     """Factor by which capital multiplies per day when reinvested.
 
-    Un ciclo convierte `seed` dolares en `unidades x precio` dolares en
+    A cycle turns `seed` dollars into `units x price` dollars in
     `cycle_days` days, so the daily factor is (return/cost)^(1/days).
-    Con trigo: 10 -> 100 en 4 dias = x1.78 al dia. Con melon: 80 -> 1500 en 12
-    days = x1.28. Melon wins per tile-day and loses per capital-day, and
+    With wheat: 10 -> 100 in 4 days = x1.78 a day. With melon: 80 -> 1500 in
+    12 days = x1.28. Melon wins per tile-day and loses per capital-day, and
     when capital is the constraint, the second is what matters.
     """
     cost = max(1, spec.CROPS[crop]["seed"])
@@ -113,86 +113,87 @@ def capital_is_binding(obs, free_tiles: int) -> bool:
     if free_tiles <= 0:
         return False
     money = float(obs["farms"][int(obs["player"])]["money"])
-    barato = min(spec.CROPS[c]["seed"] for c in spec.CROP_LIST if plantable(obs, c)) \
+    cheapest = min(spec.CROPS[c]["seed"] for c in spec.CROP_LIST if plantable(obs, c)) \
         if any(plantable(obs, c) for c in spec.CROP_LIST) else 1
-    return money < free_tiles * barato
+    return money < free_tiles * cheapest
 
 
 def best_crop(obs, seeds_only: bool = False, free_tiles: int = 0) -> str | None:
-    """El mejor cultivo SEGUN CUAL SEA LA RESTRICCION.
+    """The best crop GIVEN WHICH RESOURCE IS BINDING.
 
     With tiles to spare and little money the constraint is capital and the
-    que mas rapido lo multiplica. Con dinero de sobra y pocas casillas, la
-    constraint is land and the winner is whatever yields most per tile-day.
+    winner is whatever multiplies it fastest. With money to spare and few
+    tiles, the constraint is land and the winner is whatever yields most per
+    tile-day.
 
-    Confusing the two costs the game: optimising tile-day from turn 0
-    lleva a plantar melon, que no paga nada durante 12 dias, quedarse sin caja y
-    no poder ni contratar peones.
+    Confusing the two costs the game: optimising tile-day from turn 0 leads to
+    planting melon, which pays nothing for 12 days, running out of cash and
+    not even being able to hire hands.
     """
     seeds = obs["private"].get("seeds", {})
-    por_capital = capital_is_binding(obs, free_tiles)
+    capital_bound = capital_is_binding(obs, free_tiles)
     best, value = None, 0.0
     for c in spec.CROP_LIST:
         if not plantable(obs, c):
             continue
         if seeds_only and seeds.get(c, 0) <= 0:
             continue
-        v = growth_factor(obs, c) if por_capital else cycle_profit(obs, c) / max(1, cycle_days(c))
+        v = growth_factor(obs, c) if capital_bound else cycle_profit(obs, c) / max(1, cycle_days(c))
         if v > value:
             best, value = c, v
     return best
 
 
-# --- tareas -----------------------------------------------------------------
-def _acceso_cobertizo():
-    """Casillas de acceso al cobertizo, calculadas UNA vez.
+# --- tasks ------------------------------------------------------------------
+def _shed_access_set():
+    """Shed access tiles, computed ONCE.
 
     The set was rebuilt on every call, and it is called 44,275 times per
     episode (once per tile per turn). It is a board constant.
     """
-    global _ACCESO
-    if _ACCESO is None:
+    global _SHED_ACCESS
+    if _SHED_ACCESS is None:
         import kaggle_environments.envs.kaggriculture.kaggriculture as K
-        _ACCESO = frozenset(tuple(p) for p in K._shed_access_tiles(BOARD))
-    return _ACCESO
+        _SHED_ACCESS = frozenset(tuple(p) for p in K._shed_access_tiles(BOARD))
+    return _SHED_ACCESS
 
 
-_ACCESO = None
+_SHED_ACCESS = None
 
 
 def _is_shed_access(x: int, y: int) -> bool:
-    return (x, y) in _acceso_cobertizo()
+    return (x, y) in _shed_access_set()
 
 
 def _shed_task(obs, farm, ctx=None, macro=None):
-    """What to take out of the shed. Without this the animal chain never closes:
-    se compra, cae en el cobertizo y se queda ahi para siempre.
+    """What to take out of the shed. Without this the animal chain never
+    closes: the animal is bought, lands in the shed and stays there forever.
 
-    Y el trigo importa igual: FEED consume 1 trigo DEL INVENTARIO DE LA UNIDAD,
-    so an animal nobody brings wheat to escapes after two days.
+    Wheat matters just as much: FEED consumes 1 wheat FROM THE UNIT'S
+    INVENTORY, so an animal nobody brings wheat to escapes after two days.
     """
     priv = obs["private"]
     shed = priv["shed"]
     # 1) an animal to place, if there is or could be room
     if ctx is None:
-        ctx = contexto_turno(obs, farm)
+        ctx = TurnContext(obs, farm)
     # Only the animal actually in the shed is valued.
-    hay = [a for a in spec.ANIMALS if int(shed.get(a, 0)) > 0]
-    for a in sorted(hay, key=lambda a: -animal_value(ctx, a, macro)):
+    in_shed = [a for a in spec.ANIMALS if int(shed.get(a, 0)) > 0]
+    for a in sorted(in_shed, key=lambda a: -animal_value(ctx, a, macro)):
         if ctx.free_slots.get(spec.ANIMALS[a]["structure"], 0) > 0:
             return (max(1.0, animal_value(ctx, a, macro) / ctx.days),
                     ["PICKUP", a, 1])
     # 1b) DROP. The harvest stays in the unit's inventory until the close of
     # the day; with DROP it reaches the shed NOW and can be sold the same day,
     # besides avoiding the nightly flush overflowing the 100-unit shed and
-    # discarding the excess. The opponent uses it 417 times per episode and we
-    # estaba en el repertorio.
+    # discarding the excess. The opponent uses it 417 times per episode and it
+    # was simply missing from our repertoire.
     #
-    # VALOR MARGINAL. NO vale lo que se lleva encima: el motor vuelca los
-    # inventories to the shed only at the close of the day, so dropping early
-    # does not change that the goods end up there. All it adds is being able to
-    # SELL IT TODAY, before the price falls. Valuing it gross made all the
-    # unidades corrieran al cobertizo: medido, 39 558 -> 13 250 $.
+    # MARGINAL VALUE. It is NOT worth what the unit carries: the engine
+    # flushes inventories to the shed only at the close of the day, so dropping
+    # early does not change that the goods end up there. All it adds is being
+    # able to SELL IT TODAY, before the price falls. Valuing it gross made
+    # every unit run to the shed: measured, $39,558 -> $13,250.
     #
     # This is the third place where gross value was confused with marginal
     # (before: the animal's nominal price and the fertiliser bonus).
@@ -203,9 +204,9 @@ def _shed_task(obs, farm, ctx=None, macro=None):
         v_ = 0.0
         for item, n_ in (inv or {}).items():
             if item in spec.PRODUCTS and n_:
-                ahora = float(sum(marginal_prices(obs, item, int(n_))))
-                luego = float(future_price(obs, item, spec.TURNS_PER_DAY)) * int(n_)
-                v_ += max(0.0, ahora - luego)      # only the drop avoided
+                now = float(sum(marginal_prices(obs, item, int(n_))))
+                later = float(future_price(obs, item, spec.TURNS_PER_DAY)) * int(n_)
+                v_ += max(0.0, now - later)      # only the drop avoided
         best = max(best, v_)
     if best > 0:
         return (best, ["DROP"])
@@ -213,24 +214,24 @@ def _shed_task(obs, farm, ctx=None, macro=None):
     # 2) fertiliser, if there are plants to fertilise and it is in the shed
     fert = int(shed.get("FERTILIZER", 0))
     if fert > 0:
-        fertilizables = sum(1 for row in farm["tiles"] for t in row
+        fertilizable = sum(1 for row in farm["tiles"] for t in row
                             if isinstance(t, dict) and t.get("kind") == "PLANT"
                             and t.get("fertilized_until_day", -1) < obs["day"])
-        if fertilizables > 0:
-            n = min(fert, fertilizables, int(FERT_PER_TRIP))
+        if fertilizable > 0:
+            n = min(fert, fertilizable, int(FERT_PER_TRIP))
             return (2.0 * unit_price(obs, "FERTILIZER"), ["PICKUP", "FERTILIZER", n])
 
     # 3) wheat to feed the animals that have not eaten yet
-    hambrientos = sum(1 for row in farm["tiles"] for t in row
+    hungry = sum(1 for row in farm["tiles"] for t in row
                       if isinstance(t, dict) and t.get("animal") and not t.get("fed_today"))
-    if hambrientos > 0 and int(shed.get("WHEAT", 0)) > 0:
-        n = min(hambrientos, int(shed["WHEAT"]))
+    if hungry > 0 and int(shed.get("WHEAT", 0)) > 0:
+        n = min(hungry, int(shed["WHEAT"]))
         return (2.0 * unit_price(obs, "WHEAT"), ["PICKUP", "WHEAT", n])
     return None
 
 
 # What a unit must be CARRYING for the operation not to be a no-op.
-REQUIERE = {"FEED": "WHEAT", "FERTILIZE": "FERTILIZER"}
+REQUIRES = {"FEED": "WHEAT", "FERTILIZE": "FERTILIZER"}
 
 
 def _can_drop(inv) -> bool:
@@ -238,18 +239,18 @@ def _can_drop(inv) -> bool:
     return any(int(v) > 0 for v in (inv or {}).values())
 
 
-def _animales_esperando(obs) -> list:
+def _animals_waiting(obs) -> list:
     """Animals bought but not yet placed (in the shed or in hand)."""
     priv = obs["private"]
-    fuera = []
+    waiting = []
     for a in spec.ANIMALS:
         n = int(priv["shed"].get(a, 0))
         n += sum(int(inv.get(a, 0)) for inv in priv.get("inventories", []))
-        fuera += [a] * n
-    return fuera
+        waiting += [a] * n
+    return waiting
 
 
-def _estructuras_libres(farm) -> dict:
+def _free_structures(farm) -> dict:
     free_slots = {"COOP": 0, "PASTURE": 0}
     for row in farm["tiles"]:
         for t in row:
@@ -258,60 +259,59 @@ def _estructuras_libres(farm) -> dict:
     return free_slots
 
 
-def _tasa_riego(farm) -> float:
+def _watering_rate(farm) -> float:
     """Fraction of plants ALREADY watered today.
 
-    Es la probabilidad empirica de que el riego futuro ocurra, y por tanto el
-    the factor by which the fertiliser bonus must be discounted: if only 39%
-    of plants get watered, fertilising returns 39% of what it promises.
-    Sale del propio estado, no de una constante.
+    It is the empirical probability that future watering happens, and
+    therefore the factor by which the fertiliser bonus must be discounted: if
+    only 39% of plants get watered, fertilising returns 39% of what it
+    promises. It comes out of the state itself, not out of a constant.
     """
-    total = regadas = 0
+    total = watered = 0
     for row in farm["tiles"]:
         for t in row:
             if isinstance(t, dict) and t.get("kind") == "PLANT":
                 total += 1
-                regadas += 1 if t.get("watered_today") else 0
-    return (regadas / total) if total else 0.0
+                watered += 1 if t.get("watered_today") else 0
+    return (watered / total) if total else 0.0
 
 
-class contexto_turno:
+class TurnContext:
     """Facts shared by all 100 tiles of the turn, computed LAZILY.
 
-    Dos medidas, las dos con cProfile:
-      - calcularlos dentro de `tile_task`: 10547 escaneos de tablero y 15215
+    Two measurements, both with cProfile:
+      - computing them inside `tile_task`: 10,547 board scans and 15,215
         animal revaluations per episode -> 2,172 steps/s.
-      - calcularlos todos al entrar al turno: PEOR, 1853 pasos/s, porque la
-        most turns have no pending animal and the cost was paid anyway.
-        escaneo igualmente.
-    Lazy captures the best of both: zero cost when not needed, and one
-    sola vez cuando hace falta. (El motor solo hace 38567 pasos/s: el cuello
-    siempre estuvo aqui, no en la simulacion.)
+      - computing them all on entering the turn: WORSE, 1,853 steps/s, because
+        most turns have no pending animal and the scan was paid anyway.
+    Lazy captures the best of both: zero cost when not needed, and a single
+    scan when it is. (The engine alone does 38,567 steps/s: the bottleneck was
+    always here, not in the simulation.)
     """
 
-    __slots__ = ("obs", "farm", "_pend", "_libres", "_val", "_dias")
+    __slots__ = ("obs", "farm", "_pend", "_free_struct", "_val", "_cycle_days")
 
     def __init__(self, obs, farm):
         self.obs, self.farm = obs, farm
-        self._pend = self._libres = self._val = self._dias = None
+        self._pend = self._free_struct = self._val = self._cycle_days = None
 
     @property
     def pending_animals(self):
         if self._pend is None:
-            self._pend = _animales_esperando(self.obs)
+            self._pend = _animals_waiting(self.obs)
         return self._pend
 
     @property
     def free_slots(self):
-        if self._libres is None:
-            self._libres = _estructuras_libres(self.farm)
-        return self._libres
+        if self._free_struct is None:
+            self._free_struct = _free_structures(self.farm)
+        return self._free_struct
 
     @property
     def days(self):
-        if self._dias is None:
-            self._dias = max(1, days_left(self.obs))
-        return self._dias
+        if self._cycle_days is None:
+            self._cycle_days = max(1, days_left(self.obs))
+        return self._cycle_days
 
     def value(self, animal):
         if self._val is None:
@@ -355,7 +355,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
     day = obs["day"]
     seeds = obs["private"].get("seeds", {})
     if ctx is None:
-        ctx = contexto_turno(obs, farm)
+        ctx = TurnContext(obs, farm)
 
     if _is_shed_access(x, y):
         t = _shed_task(obs, farm, ctx, macro)
@@ -392,15 +392,15 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         cd = spec.CROPS[tile["crop"]]
         age = day - tile["planted_day"]
         price = unit_price(obs, tile["crop"])
-        maduro = age >= cd["first_yield_day"] and tile["yield_units"] > 0
+        ripe = age >= cd["first_yield_day"] and tile["yield_units"] > 0
 
         if not tile["watered_today"]:
             # `consecutive_unwatered` NACE EN 1 al plantar: una planta sin regar
             # el mismo dia se convierte en hierba esa noche. Por eso >= 1 ya es
             # an emergency, not a warning. Verified against the engine.
             if tile["consecutive_unwatered"] >= 1:
-                restante = max(1, cycle_yield(tile["crop"]) - tile["yield_units"])
-                return (restante * price, ["WATER"])
+                remaining = max(1, cycle_yield(tile["crop"]) - tile["yield_units"])
+                return (remaining * price, ["WATER"])
             if not cd["ongoing"]:
                 w0 = (cd["max_yield_day"] + 1) // 2
                 if w0 <= age <= cd["max_yield_day"] and tile["yield_units"] < cd["max_yield"]:
@@ -427,8 +427,8 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         # exactly the case that motivates the learned micro head: an action
         # whose value depends on the state in a way I cannot write down.
         # Fertilise dial: 0 turns it off, and the search decides.
-        from ..macro import peso_fertilizar
-        _pf = peso_fertilizar(macro) if macro is not None else 0.0
+        from ..macro import fertilize_weight
+        _pf = fertilize_weight(macro) if macro is not None else 0.0
         if _pf > 0.0:
             # FERTILIZAR, DESPUES de regar. Estaba ANTES y hacia `return`, asi que
             # a plant needing both got fertilised and the watering
@@ -438,23 +438,23 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
             if (not cd["ongoing"] and tile.get("fertilized_until_day", -1) < day):
                 w0 = (cd["max_yield_day"] + 1) // 2
                 if w0 <= age + 1 <= cd["max_yield_day"] and tile["yield_units"] < cd["max_yield"]:
-                    dias_utiles = min(FERTILIZER_HORIZON,
+                    useful_days = min(FERTILIZER_HORIZON,
                                       cd["max_yield_day"] - age, days_left(obs))
-                    if dias_utiles > 0:
+                    if useful_days > 0:
                         # MARGINAL VALUE, not gross. The bonus adds +1 unit per day
                         # REGADO, no por dia. Valorarlo a `dias * precio` lo hacia
                         # ganar siempre a regar (1-2 x precio): medido, el riego
                         # caia de 1 791 a 904, las cosechas de 768 a 360 y el dinero
                         # de 36 566 a 22 768 $.
-                        return (_pf * dias_utiles * price * _tasa_riego(farm), ["FERTILIZE"])
+                        return (_pf * useful_days * price * _watering_rate(farm), ["FERTILIZE"])
             elif cd["ongoing"] and tile.get("fertilized_until_day", -1) < day:
                 if age >= cd["first_yield_day"] - 1 and days_left(obs) > 1:
                     return (_pf * min(FERTILIZER_HORIZON, days_left(obs))
-                            * price * _tasa_riego(farm), ["FERTILIZE"])
+                            * price * _watering_rate(farm), ["FERTILIZE"])
 
-        if maduro and (cd["ongoing"] or age >= cd["max_yield_day"]):
+        if ripe and (cd["ongoing"] or age >= cd["max_yield_day"]):
             return (tile["yield_units"] * price, ["HARVEST"])
-        if maduro and tile["yield_units"] >= cd["max_yield"]:
+        if ripe and tile["yield_units"] >= cd["max_yield"]:
             return (tile["yield_units"] * price, ["HARVEST"])
         return None
 
@@ -550,8 +550,6 @@ FILTER_BY_INVENTORY = False
 # gradient to a categorical head. `_VERB_RNG` is seeded per episode from
 # outside so comparisons stay paired.
 import numpy as np
-# The Hungarian is the only assignment method (see `assign_units`).
-METODO_ASIGNACION = "humgaro"
 
 # UMBRAL de las casillas EXTRA. Lo fija `macro.aplica_parametros` una vez por
 # turn from the learned `f_extra_threshold` parameter; this value is only the
@@ -583,17 +581,17 @@ _VERB_RNG = np.random.default_rng(0)
 GRAD_ACC = None
 
 
-def siembra_verbo(seed: int) -> None:
+def seed_verb(seed: int) -> None:
     global _VERB_RNG
     _VERB_RNG = np.random.default_rng(seed)
 
 
-def activa_grad(n_ops: int) -> None:
+def enable_grad(n_ops: int) -> None:
     global GRAD_ACC
     GRAD_ACC = np.zeros(n_ops, dtype=np.float64)
 
 
-def recoge_grad():
+def collect_grad():
     global GRAD_ACC
     g, GRAD_ACC = GRAD_ACC, None
     return g
@@ -621,7 +619,7 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
     tile = farm["tiles"][y][x]
     day = obs["day"]
     if ctx is None:
-        ctx = contexto_turno(obs, farm)
+        ctx = TurnContext(obs, farm)
     out = []
 
     if _is_shed_access(x, y):
@@ -654,20 +652,20 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
         # La cantidad NO es una decision estrategica: la fijan cuantos animales
         # tienen hambre y cuanto hay en el cobertizo. Es del lado simbolico,
         # like legality and routing. The network still chooses the VERB.
-        trigo = int(shed.get("WHEAT", 0))
-        if trigo > 0:
-            hambrientos = sum(1 for row in farm["tiles"] for t in row
+        wheat = int(shed.get("WHEAT", 0))
+        if wheat > 0:
+            hungry = sum(1 for row in farm["tiles"] for t in row
                               if isinstance(t, dict) and t.get("animal")
                               and not t.get("fed_today"))
             out.append((OPS_IX["PICKUP_WHEAT"],
-                        ["PICKUP", "WHEAT", max(1, min(hambrientos, trigo))]))
+                        ["PICKUP", "WHEAT", max(1, min(hungry, wheat))]))
         fert = int(shed.get("FERTILIZER", 0))
         if fert > 0:
-            fertilizables = sum(1 for row in farm["tiles"] for t in row
+            fertilizable = sum(1 for row in farm["tiles"] for t in row
                                 if isinstance(t, dict) and t.get("kind") == "PLANT"
                                 and t.get("fertilized_until_day", -1) < obs["day"])
             out.append((OPS_IX["PICKUP_FERTILIZER"],
-                        ["PICKUP", "FERTILIZER", max(1, min(fert, fertilizables, int(FERT_PER_TRIP)))]))
+                        ["PICKUP", "FERTILIZER", max(1, min(fert, fertilizable, int(FERT_PER_TRIP)))]))
         out.append((OPS_IX["DROP"], ["DROP"]))
 
     if tile is None:
@@ -689,9 +687,9 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
             # UNA OPCION POR CULTIVO con semilla disponible y que dé tiempo a
             # mature. Legality and viability still come from the engine;
             # la PREFERENCIA pasa a la red.
-            _sem = obs["private"].get("seeds", {})
+            _seeds = obs["private"].get("seeds", {})
             for _c in spec.CROP_LIST:
-                if int(_sem.get(_c, 0)) <= 0:
+                if int(_seeds.get(_c, 0)) <= 0:
                     continue
                 if not plantable(obs, _c):
                     continue
@@ -740,12 +738,12 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                        verb_map=None) -> dict:
     """(x,y) -> (value in $, operation) for each tile that offers something."""
     tasks = {}
-    _pendientes = []          # casillas invisibles, se resuelven al final
+    _deferred = []          # casillas invisibles, se resuelven al final
     free = free_capacity
-    ctx = contexto_turno(obs, farm)
-    _invs_turno = (obs["private"].get("inventories") or []
+    ctx = TurnContext(obs, farm)
+    _turn_invs = (obs["private"].get("inventories") or []
                    )
-    _invs_turno = [iv for iv in _invs_turno if isinstance(iv, dict)] or [{}]
+    _turn_invs = [iv for iv in _turn_invs if isinstance(iv, dict)] or [{}]
     for y in range(BOARD):
         for x in range(BOARD):
             if not unlocked(farm, x, y):
@@ -779,9 +777,9 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                 # agregado esta en la observacion, asi que evitarlo es
                 # learnable; teaching it by CLONING is not, because the expert
                 # nunca esta en esa situacion.
-                if FILTER_BY_INVENTORY and _invs_turno:
+                if FILTER_BY_INVENTORY and _turn_invs:
                     options = [o_ for o_ in options
-                                if any(_can_do(iv, o_[1]) for iv in _invs_turno)]
+                                if any(_can_do(iv, o_[1]) for iv in _turn_invs)]
                 if not options:
                     continue
                 if verb_map is not None:
@@ -838,7 +836,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                 # the heuristic decides first at full capacity and the extra
                 # tiles fill whatever is left. That makes it purely additive
                 # and the learned threshold the only dial.
-                _pendientes.append((x, y))
+                _deferred.append((x, y))
                 continue
             if t is not None:
                 if value_map is not None:
@@ -867,7 +865,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
     # extra tile with PLANT consumed the budget and strangled the
     # plantar de la heuristica -medido, 8,62 tareas/turno caian a 5,78-. Aqui
     # the heuristic has already decided at full capacity and this only fills.
-    for _x, _y in _pendientes:
+    for _x, _y in _deferred:
         _ex = tile_options(obs, farm, _x, _y, free, ctx, macro)
         if not _ex:
             continue
@@ -924,7 +922,7 @@ def _can_do(inv, op) -> bool:
     """
     if op[0] == "DROP":
         return _can_drop(inv)
-    req = REQUIERE.get(op[0])
+    req = REQUIRES.get(op[0])
     if req is not None:
         return int(inv.get(req, 0)) > 0
     if op[0] == "PLACE" and len(op) > 1:
@@ -948,7 +946,7 @@ def _can_do(inv, op) -> bool:
 # assign this, so the name survives without changing behaviour.
 
 
-def _assign_hungarian(units, tasks, invs=None, previous=None, adherencia=0.0) -> list:
+def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0) -> list:
     """Minimum-cost assignment: maximises the TOTAL discounted value.
 
     El greedy falla de una forma concreta y frecuente: la primera unidad se
@@ -975,8 +973,8 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, adherencia=0.0) ->
             if not _can_do(inv, op):
                 continue                  # stays 0: loses to the dummy
             row[j] = v * (STEP_DISCOUNT ** dist(pos, tile))
-            if adherencia and previous is not None and previous.get(i) == tile:
-                row[j] *= (1.0 + adherencia)
+            if stickiness and previous is not None and previous.get(i) == tile:
+                row[j] *= (1.0 + stickiness)
 
     actions = []
     for i, j in enumerate(max_assignment(value)):
@@ -991,7 +989,7 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, adherencia=0.0) ->
     return actions
 
 
-def assign_units(obs, free_capacity: int, method=None,
+def assign_units(obs, free_capacity: int,
                  value_map=None, previous=None, macro=None, verb_map=None) -> list:
     """One action per unit, maximising the discounted value of the set.
 
