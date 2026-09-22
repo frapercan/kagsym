@@ -35,7 +35,7 @@ N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
 # ECONOMIC reason the search can find by itself, not an engine limit: the
 # engine does not cap hiring. There is no constant any more; see `target_hands`.
 # The resale horizon has no ceiling either; its default is one day
-# (`spec.TURNS_PER_DAY`, del motor). Ver `horizonte_venta`.
+# (`spec.TURNS_PER_DAY`, from the engine). See `sell_horizon`.
 
 
 @dataclass
@@ -46,12 +46,12 @@ class Macro:
                                #    (exp(logit(1/3)) = 0.5, the previous value)
     animals: float = 0.5      # -> share of attention capacity given to livestock
     hands: float = 0.35       # -> target hands per day
-    selling: float = 0.25        # -> agresividad: 0 vender ya, 1 acumular al maximo
-    crop: float = 0.0       # -> sesgo hacia cultivo caro (1) o barato y rapido (0)
+    selling: float = 0.25     # -> aggressiveness: 0 sell now, 1 hoard to the max
+    crop: float = 0.0         # -> bias towards an expensive crop (1) or a cheap, fast one (0)
     expand: float = 0.25    # -> saturation required before buying land
     stickiness: float = 0.3333 # -> stickiness scale, borderless
                                #    (exp(logit(1/3)) = 0.5, the previous value)
-    fertilize: float = 0.0    # -> cuanto vale fertilizar frente a las demas tareas
+    fertilize: float = 0.0    # -> what fertilising is worth against the other tasks
     # PRIORITIES. The seven above say HOW MUCH of each thing; these say WHAT
     # GETS SACRIFICED when there is not enough for everything, which is 31% of
     # turns: measured, lack of cash blocks buying land on 31%, feed on 19% and
@@ -140,7 +140,7 @@ class Macro:
     # `labour_floor` measured 0.0% at this starting cash, but it is a FLOOR IN
     # DOLLARS: with another starting cash it bites, and the model has to work
     # in another league.
-    f_manure_credit: float = 0.5   # 0.50  credito de estiercol al valorar un animal
+    f_manure_credit: float = 0.5   # 0.50  manure credit when valuing an animal
     f_feed_cash: float = 0.5   # 0.25  share of cash that may go on feed
     f_labour_floor: float = 0.5    # 60.0  floor of the labour budget
     f_liquidation: float = 0.5     # 2.0   liquidation days at the season close
@@ -183,11 +183,10 @@ class Macro:
     f_priority_temp: float = 0.5   # 3.0  softmax temperature over priorities
     f_seed_floor: float = 0.5      # 2.0  minimum seeds before the stock rule bites
     # ------------------------------------------------------------------
-    # TERCERA HORNADA, 2026-09-22. Auditoria ESTRUCTURAL: las dos anteriores
-    # buscaban constantes de modulo y literales; esta recorre cada punto de
-    # decision site in the tree (`herramientas/auditoria_cascada.py`) and
-    # classifies it. Of 156 sites, these eight were policy decisions nobody
-    # could move.
+    # THIRD BATCH. STRUCTURAL audit: the two before it looked for module
+    # constants and literals; this one walks every decision site in the tree
+    # (`herramientas/auditoria_cascada.py`) and classifies it. Of 156 sites,
+    # these eight were policy decisions nobody could move.
     #
     # The worst is `seed_stock`: `seed_orders` ABORTS entirely if you
     # already hold 2 seeds per unit. Measured, we carry 25.1 seeds on average
@@ -195,8 +194,8 @@ class Macro:
     # SEED IS BOUGHT. It matches the symptom being chased: 15.4 live plants
     # against v48's 44 while planting the same amount.
     f_seed_stock: float = 0.5      # 2.0   seeds per unit before buying stops
-    f_animal_reserve: float = 0.5  # 300.0 caja a reservar antes de comprar un animal
-    f_actions_per_animal: float = 0.5 # 3.0   acciones/dia que cuesta sostener un animal
+    f_animal_reserve: float = 0.5  # 300.0 cash to hold back before buying an animal
+    f_actions_per_animal: float = 0.5 # 3.0   actions/day it costs to sustain an animal
     f_last_hire_hour: float = 0.5  # 3.0   last hour of the day for hiring
     f_min_hand_days: float = 0.5   # 2.0   minimum days to pay a hand back
     f_cost_rise: float = 0.5       # 0.5   how much cost/tile rises when plants dry
@@ -228,11 +227,11 @@ class Macro:
         return [getattr(self, f.name) for f in fields(self)]
 
 
-# TOPE DE CURRICULO. None = sin tope. Limita cuantos peones puede planificar
-# OUR agent, exactly as `public_with_cap` limits the opponent. It serves to
-# entrenar en un juego mas pequeno y coherente: menos unidades = ejecutor mas
-# cheaper (the executor is 94% of the cost) and a smaller action space, without
-# truncating the episode -which flips the sign of the advantage, measured-.
+# CURRICULUM CAP. None = uncapped. It limits how many hands OUR agent may
+# plan, exactly as `public_with_cap` limits the opponent. It serves to train on
+# a smaller, coherent game: fewer units = a cheaper executor (the executor is
+# 94% of the cost) and a smaller action space, without truncating the episode
+# -which flips the sign of the advantage, measured-.
 HAND_CAP = None
 # WATERING FACTOR. "half the budget goes on moving: measured 42.3% in the
 # expert" -but 0.5 was a hand-set constant that had never entered any search,
@@ -245,7 +244,7 @@ PRIORITY_TEMP = 3.0
 
 
 # (name, default, kind).
-# PARAMETRIZACION SIN BORDES.
+# BORDERLESS PARAMETERIZATION.
 #
 # It used to be `value = lo + range * f`: two hand-set constants per parameter
 # -36 numbers- and, worse, a HARD floor and ceiling. If another league or
@@ -264,11 +263,11 @@ PRIORITY_TEMP = 3.0
 #
 # The DOMAIN is not taste: a budget fraction lives in [0,1] because of what it
 # means. And where the ENGINE sets the limit, the engine's limit is used -see
-# `max_animal` en `aplica_parametros`-.
+# `max_animal` in `apply_params`-.
 #
-# QUE NO ESTA AQUI: `horiz_fert` se fue. Era un HECHO DEL MOTOR disfrazado de
-# parametro -el fertilizante dura 3 dias exactos- y dejarlo aprender permitia
-# letting the policy believe it lasts seven and mis-value every fertilisation.
+# WHAT IS NOT HERE: `horiz_fert` is gone. It was an ENGINE FACT disguised as a
+# parameter -fertiliser lasts exactly 3 days- and letting it be learned allowed
+# the policy to believe it lasts seven and mis-value every fertilisation.
 # It lives in `spec.FERTILIZER_DAYS`, with the other engine facts.
 #
 # `extra_threshold` has no original because it is new: its default is the p95
@@ -434,7 +433,7 @@ def target_hands(obs, macro: Macro) -> int:
 
 
 def target_tiles(obs, macro: Macro) -> int:
-    """Cuantas casillas plantadas mantener. Tope exacto: las que se pueden regar.
+    """How many planted tiles to keep. Exact ceiling: the ones that can be watered.
 
     A plant left unwatered for two days turns into a weed, so the real ceiling
     is not land but actions: each tile costs one watering per day.
@@ -443,25 +442,24 @@ def target_tiles(obs, macro: Macro) -> int:
     farm = obs["farms"][me]
     # PLANNED, not the ones present right now. The macro is decided at hour 0,
     # when yesterday's hands have been cleared (`farm["hands"] = []` nightly)
-    # y los de hoy aun no se han contratado: `len(farm["hands"])` vale SIEMPRE 0
+    # and today's have not been hired yet: `len(farm["hands"])` is ALWAYS 0
     # there. With that the ceiling was pinned at 12 tiles however many hands
     # were hired afterwards, and the farm could not grow. CEM did not choose a
-    # granja de 7 casillas y 1.9 unidades: era la unica alcanzable.
+    # farm of 7 tiles and 1.9 units: it was the only reachable one.
     n_units = 1 + target_hands(obs, macro)
     plantable = sum(1 for y in range(spec.BOARD) for x in range(spec.BOARD)
                       if farm["tiles"][y][x] != "LOCKED")
-    # half the budget goes on moving: measured 42.3% in the expert
-    # SIN BORDE, como en `peones_objetivo`. Antes era
-    #     macro.casillas * min(cultivables, techo_riego)
-    # y ahi hay DOS techos de naturaleza distinta metidos en el mismo `min`:
+    # BORDERLESS, as in `target_hands`. It used to be
+    #     macro.tiles * min(plantable, watering_cap)
+    # and that puts TWO ceilings of different natures inside the same `min`:
     #
-    #   * `cultivables` es un limite DURO DEL MOTOR: en una casilla LOCKED no
-    #     se puede plantar, y punto. Se queda como limite.
-    #   * `techo_riego` NO lo es: es una ESTIMACION mia de cuantas casillas se
-    #     pueden atender, y entraba como tope infranqueable. La politica no
-    #     could not ask for more even when it paid -for instance with crops
-    #     that do not need daily watering, or with more units than planned-.
-    #     Same flaw as the 15-hand cap removed right next to this.
+    #   * `plantable` is a HARD ENGINE LIMIT: a LOCKED tile cannot be planted,
+    #     full stop. It stays as a limit.
+    #   * `watering_cap` is NOT: it is an ESTIMATE of how many tiles can be
+    #     tended, and it entered as an impassable cap. The policy could not ask
+    #     for more even when it paid -for instance with crops that do not need
+    #     daily watering, or with more units than planned-. Same flaw as the
+    #     15-hand cap removed right next to this.
     #
     # Now the watering ceiling is the SCALE and the policy multiplies it
     # without a border: f = 1/3 reproduces the previous value
@@ -474,18 +472,18 @@ def target_tiles(obs, macro: Macro) -> int:
 
 
 def target_animals(obs, macro: Macro) -> int:
-    """Cuantos animales sostener. Cada uno cuesta ~3 acciones al dia."""
+    """How many animals to sustain. Each costs ~3 actions a day."""
     me = int(obs["player"])
     farm = obs["farms"][me]
-    n_units = 1 + target_hands(obs, macro)   # planificadas, ver arriba
+    n_units = 1 + target_hands(obs, macro)   # planned, see above
     # DOUBLE COUNTING FIXED. It had `* 0.5` ("half goes on moving") AND
     # `/ ACTIONS_PER_ANIMAL = 3`, which already includes the travel. The result
     # was 4 tasks per unit per day, half the real figure.
     #
     # A strong public agent sustains 58 crops + 17 animals = 75 tasks with 9.4
-    # units: 8 tasks per unit per day, exactly 24/3. Measured: with
-    # el `0.5`, los animales saturaban en ~19 pasara lo que pasara -incluso con
-    # 4 cuadrantes y 100 casillas libres-.
+    # units: 8 tasks per unit per day, exactly 24/3. Measured: with the `0.5`,
+    # animals saturated at ~19 whatever happened -even with 4 quadrants and 100
+    # free tiles-.
     capacity = n_units * spec.TURNS_PER_DAY
     planted = sum(1 for row in farm["tiles"] for t in row
                     if isinstance(t, dict) and t.get("kind") == "PLANT")
@@ -496,9 +494,9 @@ def target_animals(obs, macro: Macro) -> int:
 def sell_horizon(obs, macro: Macro) -> int:
     """How many turns to look ahead before deciding to sell.
 
-    Es la decision acoplada al rival: aguantar producto solo compensa si el
-    the opponent does not crash the price first. It is also where the world
-    model has measured signal (opponent money +19%, their spending +35%).
+    It is the decision coupled to the opponent: holding produce only pays if
+    they do not crash the price first. It is also where the world model has
+    measured signal (opponent money +19%, their spending +35%).
     """
     # The default is ONE DAY of horizon -`spec.TURNS_PER_DAY`, from the engine-
     # no ceiling: the old `2 *` limited it to two days by my decision, and
@@ -529,22 +527,23 @@ def target_crop(obs, macro: Macro):
 def assignment_stickiness(macro: Macro) -> float:
     """Multiplicative bonus for keeping the previous turn's destination.
 
-    El humgaro reasigna desde cero cada turno y eso es miope: medido, el 23.8%
-    de las decisiones de destino son un cambio estando YA EN RUTA, y los pasos
-    dice are rolled. The remedy was measured too, with the CEM vector:
+    The Hungarian reassigns from scratch every turn and that is myopic:
+    measured, 23.8% of the destination decisions are a change made ALREADY EN
+    ROUTE, and the steps already walked are thrown away. The remedy was
+    measured too, with the CEM vector:
 
-        0.00 -> 23 793 $     0.25 -> 27 177 $  (+14%)
-        0.10 -> 26 887 $     0.50 -> 24 869 $
-                             1.00 -> 22 755 $  (demasiado pegado: ignora urgencias)
+        0.00 -> $23,793     0.25 -> $27,177  (+14%)
+        0.10 -> $26,887     0.50 -> $24,869
+                            1.00 -> $22,755  (too sticky: it ignores urgencies)
 
-    Tiene optimo interior, asi que no es un "cuanto mas mejor" y no se puede
+    It has an interior optimum, so it is not a "more is better" and cannot be
     fixed by reasoning. The policy decides it.
 
     Design note: this is a term per (UNIT, tile), not per tile. A 10x10 value
     map cannot express it -units differ not only in position and inventory but
     also in their prior commitment-.
     """
-    # BORDERLESS. It used to be `2.0 * macro.adherencia`, linear in [0,1]
+    # BORDERLESS. It used to be `2.0 * macro.stickiness`, linear in [0,1]
     # and therefore capped at 2.0 -a ceiling nobody searched-. Now it is
     # the same borderless form as every other parameter: f = 0.5 gives
     # 1.0, the old midpoint, and the extremes reach any value.
@@ -567,11 +566,11 @@ def priorities(macro: Macro) -> dict:
 
 
 def category_order(macro: Macro) -> list:
-    """Categorias ordenadas de mas a menos prioritaria.
+    """Categories ordered from most to least priority.
 
     It decides both the cash split and the POSITION in the order list, which
     matters because the engine only accepts `maxMarketOrdersPerTurn` and the
-    se cae en silencio.
+    rest is dropped in silence.
     """
     p = priorities(macro)
     return sorted(CATEGORIES, key=lambda c: -p[c])
@@ -585,10 +584,11 @@ def fertilize_weight(macro: Macro) -> float:
     WITHOUT fertiliser: it had 7 hands because it needed no more. Judging a
     capability without re-optimising shows it in its worst light.
 
-    Con un mando, la busqueda decide: si no paga lo deja en 0 y no cuesta nada
-    have it; if it pays with more labour, it will find it together with the
-    hands it needs. That is the only way to capture the interaction.
+    With a dial, the search decides: if it does not pay it leaves it at 0 and
+    having it costs nothing; if it pays with more labour, it will find it
+    together with the hands it needs. That is the only way to capture the
+    interaction.
     """
-    # Sin techo: el 3.0 de antes era un maximo elegido a ojo. 0.5 da 1.5, que
-    # which is what the old midpoint gave.
+    # No ceiling: the old 3.0 was a maximum chosen by eye. 0.5 gives 1.5, which
+    # is what the old midpoint gave.
     return 1.5 * math.exp(_logit(macro.fertilize))
