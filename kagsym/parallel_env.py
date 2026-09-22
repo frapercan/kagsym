@@ -181,7 +181,7 @@ class EntornoParalelo:
         # `_M.TOPE_PEONES` son globales POR PROCESO. Asi un lote puede mezclar
         # rejilla entera -horas, dias y tope a la vez-, que es lo que las dos
         # dimensiones absolutas de la observacion (EPISODE_STEPS/720 y
-        # tope/PEONES_REF) permiten condicionar en vez de promediar.
+        # tope/HANDS_REF) permiten condicionar en vez de promediar.
         def _reparte(v):
             if isinstance(v, (list, tuple)):
                 return [v[i % len(v)] for i in range(self.n_procs)]

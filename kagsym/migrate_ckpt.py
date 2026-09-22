@@ -1,7 +1,7 @@
 """Migrar checkpoints entrenados antes de las features de horizonte absoluto.
 
 El 2026-09-21 se anadieron dos dimensiones globales al final del bloque `time`
--`EPISODE_STEPS/720` y `tope_peones/PEONES_REF`- para que la red SEPA en que
+-`EPISODE_STEPS/720` y `tope_peones/HANDS_REF`- para que la red SEPA en que
 liga juega. N_GLOBAL paso de 88 a 90, asi que la entrada del codificador global
 (N_GLOBAL + N_HIST) paso de 124 a 126.
 

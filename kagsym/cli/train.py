@@ -593,7 +593,7 @@ def main():
         # REJILLA FIBONACCI MEZCLADA. Los tres ejes a la vez, un peldano por
         # trabajador, todos en el mismo lote. Lo que lo hace posible: `spec` y
         # `TOPE_PEONES` son globales POR PROCESO, y la observacion lleva dos
-        # dimensiones ABSOLUTAS -EPISODE_STEPS/720 y tope/PEONES_REF- asi que
+        # dimensiones ABSOLUTAS -EPISODE_STEPS/720 y tope/HANDS_REF- asi que
         # la red sabe en que peldano juega y puede condicionar la politica en
         # vez de promediar los tres.
         #

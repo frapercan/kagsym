@@ -42,7 +42,7 @@ import torch.nn.functional as F
 
 from .. import obs as O
 from ..macro import N_MACRO
-from .blocks import BloqueSep, ResBlock, symlog
+from .blocks import SeparableBlock, ResBlock, symlog
 
 N_PRODUCTOS = 9
 N_HIST = 4 * N_PRODUCTOS      # flujo del rival en 4 ventanas hacia atras
@@ -70,7 +70,7 @@ class MundoConfig:
     sigma_ops: float = 0.03
     # Forma de la convolucion del tronco. "denso" = la 3x3 de siempre; "sep" =
     # separada en profundidad + punto, que MIDE lo mismo por 6,8x menos coste
-    # (ver BloqueSep). El tronco es el 90,5 % de los parametros -1.960.192 de
+    # (ver SeparableBlock). El tronco es el 90,5 % de los parametros -1.960.192 de
     # 2.165.558- y el 51 % del tiempo de juego perfilado, asi que 6,8x ahi son
     # ~1,8x de partidas por hora en total.
     #
@@ -99,7 +99,7 @@ class CodificadorMundo(nn.Module):
             nn.Conv2d(O.N_GRID_CH, w, 3, padding=1, bias=False),
             nn.GroupNorm(8, w), nn.GELU())
         if getattr(cfg, "conv", "denso") == "sep":
-            self.blocks = nn.Sequential(*[BloqueSep(w, cfg.nucleo)
+            self.blocks = nn.Sequential(*[SeparableBlock(w, cfg.nucleo)
                                           for _ in range(cfg.blocks)])
         else:
             self.blocks = nn.Sequential(*[ResBlock(w) for _ in range(cfg.blocks)])

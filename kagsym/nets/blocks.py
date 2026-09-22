@@ -1,9 +1,8 @@
-"""Bloques compartidos por las redes.
+"""Blocks shared by the networks.
 
-`symlog` (Dreamer v3) en lugar de normalizacion ajustada: el dinero va de 0 a
-10^5 y los rendimientos de 0 a 10, y una escala estimada sobre la poblacion
-actual envejece en cuanto cambian los rivales. symlog no tiene estadisticas que
-mantener.
+`symlog` (Dreamer v3) instead of fitted normalisation: money ranges from 0 to
+10^5 and yields from 0 to 10, and a scale estimated over the current population
+goes stale as soon as the opponents change. symlog keeps no statistics.
 """
 from __future__ import annotations
 
@@ -13,24 +12,26 @@ import torch.nn.functional as F
 
 
 def symlog(x):
-    """sign(x) * log(1+|x|). Comprime colas sin perder el signo ni el cero.
+    """sign(x) * log(1+|x|). Compresses tails without losing sign or zero.
 
-    Sustituye a normalizar con media y desviacion medidas del buffer. La
-    diferencia importa: unas estadisticas ajustadas describen la poblacion de
-    rivales del dia que se entreno, y si esa poblacion cambia quedan mal
-    calibradas en silencio. symlog no estima nada, asi que no puede envejecer.
-    Es lo que usa Dreamer v3 para funcionar en dominios dispares sin retocar
-    hiperparametros.
+    It replaces normalising by a mean and standard deviation measured from the
+    buffer. The difference matters: fitted statistics describe the population
+    of opponents present on the day they were trained on, and when that
+    population changes they are silently miscalibrated. symlog estimates
+    nothing, so it cannot go stale. This is what Dreamer v3 uses to work across
+    unrelated domains without retuning hyperparameters.
     """
     return torch.sign(x) * torch.log1p(torch.abs(x))
 
 
 def symexp(y):
-    """Inversa de symlog."""
+    """Inverse of symlog."""
     return torch.sign(y) * torch.expm1(torch.abs(y))
 
 
 class ResBlock(nn.Module):
+    """Residual block with two dense 3x3 convolutions and GroupNorm."""
+
     def __init__(self, c: int):
         super().__init__()
         self.c1 = nn.Conv2d(c, c, 3, padding=1, bias=False)
@@ -43,23 +44,29 @@ class ResBlock(nn.Module):
         return F.gelu(x + self.n2(self.c2(h)))
 
 
-class BloqueSep(nn.Module):
-    """ResBlock con la 3x3 SEPARADA en profundidad + punto.
+class SeparableBlock(nn.Module):
+    """ResBlock with the 3x3 SPLIT into depthwise plus pointwise.
 
-    Por que. Medido el 2026-09-21 sobre 17.001 transiciones (predecir el verbo
-    del experto, base 0,521): este bloque iguala EXACTAMENTE a `ResBlock`
-    -0,977 los dos- con 26,8 MFLOPs frente a 182,7, o sea 6,8x menos. La
-    convolucion 3x3 densa gasta c*c*9 = 147k MAC por pixel; separada en una 3x3
-    por canal mas una 1x1 de mezcla son c*9 + c*c = 17,5k, 8,4x menos, con el
-    MISMO campo receptivo. La CNN no era cara por ser CNN.
+    Measured on 17,001 transitions (predicting the expert's verb, baseline
+    0.521): this block matches `ResBlock` EXACTLY -0.977 both- at 26.8 MFLOPs
+    against 182.7, i.e. 6.8x cheaper. A dense 3x3 costs c*c*9 = 147k MAC per
+    pixel; split into a per-channel 3x3 plus a 1x1 mixer it is c*9 + c*c =
+    17.5k, 8.4x less, with the SAME receptive field. The CNN was not expensive
+    because it was a CNN.
 
-    En la misma tabla, un transformer sobre las 100 casillas saca 0,969 con
-    90,5 MFLOPs: queda DOMINADO -mas caro y peor-. Y un agregado global tipo
-    Deep Sets se queda en 0,904 frente al 0,896 de no mezclar nada, o sea que
-    lo que falta no es contexto global sino geometria LOCAL. El sesgo inductivo
-    de la convolucion era el correcto; solo estaba implementado caro.
+    In the same table a transformer over the 100 tiles scores 0.969 at 90.5
+    MFLOPs, so it is DOMINATED -more expensive and worse-. A global Deep
+    Sets-style aggregate reaches 0.904 against 0.896 for mixing nothing at all,
+    which says what is missing is not global context but LOCAL geometry. The
+    inductive bias of convolution was the right one; it was just implemented
+    expensively.
 
-    Idea de Sifre (2014), popularizada por Xception y MobileNet (2017).
+    NOT CURRENTLY IN USE: matching accuracy at 6.8x less compute did not
+    translate into money in end-to-end training, and the dense block is what
+    every measured checkpoint was trained with. Kept because the measurement
+    stands and the trade-off may matter under a tighter time budget.
+
+    Idea from Sifre (2014), popularised by Xception and MobileNet (2017).
     """
 
     def __init__(self, c: int, k: int = 3):

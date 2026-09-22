@@ -1,122 +1,123 @@
-"""Potencial para shaping: valor de liquidacion EXACTO, mio menos del rival.
+"""Shaping potential: EXACT liquidation value, mine minus the opponent's.
 
     r'_t  =  r_t  +  gamma * Phi(s_{t+1})  -  Phi(s_t)
 
-Con Phi(s_T) igual al valor terminal verdadero, el shaping es *policy-invariant*
-(Ng, Harada & Russell 1999): no cambia que politica es optima, solo adelanta el
-credito. Esa condicion es la que fallo antes y hay que respetarla al dolar.
+With Phi(s_T) equal to the true terminal value, shaping is *policy-invariant*
+(Ng, Harada & Russell 1999): it does not change which policy is optimal, it
+only moves credit earlier. That condition is what failed before, and it has to
+hold to the dollar.
 
-## Lo que fallo con patrimonio neto
+## What failed with net worth
 
-PPO con recompensa de patrimonio convergio a 2 794 $, por debajo de los 3 000 $
-que da no jugar. El diagnostico fino no es que el patrimonio este mal: es que
-**Phi(s_T) != caja**. El cobertizo, los cultivos en pie y los animales valen
-CERO al cerrar la partida, asi que un potencial que los cuenta miente justo en
-el instante que puntua. Medido: +611 a +917 $ de sesgo medio, hasta 4 131 $.
+PPO with a net-worth reward converged to $2,794, below the $3,000 you get by
+not playing at all. The precise diagnosis is not that net worth is wrong: it is
+that **Phi(s_T) != cash**. The shed, standing crops and animals are worth ZERO
+when the episode closes, so a potential that counts them lies at exactly the
+instant that scores. Measured: +611 to +917 of mean bias, up to $4,131.
 
-Aqui solo se cuenta lo que DA TIEMPO a convertirse en caja antes del turno 720.
-Al llegar a T no queda tiempo para nada, asi que Phi(s_T) = caja exactamente y
-el sesgo desaparece por construccion.
+Here only what HAS TIME to turn into cash before turn 720 is counted. At T
+there is no time left for anything, so Phi(s_T) = cash exactly and the bias
+vanishes by construction.
 
-## Por que la DIFERENCIA y no mi nivel absoluto
+## Why the DIFFERENCE and not my absolute level
 
-El marcador es `sign(dinero_yo - dinero_rival)`: suma cero en el signo. Asi que
-destruir valor del rival vale exactamente lo mismo que crear el mio. Sin el
-termino negativo, la recompensa no ve la jugada mas rentable del juego: volcar
-producto en un mercado fino hunde su precio un 98 % (LECHE 169 -> 5), y con ello
-toda la produccion ganadera del rival.
+The scoreboard is `sign(my_money - their_money)`: zero-sum in the sign. So
+destroying the opponent's value is worth exactly as much as creating your own.
+Without the negative term the reward cannot see the most profitable play in the
+game: dumping product into a thin market crashes its price by 98% (MILK 169 ->
+5), and with it the opponent's entire livestock output.
 
-## Asimetria de informacion, asumida
+## Information asymmetry, accepted
 
-De mi lado se ve todo. Del rival solo lo publico: su dinero y su tablero. Su
-cobertizo, sus semillas y lo que cargan sus unidades estan ocultos -se despejan
-exacto un turno despues, pero el potencial se evalua AHORA-. Se usa lo
-observable, que es una funcion bien definida del estado y por tanto un potencial
-valido; simplemente ignora una parte de su valor.
+On my side everything is visible. Of the opponent only the public part: their
+money and their board. Their shed, their seeds and whatever their units carry
+are hidden -they resolve exactly one turn later, but the potential is evaluated
+NOW-. What is observable is used, which is a well-defined function of the state
+and therefore a valid potential; it simply ignores part of their value.
 """
 from __future__ import annotations
 
 from . import spec
 from .symbolic.market_ops import marginal_prices
 
-# spec.TURNS_PER_DAY se lee en tiempo de llamada (ver spec.set_turns_per_day):
-# como alias de modulo se congelaba al importar y no seguia a
-# `turnsPerDay`, desincronizando el ejecutor del motor sin avisar.
+# spec.TURNS_PER_DAY is read at call time (see spec.set_turns_per_day): as a
+# module alias it froze at import and stopped tracking `turnsPerDay`, silently
+# desynchronising the executor from the engine.
 
 
-def _valor_lote(obs, producto: str, n: int) -> float:
-    """Lo que rendirian n unidades vendidas ahora, a precio MARGINAL del motor.
+def _lot_value(obs, product: str, n: int) -> float:
+    """What n units would fetch if sold now, at the engine's MARGINAL price.
 
-    Nominal sobrestima: cada unidad vendida baja el precio de la siguiente.
+    Nominal price overestimates: each unit sold lowers the price of the next.
     """
     n = int(n)
     if n <= 0:
         return 0.0
-    return float(sum(marginal_prices(obs, producto, min(n, 200))))
+    return float(sum(marginal_prices(obs, product, min(n, 200))))
 
 
-def liquidacion(obs, pid: int, privado=None) -> float:
-    """Caja + todo lo que da tiempo a convertirse en caja antes del cierre."""
+def liquidation(obs, pid: int, private=None) -> float:
+    """Cash plus everything that has time to become cash before the close."""
     farm = obs["farms"][pid]
     total = float(farm["money"])
     days = max(0, (spec.EPISODE_STEPS - 1 - int(obs["step"])) // spec.TURNS_PER_DAY)
 
-    if privado is not None:
-        for item, n in (privado.get("shed") or {}).items():
+    if private is not None:
+        for item, n in (private.get("shed") or {}).items():
             if item in spec.PRODUCTS and n:
-                total += _valor_lote(obs, item, n)
-        for inv in (privado.get("inventories") or []):
+                total += _lot_value(obs, item, n)
+        for inv in (private.get("inventories") or []):
             for item, n in inv.items():
                 if item in spec.PRODUCTS and n:
-                    total += _valor_lote(obs, item, n)
+                    total += _lot_value(obs, item, n)
 
-    dia = int(obs["day"])
+    day = int(obs["day"])
     for row in farm["tiles"]:
         for t in row:
             if not isinstance(t, dict):
                 continue
             if t.get("kind") == "PLANT":
                 cd = spec.CROPS[t["crop"]]
-                age = dia - int(t["planted_day"])
-                # solo cuenta si llega a dar y da tiempo a venderlo
+                age = day - int(t["planted_day"])
+                # counts only if it will yield AND there is time to sell it
                 if age + days < cd["first_yield_day"]:
                     continue
-                uds = int(t.get("yield_units", 0))
+                units = int(t.get("yield_units", 0))
                 if cd["ongoing"]:
-                    remaining = max(0, min(cd["max_yield"] - uds,
+                    remaining = max(0, min(cd["max_yield"] - units,
                                            days // max(1, cd["interval"])))
-                    uds += remaining
-                total += _valor_lote(obs, t["crop"], uds)
+                    units += remaining
+                total += _lot_value(obs, t["crop"], units)
             elif t.get("animal"):
                 a = spec.ANIMALS[t["animal"]]
-                uds = int(t.get("yield_units", 0))
-                por_venir = max(0, days - a["first_yield_day"]) // max(1, a["interval"])
-                uds = min(a["max_held"] + por_venir, uds + por_venir)
-                total += _valor_lote(obs, a["product"], uds)
+                units = int(t.get("yield_units", 0))
+                to_come = max(0, days - a["first_yield_day"]) // max(1, a["interval"])
+                units = min(a["max_held"] + to_come, units + to_come)
+                total += _lot_value(obs, a["product"], units)
     return total
 
 
-def phi(obs, me: int = 0, privado=None, con_rival: bool = False) -> float:
-    """Potencial relativo: lo mio menos lo del rival.
+def phi(obs, me: int = 0, private=None, with_rival: bool = False) -> float:
+    """Relative potential: mine minus the opponent's.
 
-    Del rival solo se cuenta lo publico (dinero y tablero); su cobertizo no es
-    observable. Eso infravalora su posicion de forma sistematica, pero de forma
-    CONSISTENTE, que es lo que importa para que la diferencia telescopica siga
-    siendo valida.
+    Only the opponent's public state is counted (money and board); their shed
+    is not observable. That systematically underestimates their position, but
+    it does so CONSISTENTLY, which is what keeps the telescoping difference
+    valid.
     """
-    mio = liquidacion(obs, me, privado)
-    if not con_rival:
-        # POR DEFECTO, SIN EL RIVAL. Medido: su termino aporta el 99.1 % de la
-        # varianza de la recompensa diaria (sd 1.93 de 1.94 total), porque su
-        # liquidacion da saltos cuando cosecha y vende y nuestro estado no puede
-        # anticiparlo. Con el, el critico da R2 = -2.535 (peor que predecir la
-        # media); sin el, R2 = +0.736. Sin critico no hay ventaja, y sin ventaja
-        # PPO es ruido centrado en cero.
+    mine = liquidation(obs, me, private)
+    if not with_rival:
+        # OFF BY DEFAULT. Measured: the opponent's term accounts for 99.1% of
+        # the variance of the daily reward (sd 1.93 of 1.94 total), because
+        # their liquidation jumps when they harvest and sell and our state
+        # cannot anticipate it. With it, the critic gets R2 = -2.535 (worse
+        # than predicting the mean); without it, R2 = +0.736. No critic means
+        # no advantage, and without advantage PPO is noise centred on zero.
         #
-        # La idea de premiar la destruccion de su valor NO se pierde: vive en el
-        # terminal (+-1 de victoria/derrota), que es de signo y por tanto ya
-        # cuenta su dinero tanto como el nuestro. El rival debe estar en el
-        # OBJETIVO, no en el shaping: el shaping solo puede llevar lo que el
-        # estado predice.
-        return mio
-    return mio - liquidacion(obs, 1 - me, None)
+        # The idea of rewarding the destruction of their value is NOT lost: it
+        # lives in the terminal term (+-1 for win/loss), which is a sign and
+        # therefore already counts their money as much as ours. The opponent
+        # belongs in the OBJECTIVE, not in the shaping: shaping can only carry
+        # what the state predicts.
+        return mine
+    return mine - liquidation(obs, 1 - me, None)

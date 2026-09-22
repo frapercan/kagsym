@@ -264,7 +264,7 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
            # EPISODE_STEPS, no N_DAYS: `set_episode_steps` solo actualiza el
            # primero y N_DAYS se queda clavado en 30 para siempre.
            spec.EPISODE_STEPS / 720.0,
-           (_tope_peones() or spec.PEONES_REF) / float(spec.PEONES_REF),
+           (_tope_peones() or spec.HANDS_REF) / float(spec.HANDS_REF),
            # AL FINAL DEL BLOQUE a proposito: `migrar_ckpt` inserta las columnas
            # nuevas en `GLOBAL_SLICES["time"].stop - N_NUEVAS`. Ponerlo en otro
            # sitio desplazaria los pesos equivocados, en silencio.

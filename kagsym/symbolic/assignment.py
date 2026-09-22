@@ -1,17 +1,15 @@
-"""Asignacion optima de unidades a tareas: algoritmo humgaro en Python puro.
+"""Optimal assignment of units to tasks: Hungarian method, pure Python.
 
-Por que no `scipy.optimize.linear_sum_assignment`: el entorno de submission
-puede no traer scipy, y el agente no puede fallar por una dependencia -es el
-mismo criterio que `policy.py` ya aplica a torch-. La matriz es minuscula
-(<=16 unidades x ~100 tareas), asi que escribirlo a mano cuesta poco y
-arriesgarse a un ImportError cuesta la partida entera.
+Why not `scipy.optimize.linear_sum_assignment`: the submission environment may
+not ship scipy, and the agent cannot fail on a dependency. The matrix is tiny
+(<=16 units x ~100 tasks), so hand-writing it is cheap while risking an
+ImportError costs the whole episode.
 
-`tests/test_assign.py` verifica contra scipy que el optimo coincide.
+`tests/test_assignment.py` checks against scipy that the optimum agrees.
 
-Implementacion: metodo humgaro por caminos de aumento mas cortos con
-potenciales (Jonker-Volgenant), O(n^2 m) en el peor caso. Como siempre hay
-columnas ficticias libres, el camino de aumento tipico tiene longitud 1 y el
-coste real es O(n m).
+Implementation: Hungarian method via shortest augmenting paths with potentials
+(Jonker-Volgenant), O(n^2 m) worst case. Because there are always free dummy
+columns, the typical augmenting path has length 1 and the real cost is O(n m).
 """
 from __future__ import annotations
 
@@ -19,40 +17,40 @@ INF = float("inf")
 
 
 def max_assignment(value: list[list[float]]) -> list[int]:
-    """Asigna a cada fila una columna DISTINTA maximizando la suma total.
+    """Assign each row a DISTINCT column, maximising the total sum.
 
-    `valor` tiene n filas (unidades) y m columnas (tareas), con n <= m.
-    Devuelve una lista de longitud n: la columna asignada a cada fila.
+    `value` has n rows (units) and m columns (tasks), with n <= m. Returns a
+    list of length n: the column assigned to each row.
     """
     n = len(value)
     if n == 0:
         return []
     m = len(value[0])
     if m < n:
-        raise ValueError(f"hacen falta al menos tantas columnas como filas ({n} > {m})")
+        raise ValueError(f"need at least as many columns as rows ({n} > {m})")
 
-    # El algoritmo minimiza; se niega el valor para maximizar.
+    # The algorithm minimises; negate the value to maximise.
     cost = [[-x for x in row] for row in value]
 
-    u = [0.0] * (n + 1)          # potencial de fila
-    v = [0.0] * (m + 1)          # potencial de columna
-    p = [0] * (m + 1)            # p[j] = fila asignada a la columna j (1-indexado)
-    way = [0] * (m + 1)          # columna previa en el camino de aumento
+    u = [0.0] * (n + 1)          # row potential
+    v = [0.0] * (m + 1)          # column potential
+    p = [0] * (m + 1)            # p[j] = row assigned to column j (1-indexed)
+    way = [0] * (m + 1)          # previous column on the augmenting path
 
     for i in range(1, n + 1):
         p[0] = i
         j0 = 0
         minv = [INF] * (m + 1)
-        usada = [False] * (m + 1)
+        used = [False] * (m + 1)
         while True:
-            usada[j0] = True
+            used[j0] = True
             i0 = p[j0]
             row = cost[i0 - 1]
             ui = u[i0]
             delta = INF
             j1 = 0
             for j in range(1, m + 1):
-                if usada[j]:
+                if used[j]:
                     continue
                 cur = row[j - 1] - ui - v[j]
                 if cur < minv[j]:
@@ -62,7 +60,7 @@ def max_assignment(value: list[list[float]]) -> list[int]:
                     delta = minv[j]
                     j1 = j
             for j in range(m + 1):
-                if usada[j]:
+                if used[j]:
                     u[p[j]] += delta
                     v[j] -= delta
                 else:
@@ -70,7 +68,7 @@ def max_assignment(value: list[list[float]]) -> list[int]:
             j0 = j1
             if p[j0] == 0:
                 break
-        # Deshace el camino, reasignando cada columna a la fila anterior.
+        # Walk the path back, reassigning each column to the previous row.
         while j0:
             j1 = way[j0]
             p[j0] = p[j1]
