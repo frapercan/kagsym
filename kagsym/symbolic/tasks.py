@@ -97,9 +97,9 @@ def growth_factor(obs, crop: str) -> float:
     """Factor by which capital multiplies per day when reinvested.
 
     Un ciclo convierte `seed` dolares en `unidades x precio` dolares en
-    `cycle_days` dias, asi que el factor diario es (retorno/coste)^(1/dias).
+    `cycle_days` days, so the daily factor is (return/cost)^(1/days).
     Con trigo: 10 -> 100 en 4 dias = x1.78 al dia. Con melon: 80 -> 1500 en 12
-    dias = x1.28. El melon gana por casilla-dia y pierde por capital-dia, y
+    days = x1.28. Melon wins per tile-day and loses per capital-day, and
     when capital is the constraint, the second is what matters.
     """
     cost = max(1, spec.CROPS[crop]["seed"])
@@ -282,7 +282,7 @@ class contexto_turno:
       - calcularlos dentro de `tile_task`: 10547 escaneos de tablero y 15215
         animal revaluations per episode -> 2,172 steps/s.
       - calcularlos todos al entrar al turno: PEOR, 1853 pasos/s, porque la
-        most turns have no pending animal and the cost was paid
+        most turns have no pending animal and the cost was paid anyway.
         escaneo igualmente.
     Lazy captures the best of both: zero cost when not needed, and one
     sola vez cuando hace falta. (El motor solo hace 38567 pasos/s: el cuello
@@ -330,7 +330,7 @@ def animal_value(ctx, a, macro):
     the same family of hard-wired decisions as `best_crop` and `seed_orders`,
     and it is where the other measured hole lives: v48 makes $60,179 from MILK
     and we make
-    13.536. El factor por producto (EGG, MILK, WOOL) ya vive en el vector, asi
+    $13,536. The per-product factor (EGG, MILK, WOOL) already lives in the
     que la preferencia pasa a la red. Neutro = 1.0: sin macro, el orden de
     siempre.
 
@@ -482,23 +482,23 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
     return None
 
 
-STEP_DISCOUNT = 0.82   # un paso cuesta un turno: se descuenta el valor
+STEP_DISCOUNT = 0.82        # a step costs a turn: the value is discounted
 # Two more that were hand-set. Exposing 12 similar constants raised the cell
 # ceiling from $939 to $1,201 (+27.9%), so none is taken on trust without
 # having entered a search.
-DIG_VALUE = 0.9             # desbrozar, como fraccion del valor de plantar
+DIG_VALUE = 0.9             # clearing, as a fraction of the planting value
 # FORMA CON QUE EL MAPA DE LA RED ENTRA EN EL VALOR. `expm1` es exponencial, asi
 # so GAIN decides whether the map SUGGESTS or IMPOSES, and CAP decides where
 # it is clipped. Nobody ever searched them. This may explain why the map
 # saturated at 4 parameters: perhaps 4 were not enough, the transform was
 # limiting their effect.
-MAP_GAIN = 1.0   # cuanto pesa lo que emite la red (los tres modos)
+MAP_GAIN = 1.0              # how much the network's emission weighs
 MAP_CAP = 20.0      # corte en `ops`/`directo`, dentro de expm1
 RESIDUAL_CAP = 3.0    # corte en `residuo`: exp(3) = 20x de amplificacion o
                       # of damping over the heuristic. It decides whether the
                       # network SUGGESTS or IMPOSES.
-FERTILIZER_HORIZON = 3    # dias que se le cuentan al bono del fertilizante
-FERT_PER_TRIP = 4.0            # fertilizante que se recoge de una vez. Aprendido.
+FERTILIZER_HORIZON = 3      # days counted towards the fertiliser bonus
+FERT_PER_TRIP = 4.0         # fertiliser picked up in one trip. Learned.
 
 
 # ---------------------------------------------------------------------------

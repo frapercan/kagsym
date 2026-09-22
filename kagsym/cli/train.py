@@ -1,28 +1,32 @@
-"""Prueba de capacidad de CONTROL: ¿mejora el e2e sobre su inicializacion?
+"""End-to-end PPO over the daily macro vector and the per-tile micro map.
 
-Arranca CLAVADO en el vector que encontro el CEM contra rival real -25 % de
-victorias en la liga- y entrena contra ese mismo rival. La pregunta es limpia:
+One RL step is one DAY. Both actions are sampled ONCE PER DAY and held fixed
+for all 24 hours:
 
-    si sube del 25 %, hay capacidad de control y toca escalar
-    si no se mueve, el fallo esta en la SENAL y hay que arreglarla antes
-    de gastar computo masivo
+    macro  60 numbers   the day's targets and every exposed parameter
+    micro  1+N_OPS x 10 x 10   per-tile value plus one logit per legal verb
 
-Por que esta prueba y no "entrenar y ver que sale": el CEM ya convergio
-(sigma 0.011) dentro del espacio de 7 numeros y sigue perdiendo todas las
-partidas contra 3 de los 4 publicos. O sea, el mejor vector FIJO no basta. Lo
-unico que el e2e anade es dependencia del estado: cambiar de plan segun lo que
-el rival este haciendo. Si eso no mueve la aguja, no la mueve nada de lo que
-hay construido.
+Their log-probabilities are summed: it is a single policy over one composite
+action. The episode is 30 steps, which is what makes credit assignment
+tractable.
 
-Las dos acciones se muestrean UNA VEZ AL DIA y se mantienen fijas las 24 horas:
-    macro  Beta^7   objetivos del dia
-    micro  10x10    residuo de valor sobre la valoracion exacta
-Sus log-probabilidades se suman: es una sola politica sobre una accion compuesta.
-El episodio queda en 30 pasos, que es lo que hace tratable el credit assignment.
+What this loop adds over the best FIXED vector is dependence on the state:
+changing plan according to what the opponent is doing. The CEM converged
+(sigma 0.011) inside a 7-number space and still lost against most public
+agents, so a fixed vector is not enough by construction.
+
+The loop carries three mechanisms that are not standard PPO and each exists for
+a measured reason:
+
+  * a KL-targeted learning rate, per head. Without it up to 75% of each batch
+    was clipped away (saturation 0.28, sd_logratio 11.7).
+  * a factored importance ratio: one ratio per head instead of one over 1,632
+    summed dimensions, plus a mask so dimensions that could not change any
+    action do not enter the ratio.
+  * an automatic curriculum with FIXED quotas for self-play and for the target
+    rung, because p(1-p) is zero at both extremes.
 """
 import argparse
-import os
-import os
 import os
 import sys
 import time
@@ -39,102 +43,104 @@ from kagsym.version import fingerprint, model_fingerprint
 from kagsym.nets.world import E2EAgent, WorldConfig, N_HIST
 
 
-# Dinero que hace cada peldano de la ESCALERA contra un rival PASIVO, medido
-# 2026-09-20 sobre 3 semillas. Sirve de referencia para la merma: la escalera no
-# es tal, los tres niveles que funcionan valen casi lo mismo (171-180k) y el
-# nivel 1 (shop-router-0909) esta ROTO -le falta agents_pub/actions.json-.
+# Money each LADDER rung makes against a PASSIVE opponent, measured over 3
+# seeds. It is the reference for the shortfall. Note it is not a ladder: the
+# levels that work are worth almost the same (171-180k).
 _BASE_RIVAL = [0.0, 0.0, 179514.0, 171878.0, 171392.0]
 
-# Lo que hace v48 contra un PASIVO, por (dias, nivel). Sin esto la merma no se
-# puede calcular con horizontes mezclados: dividir por la marca de 30 dias hace
-# que una partida de 15 parezca una paliza nuestra cuando solo es corta.
-# Medido el 2026-09-21, 2 semillas. nivel: 1=tope3 2=tope5 3=tope8 4=entero.
+# What v48 makes against a PASSIVE opponent, by (days, level). Without this
+# the shortfall cannot be computed with mixed horizons: dividing by the 30-day
+# mark makes a 15-day game look like a thrashing by us when it is merely short.
+# Measured over 2 seeds. level: 1=cap3 2=cap5 3=cap8 4=uncapped.
 BASE_PER_HORIZON = {
     15: {1:  2918, 2:  7727, 3: 14837, 4:  17078},
     20: {1:  6106, 2: 24157, 3: 34184, 4:  61028},
     30: {1: 16049, 2: 43094, 3: 80932, 4: 176422},
 }
 
-# LIGAS: (pasos_del_episodio, nivel_de_ESCALERA). Se asciende ganando y se
-# DESCIENDE perdiendo -el descenso importa tanto como el ascenso, porque es lo
-# que impide el olvido catastrofico-.
+# LEAGUES: (episode_steps, LADDER level). You climb by winning and DESCEND by
+# losing -descending matters as much as climbing, because it is what prevents
+# catastrophic forgetting-.
 #
-# Por que por ligas y no eligiendo el peldano a mano: medido, el peldano bueno
-# depende del horizonte. A 30 dias la heuristica gana 3/3 en el nivel 2 y 0/3 en
-# el 3; a 15 dias gana 3/3 en el 2 y 0,667 en el 3. Elegirlo a ojo cada vez es
-# lo que nos dejo entrenando con win=0,000 (sin gradiente en el termino de
-# victoria) y con win=1,000 (idem).
+# Why leagues rather than picking the rung by hand: measured, the right rung
+# depends on the horizon. At 30 days the heuristic wins 3/3 at level 2 and 0/3
+# at level 3; at 15 days it wins 3/3 at 2 and 0.667 at 3. Picking it by eye
+# each time is what left us training at win=0.000 (no gradient in the win term)
+# and at win=1.000 (likewise).
 #
-# Y el horizonte corto NO es mas barato por muestra -el coste por decision son
-# 24 turnos en los dos casos- pero si da 1,61x mas TERMINALES por segundo a
-# lote igual, que es el recurso escaso: la sd por semilla es de ~9.000 $ y solo
-# el terminal la reduce.
-# (pasos, nivel_publico, ruta_macro_rival). Si hay ruta, el rival es NUESTRO
-# ejecutor con ese macro -optimizado por CEM para ESE horizonte- y el nivel se
-# ignora. Medido: a 5 dias el especialista-5d bate al especialista-30d 3.843 vs
-# 2.920 (+31 %, 100 % de victorias, simetrico por los dos lados), mientras el
-# publico mas fuerte hace 723 $. Sin rival propio, las ligas cortas dan
-# win=1,000, que no tiene mas gradiente que win=0,000.
-# ESCALERA COMPLETA: (horas_por_dia, dias, tope_de_peones_del_rival).
+# And a short horizon is NOT cheaper per sample -the cost per decision is 24
+# turns either way- but it does give 1.61x more TERMINALS per second at equal
+# batch size, which is the scarce resource: the per-seed sd is ~$9,000 and only
+# the terminal reduces it.
+# (steps, public level, rival macro path). If a path is given, the opponent is
+# OUR executor with that macro -optimised by CEM for THAT horizon- and the
+# level is ignored. Measured: at 5 days the 5-day specialist beats the 30-day
+# specialist $3,843 against $2,920 (+31%, 100% wins, symmetric both ways) while
+# the strongest public agent makes $723. Without our own opponent, short
+# leagues give win=1.000, which carries no more gradient than win=0.000.
+# FULL LADDER: (hours per day, days, opponent hand cap).
 #
-# Una DIAGONAL por la rejilla fibonacci: primero crece el juego (L0-L3), y ya a
-# escala de competicion crece el rival (L4-L8). Los dos ejes por separado estan
-# medidos:
+# A DIAGONAL through the fibonacci grid: first the game grows (L0-L3), then at
+# competition scale the opponent grows (L4-L8). Both axes are measured
+# separately:
 #
-#   horas  2 y 3 dan x_inaccion 0,73 -> actuar DESTRUYE valor, se excluyen
-#   dias   por debajo de 5 pasa lo mismo
-#   tope   1 y 2 son degenerados (el publico hace 1-2 $) y 13 es indistinguible
-#          de no tener tope (175.984 vs 176.422), asi que fibonacci muestrea MAL
-#          este eje: todo el gradiente vive en 9-12 y lo salta entero.
-#          Por eso aqui van 3/5/8/11, que son los medidos.
+#   hours  2 and 3 give x_inaction 0.73 -> acting DESTROYS value, excluded
+#   days   below 5 the same happens
+#   cap    1 and 2 are degenerate (the public agent makes $1-2) and 13 is
+#          indistinguishable from uncapped (175,984 against 176,422), so
+#          fibonacci samples this axis BADLY: all the gradient lives in 9-12
+#          and it skips the lot. Hence 3/5/8/11 here, which are the measured
+#          ones.
 #
-# A escala reducida el publico se derrumba a ~0 $, asi que L0-L3 no se ganan
-# "compitiendo": son rampa de escala y se cruzan rapido. El criterio que importa
-# ahi es `x_inaccion`, no la victoria.
+# At reduced scale the public agent collapses to ~$0, so L0-L3 are not won by
+# "competing": they are a scale ramp and get crossed quickly. The criterion
+# that matters there is `x_inaction`, not winning.
 # (horas_por_dia, dias, tope_de_peones_del_rival).
 #
-# EL JUEGO MAS PEQUENO QUE ENSENA ALGO ES 13h x 13d. Medido el 2026-09-21 con
-# la heuristica y el mejor de 8 vectores al azar, 3 semillas, techo alcanzable
-# como multiplo de la inaccion (3.000 $):
-#     5h x  5d  ->  0,99x   IMPOSIBLE: nada supera a no hacer nada en 25 turnos
-#     8h x  8d  ->  1,09x   marginal, indistinguible del ruido
-#    13h x 13d  ->  4,98x   jugable
-#    21h x 21d  ->  9,21x   jugable
-# Con un techo de 0,99 y un umbral de ascenso de 1,2 la liga era un BLOQUEO:
-# no se podia cruzar ni jugando perfecto. Las dos primeras se descartan.
+# THE SMALLEST GAME THAT TEACHES ANYTHING IS 13h x 13d. Measured with the
+# heuristic and the best of 8 random vectors, 3 seeds, reachable ceiling as a
+# multiple of inaction ($3,000):
+#     5h x  5d  ->  0.99x   IMPOSSIBLE: nothing beats doing nothing in 25 turns
+#     8h x  8d  ->  1.09x   marginal, indistinguishable from noise
+#    13h x 13d  ->  4.98x   playable
+#    21h x 21d  ->  9.21x   playable
+# With a ceiling of 0.99 and a promotion threshold of 1.2 the league was a
+# DEADLOCK: it could not be crossed even playing perfectly. The first two are
+# discarded.
 #
-# Del eje del tope: 1 y 2 son degenerados y 13 es indistinguible de sin tope
+# On the cap axis: 1 and 2 are degenerate and 13 is indistinguishable from uncapped
 # (175.984 vs 176.422), asi que fibonacci muestrea mal ese eje -todo el
 # gradiente vive en 9-12- y van los valores medidos.
 # (horas_por_dia, dias, tope_del_rival, TECHO en multiplos de la inaccion).
 #
-# El techo es lo MEJOR alcanzable en esa liga, medido con la heuristica y el
+# The ceiling is the BEST achievable in that league, measured with the
 # mejor de 8 vectores al azar. Existe porque un umbral de ascenso FIJO es un
-# bloqueo: a 5h x 5d el techo es 0,99x -la politica optima es NO HACER NADA,
-# no da tiempo a que nada madure ni a amortizar una contratacion- y exigir 1,2x
-# hacia la liga imposible de cruzar jugando perfecto.
+# a deadlock: at 5h x 5d the ceiling is 0.99x -the optimal policy is TO DO
+# NOTHING, there is no time for anything to mature or for a hire to pay back-
+# and demanding 1.2x made the league impossible to cross even playing
+# perfectly.
 #
-# Esa liga no sobra: es la unica donde la respuesta correcta es la contencion,
-# que es justo el error que el agente comete a escala grande (comprar semilla
-# que no planta, contratar peones que no amortizan).
+# That league is not redundant: it is the only one where the correct answer is
+# restraint, which is exactly the mistake the agent makes at large scale
+# (buying seed it does not plant, hiring hands that do not pay back).
 #
-# Se asciende al alcanzar el 70 % del techo de la liga, no un numero absoluto.
+# Promotion happens at 70% of the league ceiling, not at an absolute number.
 # (horas, dias, tope_del_rival, margen_alcanzable, x_inaccion_alcanzable).
 #
-# LA MINIMA VIABLE SON 36 TURNOS (6h x 6d). Barrido medido el 2026-09-21,
+# THE SMALLEST VIABLE IS 36 TURNS (6h x 6d). Measured sweep,
 # 3 semillas, mejor de heuristica + 6 vectores al azar:
-#     5h x  5d   25 turnos  x_inaccion 0,99  <- NADA supera no hacer nada
+#     5h x  5d   25 turns  x_inaction 0.99  <- NOTHING beats doing nothing
 #     6h x  6d   36 turnos             1,03  <- primera jugada rentable
 #     8h x  8d   64                    1,10
 #    10h x 10d  100                    1,20
 #    11h x 11d  121                    1,10
 #    13h x 13d  169                    3,54  <- salto x3: discontinuidad
 #
-# El MARGEN alcanzable es lo mejor demostrado, no un maximo teorico: un techo
-# que nadie ha alcanzado hace la liga incruzable. En las ligas duras el margen
-# de la heuristica es NEGATIVO (tope 8: -14.973; sin tope: -102.106), asi que
-# ahi el objetivo es simplemente GANAR -margen 0-, alcanzable por definicion
-# porque el rival lo consigue.
+# The achievable MARGIN is the best demonstrated, not a theoretical maximum: a
+# ceiling nobody has reached makes the league uncrossable. In the hard leagues
+# the heuristic's margin is NEGATIVE (cap 8: -14,973; uncapped: -102,106), so
+# there the objective is simply TO WIN -margin 0- which is achievable by
+# definition because the opponent achieves it.
 LIGAS = [
     ( 6,  6,    3,   3088,  1.03),   # L0  minima viable
     ( 8,  8,    3,   3291,  1.10),   # L1
@@ -263,21 +269,21 @@ def main():
                     help="lr de las cabezas; por defecto = --lr")
     ap.add_argument("--kl-target", type=float, default=0.0,
                     help="si >0, el lr se ajusta solo para mantener este kl/dim")
-    # 1,8e-4 era el umbral de cuando el KL se media SIN normalizar por
+    # 1.8e-4 was the threshold from when KL was measured WITHOUT normalising
     # dimension. Al normalizarlo, el KL sano de este problema vive en 1e-2 a
-    # 4e-2, o sea noventa veces por encima: las epocas abortaban SIEMPRE tras
+    # 4e-2, i.e. ninety times above: epochs ALWAYS aborted after
     # la primera -"[KL corto 1]" en cada update de la sesion entera- y a la vez
-    # el controlador seguia bajando el lr para alcanzar un objetivo 111 veces
-    # mayor que el umbral de aborto. Los dos mandos tirando en sentidos
-    # opuestos: el lr del tronco acabo en 6,6e-6, 45 veces por debajo del
+    # the controller kept lowering the lr to reach a target 111 times larger
+    # than the abort threshold. The two dials pulling in opposite directions:
+    # the trunk lr ended at 6.6e-6, 45 times below the
     # nominal, y cada lote daba UN solo paso de gradiente.
     #
-    # Ahora por defecto es 2x el objetivo, que es la practica habitual en PPO:
-    # el aborto es una red de seguridad para el lote raro, no el regimen normal.
-    # A/B medido el 2026-09-21 (11 updates, 8h x 13d + 13h x 13d, rival propio
+    # The default is now 2x the target, which is standard PPO practice: the
+    # abort is a safety net for the odd batch, not the normal regime. A/B
+    # measured (11 updates, 8h x 13d + 13h x 13d, own opponent
     # calibrado): con 0,04 el retorno llega a 5,84 y aborta epocas en casi todos
     # los updates; con 0,12 llega a 8,54 y ya no aborta ninguna. El motivo es
-    # que la epoca 1 ya mide kl/dim ~0,05 -hay un desfase entre la log-prob del
+    # that epoch 1 already measures kl/dim ~0.05 -there is a lag between the
     # rollout y la recalculada-, asi que un umbral de 2x el objetivo corta antes
     # de dar el primer paso util.
     ap.add_argument("--jepa-warmup", type=int, default=0,
@@ -377,19 +383,20 @@ def main():
         print(f"tope de NUESTROS peones: {a.hand_cap}", flush=True)
     # ESCALA DEL OBJETIVO DE VALOR. `fret` va en unidades crudas (media ~20,
     # sd ~8) y la perdida era smooth_l1 con beta=1.0: TODO error mayor de 1
-    # unidad caia en regimen L1 puro, con gradiente +-1 que no lleva el tamano
-    # del error. Medido en regresion de juguete con senal lineal perfecta y
+    # unit fell into pure L1 regime, with a +-1 gradient carrying no magnitude
+    # of error. Measured on a toy regression with perfect linear signal and
     # esta misma escala: R2 = -16,58 asi, contra +0,826 normalizando. Explica
     # el critico en -0,405 sin culpar al tronco.
     #
-    # El critico predice NORMALIZADO y se desnormaliza para GAE, que necesita
+    # The critic predicts NORMALISED and is denormalised for GAE, which needs
     # unidades crudas porque `ret = adv + Vn` bootstrapea de V.
     _vmu, _vsd, _vn = 0.0, 1.0, 0
     _n_reusados = _n_total = 0
     d0 = {}
     if a.resume:
-        # CONTINUAR, no reempezar. Cada run arrancaba del preentreno supervisado
-        # y tiraba todo el RL acumulado. Solo es valido si la arquitectura no ha
+        # CONTINUE, do not restart. Each run used to start from the supervised
+        # pretraining and threw away all accumulated RL. Only valid if the
+        # architecture has not
         # cambiado: hoy N_GLOBAL paso de 75 a 88 y N_MACRO de 7 a 13, y con eso
         # las formas no encajan. Se carga lo que encaje y se dice que se reusa.
         d0 = torch.load(a.resume, map_location="cpu", weights_only=False)
@@ -400,43 +407,41 @@ def main():
               f"reusados (update {d0.get('upd','?')}, "
               f"retorno {d0.get('ret', float('nan')):.2f})", flush=True)
     elif a.init_net:
-        # Arrancar del micro que YA reconstruye la valoracion por supervision.
-        # En modo directo la tabla escrita a mano sale del lazo: la red emite
-        # el valor de cada casilla y la heuristica no se usa.
-        # TOLERANTE, como `--resume`. El preentreno puede tener otra cabeza de
-        # macro (hoy 13 dimensiones contra 14 al anadir `fertilizar`), pero lo
-        # que interesa de el -el tronco y el mapa de valor- si encaja. Cargar
-        # solo lo compatible evita rehacer el preentreno con cada dimension
-        # nueva, y se informa de cuanto se reutiliza para que no pase inadvertido.
+        # Start from a micro head that ALREADY reconstructs the valuation by
+        # supervision. TOLERANT, like `--resume`: the pretraining may have a
+        # macro head of a different width, but what matters from it -the trunk
+        # and the value map- does fit. Loading only what is compatible avoids
+        # redoing the pretraining for every new dimension, and how much is
+        # reused is reported so it cannot pass unnoticed.
         d0 = torch.load(a.init_net, map_location="cpu", weights_only=False)
         from kagsym.migrate_ckpt import load_tolerant
         current = net.state_dict()
         _nok, _ntot, _ = load_tolerant(net, d0["sd"], a.init_net)
-        net.init_macro_at(vec0)        # la cabeza de macro, desde el vector
+        net.init_macro_at(vec0)        # the macro head, from the vector
         net.to(dev)
         print(f"micro preentrenado desde {a.init_net}: "
               f"{_nok}/{_ntot} tensores reusados", flush=True)
-    # DOS RITMOS. Medido en el arranque desde cero: tras 40 updates
-    # `micro.weight` valia 0.013 y los logits de verbo 0.008, contra un sigma de
-    # muestreo de 0.15 -el ruido aplastaba a la senal aprendida 19 a 1-, o sea
-    # que la cabeza estaba limitada por NUMERO DE PASOS, no por gradiente. Y a
-    # la vez el KL por dimension crecia de 0.036 a 0.363 porque el crítico,
-    # que comparte tronco, zarandeaba el codificador: la politica se movia
-    # muchisimo sin haber aprendido nada, y el dinero hacia pico en el update 15
-    # y bajaba desde ahi.
+    # TWO RATES. Measured starting from scratch: after 40 updates
+    # `micro.weight` was 0.013 and the verb logits 0.008, against a sampling
+    # sigma of 0.15 -noise crushed the learned signal 19 to 1- meaning the head
+    # was limited by NUMBER OF STEPS, not by gradient. At the same time KL per
+    # dimension grew from 0.036 to 0.363 because the critic, which shares the
+    # trunk, was shaking the encoder: the policy moved enormously without
+    # having learned anything, and money peaked at update 15 and fell from
+    # there.
     #
-    # Una cabeza lineal tiene que VIAJAR desde cero; el codificador solo tiene
-    # que afinarse. Un unico lr no puede servir para las dos cosas.
-    # CUATRO GRUPOS, no dos. El KL total se descompone en el del MACRO mas el
-    # del MICRO porque las dos politicas son gaussianas independientes, asi que
-    # cada una puede tener su propio lazo de control. Con un solo controlador,
-    # el macro -que aporta +1 $ de 953 y cuyas pesos crecen x4,3 contra x2,8
-    # del micro- gasta el presupuesto de divergencia y frena a la cabeza que si
-    # decide: medido en campeonato, saturacion subiendo a 0,16 mientras el lr
-    # de TODO bajaba de 3e-4 a 3,6e-5.
+    # A linear head has to TRAVEL from zero; the encoder only has to be
+    # fine-tuned. A single lr cannot serve both.
+    # FOUR GROUPS, not two. The total KL decomposes into the MACRO's plus the
+    # MICRO's because the two policies are independent Gaussians, so each can
+    # have its own control loop. With a single controller the macro -which
+    # contributes +$1 of 953 and whose weights grow 4.3x against the micro's
+    # 2.8x- spends the divergence budget and brakes the head that actually
+    # decides: measured at championship scale, saturation rising to 0.16 while
+    # the lr of EVERYTHING fell from 3e-4 to 3.6e-5.
     #
-    # El grupo 3 (critico, auxiliares) no es politica: no genera KL y no se
-    # controla por KL.
+    # Group 3 (critic, auxiliaries) is not policy: it generates no KL and is
+    # not controlled by KL.
     _g_macro, _g_micro, _g_otros, _tronco = [], [], [], []
     for _n, _p in net.named_parameters():
         _b = _n.split(".")[0]
@@ -450,9 +455,9 @@ def main():
             _tronco.append(_p)
     _cabezas = _g_macro + _g_micro + _g_otros
     _rm_actual = None
-    # PELDANOS DE AUTOJUEGO CON RED ENTERA. La identidad del rival vive en el
-    # PELDANO, no en el trabajador: el curriculo reasigna trabajadores y sin
-    # esto el rival congelado se perderia en la primera reasignacion.
+    # SELF-PLAY RUNGS WITH THE FULL NETWORK. The opponent's identity lives in
+    # the RUNG, not in the worker: the curriculum reassigns workers and without
+    # this the frozen opponent would be lost on the first reallocation.
     _pool_red = set()
     _red_congelada = None
     _pool, _pool_p, _asig = [], [], []
@@ -482,30 +487,32 @@ def main():
                             {"params": _g_otros, "lr": _lrc}])
     print(f"lr tronco {a.lr:.1e} ({len(_tronco)} tensores) | "
           f"lr cabezas {_lrc:.1e} ({len(_cabezas)} tensores)", flush=True)
-    # ESTADO DEL OPTIMIZADOR, no solo los pesos. Sin esto cada reanudacion
-    # empieza con los momentos de Adam a cero y el lr de fabrica, asi que el
-    # primer paso es enorme: medido, un reanudado de 20 957 $ caia a 4 717 $ en
-    # cinco updates, con kl/dim de 16.9 en el primero. Se perdia mas de lo que
-    # se recuperaba.
-    # Solo si la ARQUITECTURA no cambio. `load_state_dict` del optimizador no
-    # valida formas: acepta los momentos viejos y revienta despues, en el primer
-    # step(), con "size of tensor a (124) must match b (126)". Si `--resume` no
-    # pudo reusar TODOS los tensores, la red es otra y los momentos no valen.
+    # OPTIMIZER STATE, not just the weights. Without this every resume starts
+    # with Adam's moments at zero and the factory lr, so the first step is
+    # enormous: measured, a resume from $20,957 fell to $4,717 in five updates,
+    # with kl/dim of 16.9 on the first. More was lost than recovered.
+    #
+    # Only when the ARCHITECTURE has not changed. The optimizer's
+    # `load_state_dict` does not validate shapes: it accepts the old moments
+    # and blows up later, inside the first step(), with "size of tensor a (124)
+    # must match b (126)". If `--resume` could not reuse ALL tensors, the
+    # network is a different one and the moments are worthless.
     _arq_igual = (not a.resume) or (_n_reusados == _n_total)
     if a.resume and "opt" in d0 and _arq_igual:
         try:
-            # MOMENTOS POR TENSOR, no todo-o-nada. Cuando se expone una
-            # constante nueva el vector macro crece, y con el la cabeza:
-            # `macro_mu.weight`, `macro_mu.bias` y `log_sigma` cambian de
-            # forma. Los otros 66 tensores son identicos y sus momentos siguen
-            # siendo validos -son justamente los que evitan el primer paso
-            # enorme-. Tirarlos todos por tres que cambiaron es lo que costo
-            # 20.957 -> 4.717 $ en cinco updates.
+            # MOMENTS PER TENSOR, not all-or-nothing. When a new constant is
+            # exposed the macro vector grows, and with it the head:
+            # `macro_mu.weight`, `macro_mu.bias` and `log_sigma` change shape.
+            # The other 66 tensors are identical and their moments remain
+            # valid -they are precisely what prevents the huge first step-.
+            # Throwing them all away for three that changed is what cost
+            # $20,957 -> $4,717 in five updates.
             #
-            # `load_state_dict` del optimizador NO valida formas: acepta los
-            # momentos viejos y revienta despues, dentro de step(). Asi que se
-            # filtran ANTES, comparando con el parametro que les toca. Los que
-            # se caen los reinicia Adam solo, en su primer paso.
+            # The optimizer's `load_state_dict` does NOT validate shapes: it
+            # accepts the old moments and blows up later, inside step(). So
+            # they are filtered BEFORE, comparing against the parameter they
+            # belong to. Whatever is dropped, Adam reinitialises on its first
+            # step.
             _est = dict(d0["opt"])
             _ps = [q for g in opt.param_groups for q in g["params"]]
             _fuera = []
@@ -528,10 +535,10 @@ def main():
                 print(f"  momentos reiniciados en {len(_fuera)} de {len(_ps)} "
                       f"tensores (cambiaron de forma); el resto conserva Adam",
                       flush=True)
-            # Los MOMENTOS de Adam siempre se restauran -son lo que evita el
-            # primer paso enorme-, pero un lr pedido a mano MANDA sobre el del
-            # checkpoint. Sin esto, restaurar el optimizador machacaba el
-            # cambio de lr que el operador venia a hacer, en silencio.
+            # Adam's MOMENTS are always restored -they are what prevents the
+            # huge first step- but an explicitly requested lr OVERRIDES the
+            # checkpoint's. Without this, restoring the optimizer silently
+            # clobbered the lr change the operator came to make.
             if _lr_explicito:
                 opt.param_groups[0]["lr"] = a.lr
                 opt.param_groups[1]["lr"] = _lrc
@@ -548,15 +555,16 @@ def main():
         print(f"  optimizador NO restaurado: la arquitectura cambio "
               f"({_n_reusados}/{_n_total} tensores). Momentos a cero.", flush=True)
     if a.resume and _n_reusados < _n_total and getattr(net, "n_ops", 0):
-        # RESCATE DE LA INACCION. Si la arquitectura cambio, las capas de
-        # entrada reiniciadas mandan ruido a la cabeza de valor, que emite
-        # negativos; el humgaro prefiere su columna ficticia y TODAS las
-        # unidades hacen PASS. Y la inaccion es un ESTADO ABSORBENTE: si nadie
-        # actua no hay variacion de la que aprender. Medido: 70 updates
-        # clavados en 3.000 $ exactos -el dinero inicial- a 5 dias, contra los
-        # 3.746 que hace el mismo macro sin red.
-        # El sesgo del canal de valor se repone a 1.0 = "actuar vale algo
-        # positivo", que es el unico arranque del que se puede salir.
+        # INACTION RESCUE. If the architecture changed, the reinitialised
+        # input layers send noise into the value head, which emits negatives;
+        # the Hungarian prefers its dummy column and ALL units PASS. And
+        # inaction is an ABSORBING STATE: if nobody acts there is no variation
+        # to learn from. Measured: 70 updates pinned at exactly $3,000 -the
+        # starting money- at 5 days, against the $3,746 the same macro makes
+        # without a network.
+        #
+        # The value channel's bias is reset to 1.0 = "acting is worth something
+        # positive", which is the only start you can escape from.
         with torch.no_grad():
             net.micro.bias[0] = 1.0
         print("  sesgo de valor repuesto a 1.0 (rescate de la inaccion)",
@@ -566,13 +574,13 @@ def main():
 
     from kagsym import spec
     from kagsym.macro import Macro
-    # Rollouts repartidos: medido 632 pasos/s en serie contra 10 069 en paralelo
-    # con 48 entornos y 10 procesos (15.9x). El arranque son 1-3 s, una vez.
+    # Distributed rollouts: measured 632 steps/s serially against 10,069 in
+    # parallel with 48 envs and 10 processes (15.9x). Startup is 1-3 s, once.
     if a.force_macro:
-        # DESPUES del resume a proposito: `init_macro_at` corre antes y el
-        # checkpoint lo pisa. Medido: pedi el macro del CEM de 5 dias
-        # ([0.121, 0.754, 0.057, ...]) y la red emitia el de backbone6
-        # ([0.01, 0.24, 0.02, ...]), o sea el de 30 dias. El experimento no
+        # AFTER the resume on purpose: `init_macro_at` runs earlier and the
+        # checkpoint overwrites it. Measured: the 5-day CEM macro was requested
+        # ([0.121, 0.754, 0.057, ...]) and the network emitted the pretrained
+        # one ([0.01, 0.24, 0.02, ...]), i.e. the 30-day vector. The experiment
         # probaba lo que yo creia y nada avisaba.
         net.init_macro_at(vec0)
         print(f"macro FORZADO a {a.init}", flush=True)
@@ -590,33 +598,33 @@ def main():
         print(f"MEZCLA de horizontes: {_dias} dias -> {_pasos} pasos", flush=True)
     _horas = None
     if a.grid:
-        # REJILLA FIBONACCI MEZCLADA. Los tres ejes a la vez, un peldano por
-        # trabajador, todos en el mismo lote. Lo que lo hace posible: `spec` y
-        # `TOPE_PEONES` son globales POR PROCESO, y la observacion lleva dos
-        # dimensiones ABSOLUTAS -EPISODE_STEPS/720 y tope/HANDS_REF- asi que
-        # la red sabe en que peldano juega y puede condicionar la politica en
-        # vez de promediar los tres.
+        # MIXED FIBONACCI GRID. All three axes at once, one rung per worker,
+        # all in the same batch. What makes it possible: `spec` and `HAND_CAP`
+        # are PER-PROCESS globals, and the observation carries two ABSOLUTE
+        # dimensions -EPISODE_STEPS/720 and cap/HANDS_REF- so the network knows
+        # which rung it is playing and can condition the policy instead of
+        # averaging over the three.
         #
-        # Mezclado y no secuencial, otra vez por lo medido: el curriculo en
-        # secuencia dio -98,3 % dos veces porque la politica olvida el peldano
-        # anterior; la mezcla dio -75,4 %, el mejor resultado de la sesion.
+        # Mixed rather than sequential, again from measurement: a sequential
+        # curriculum gave -98.3% twice because the policy forgets the previous
+        # rung; mixing gave -75.4%, the best result of that session.
         #
-        # Y con la matriz de transferencia medida: ascendente 0-5 %, descendente
-        # 43-96 %. Entrenar SOLO arriba no baja; entrenar mezclado sube Y baja
-        # (mezcla 15/20/30 dio 1,22x a 10 dias y 2,66x a 13, no vistos, y
-        # ademas gano a 30 dias: 12,78x contra 10,65x del entrenado solo ahi).
+        # And with the transfer matrix measured: upward 0-5%, downward 43-96%.
+        # Training ONLY at the top does not transfer down; training mixed goes
+        # up AND down (mixing 15/20/30 gave 1.22x at 10 days and 2.66x at 13,
+        # neither seen in training, and also won at 30 days: 12.78x against
+        # 10.65x for the one trained only there).
         _rej = []
         for t in a.grid.split(";"):
             h, d, tp = (int(x) for x in t.split(","))
             _rej.append((h, d, tp))
         _pasos = [h * d for h, d, _ in _rej]
         _horas = [h for h, _, _ in _rej]
-        # TERCER EJE = TOPE DEL RIVAL, no el nuestro. `--tope-peones` limita
-        # NUESTROS peones (es una restriccion del espacio de accion propio);
-        # el eje de dificultad de la escalera siempre fue el rival. Y es como
-        # se calibraron los peldanos en runs/ligas/calibra_rejilla.py, asi que
-        # tienen que significar lo mismo o los techos medidos no aplican.
-        # 0 = sin tope (rival a plena potencia).
+        # THIRD AXIS = THE OPPONENT'S CAP, not ours. `--hand-cap` limits OUR
+        # hands (a constraint on our own action space); the ladder's difficulty
+        # axis was always the opponent. That is also how the rungs were
+        # calibrated, so they have to mean the same thing or the measured
+        # ceilings do not apply. 0 = uncapped (opponent at full power).
         _rivtope = [(tp if tp > 0 else None) for _, _, tp in _rej]
         a.days = max(d for _, d, _ in _rej)
         print(f"REJILLA mezclada, {len(_rej)} peldanos:", flush=True)
@@ -630,16 +638,17 @@ def main():
         env.set_rival_cap(_rivtope)
         print(f"tope del RIVAL por peldano: {_rivtope}", flush=True)
         if a.own_rival:
-            # Un rival de verdad en cada peldano. Medido: v48 hace 60.426 $ a
-            # 24h x 30d y 0-30 $ a cualquier otra escala, porque su cinta esta
-            # indexada por paso para 719 pasos a 24h/dia. Sin esto, en diez de
-            # los once peldanos el termino de victoria es gratis y el mercado
-            # compartido no lo vacia nadie: se entrena a granjear en un mundo
-            # vacio y luego se compite en uno lleno.
-            # NUNCA se sustituye en la escala de competicion: ahi v48 SI juega
-            # -60.426 $ medidos- y es el unico peldano donde ganar significa
-            # algo de verdad. La sustitucion es para los peldanos donde el
-            # publico esta muerto, no para ahorrarse al rival de verdad.
+            # A real opponent on every rung. Measured: v48 makes $60,426 at
+            # 24h x 30d and $0-30 at any other scale, because its tape is
+            # indexed by step for 719 steps at 24h/day. Without this, on ten of
+            # the eleven rungs the win term is free and nobody drains the
+            # shared market: you train to farm in an empty world and then
+            # compete in a full one.
+            #
+            # It is NEVER substituted at competition scale: there the public
+            # agent DOES play -$60,426 measured- and it is the only rung where
+            # winning means anything. The substitution is for rungs where the
+            # public agent is dead, not a way to avoid the real opponent.
             _COMPET = (24, 30)
             _riv = []
             for _h, _d, _ in _rej:
@@ -656,9 +665,9 @@ def main():
                 print(f"   {_h}h x {_d}d: "
                       + ("ejecutor con macro calibrado" if _v is not None
                          else "v48-fast-routes"), flush=True)
-    # Rangos de indices de entorno que pertenecen a cada trabajador, o sea a
-    # cada peldano de la rejilla. `EntornoParalelo` reparte los entornos en
-    # orden, `por_proc[k]` seguidos por trabajador.
+    # Ranges of env indices belonging to each worker, i.e. to each rung of the
+    # grid. The parallel env hands out envs in order, `per_proc[k]`
+    # consecutively per worker.
     _GRUPOS = None
     if a.grid and len(set(env.steps_proc)) > 1:
         _GRUPOS, _o = [], 0
@@ -674,9 +683,9 @@ def main():
             _rm.append(None if _t in ("-", "") else list(np.load(_t)))
         env.set_rival_macro(_rm)
         _rm_actual = list(_rm)
-        # El POOL de peldanos: (nivel, tope, macro). Arranca con la asignacion
-        # inicial y el curriculo automatico redistribuye los trabajadores entre
-        # ellos segun cuanta informacion da cada uno.
+        # The POOL of rungs: (level, cap, macro). It starts with the initial
+        # assignment and the automatic curriculum redistributes workers among
+        # them according to how much information each one gives.
         if _niveles:
             _pool = [(_niveles[i % len(_niveles)],
                       _rivtope[i % len(_rivtope)],
