@@ -1,25 +1,25 @@
-"""Migrar checkpoints entrenados antes de las features de horizonte absoluto.
+"""Migrate checkpoints trained before later observation and head changes.
 
-El 2026-09-21 se anadieron dos dimensiones globales al final del bloque `time`
--`EPISODE_STEPS/720` y `tope_peones/HANDS_REF`- para que la red SEPA en que
-liga juega. N_GLOBAL paso de 88 a 90, asi que la entrada del codificador global
-(N_GLOBAL + N_HIST) paso de 124 a 126.
+Two global dimensions were appended to the end of the `time` block
+-`EPISODE_STEPS/720` and `hand_cap/HANDS_REF`- so that the network KNOWS which
+league it is playing. N_GLOBAL went from 88 to 90, so the global encoder input
+(N_GLOBAL + N_HIST) went from 124 to 126.
 
-Consecuencia que costo media sesion encontrar: el patron habitual de carga
+The consequence took half a session to find: the usual loading pattern
 
     ok = {k: v for k, v in d["sd"].items() if k in act and act[k].shape == v.shape}
     net.load_state_dict({**act, **ok})
 
-descarta EN SILENCIO los tensores cuya forma no cuadra, y los deja como los
-dejo la inicializacion: AL AZAR. Los dos descartados eran `mundo.glob_enc.0` y
-`mundo.resumen.0`, o sea la modulacion FiLM de todo el tablero y el resumen que
-alimenta macro, critico y cabeza auxiliar. Sintomas: dinero por semilla entre
-19 $ y 40.667 $, y el MISMO checkpoint con la MISMA semilla dando resultados
-distintos en cada proceso, porque el azar del init cambia.
+SILENTLY discards tensors whose shape does not match, leaving them as the
+initialisation left them: RANDOM. The two discarded were the global encoder and
+the summary, i.e. the FiLM modulation of the whole board and the vector that
+feeds macro, critic and auxiliary head. Symptoms: per-seed money between $19
+and $40,667, and the SAME checkpoint with the SAME seed giving different
+results in each process, because the init randomness changes.
 
-La migracion es exacta. Las columnas nuevas van a CERO, asi que las features
-nuevas no contribuyen nada y la funcion aprendida se recupera bit a bit; a
-partir de ahi el entrenamiento puede darles peso si le sirven.
+The migration is exact. New columns go to ZERO, so the new features contribute
+nothing and the learned function is recovered bit for bit; from there training
+can give them weight if they help.
 """
 from __future__ import annotations
 
@@ -28,129 +28,127 @@ import torch
 from . import obs as O
 from .nets.world import N_HIST
 
-# Los rasgos absolutos nuevos van SIEMPRE al final del bloque `time`, y esta
-# migracion lo da por hecho. Si alguna vez se anade uno en otra posicion, esto
-# desplaza los pesos equivocados EN SILENCIO, que es exactamente el fallo que
-# costo media sesion.
+# New absolute features ALWAYS go at the end of the `time` block, and this
+# migration assumes it. If one is ever added elsewhere, this shifts the wrong
+# weights SILENTLY, which is exactly the failure that cost half a session.
 #
-# 2026-09-21 (tarde): tercer rasgo absoluto, `TURNS_PER_DAY/24`. N_GLOBAL 90->91
-# y la entrada 126->127. Ahora hay TRES anchos vivos, asi que el numero de
-# columnas a insertar se deduce del ancho de origen en vez de estar fijo:
-#     124 -> 127   inserta 3   (checkpoint anterior a todo)
-#     126 -> 127   inserta 1   (checkpoint de anoche)
-_FIN_TIME = O.GLOBAL_SLICES["time"].stop
-NUEVO = O.N_GLOBAL + N_HIST
-ANCHOS_CONOCIDOS = (NUEVO, NUEVO - 1, NUEVO - 3)
+# Third absolute feature: `TURNS_PER_DAY/24`. N_GLOBAL 90->91 and the input
+# 126->127. There are now THREE live widths, so the number of columns to
+# insert is derived from the source width instead of being fixed:
+#     124 -> 127   insert 3   (checkpoint older than everything)
+#     126 -> 127   insert 1   (checkpoint from the previous change)
+_TIME_END = O.GLOBAL_SLICES["time"].stop
+NEW_WIDTH = O.N_GLOBAL + N_HIST
+KNOWN_WIDTHS = (NEW_WIDTH, NEW_WIDTH - 1, NEW_WIDTH - 3)
 
 
 def migrate_input(w: torch.Tensor) -> torch.Tensor:
-    """(out, ancho viejo) -> (out, NUEVO), con ceros en las columnas nuevas."""
-    ancho = w.shape[1]
-    if ancho == NUEVO:
+    """(out, old width) -> (out, NEW_WIDTH), zeros in the new columns."""
+    width = w.shape[1]
+    if width == NEW_WIDTH:
         return w
-    if ancho not in ANCHOS_CONOCIDOS:
-        raise ValueError(f"ancho inesperado {ancho}, esperaba uno de "
-                         f"{ANCHOS_CONOCIDOS}")
-    n_nuevas = NUEVO - ancho
-    i = _FIN_TIME - n_nuevas
-    out = w.new_zeros(w.shape[0], NUEVO)
+    if width not in KNOWN_WIDTHS:
+        raise ValueError(f"unexpected width {width}, expected one of "
+                         f"{KNOWN_WIDTHS}")
+    n_new = NEW_WIDTH - width
+    i = _TIME_END - n_new
+    out = w.new_zeros(w.shape[0], NEW_WIDTH)
     out[:, :i] = w[:, :i]
-    out[:, i + n_nuevas:] = w[:, i:]
+    out[:, i + n_new:] = w[:, i:]
     return out
 
 
 def migrate_macro_head(sd: dict) -> list:
-    """Cabeza macro que CRECE, preservando la funcion aprendida.
+    """Macro head that GROWS, preserving the learned function.
 
-    Cada vez que se expone una constante que estaba a ojo, el vector gana
-    dimensiones y un checkpoint anterior deja de encajar. Extenderlo es
-    correcto, pero solo de una forma:
+    Every time a hand-set constant is exposed, the vector gains dimensions and
+    an older checkpoint stops fitting. Extending it is correct, but only one
+    way:
 
-      * peso  -> filas nuevas a CERO. Las dimensiones nuevas no dependen
-                 todavia del estado, igual que cuando eran constantes.
-      * sesgo -> logit(defecto del campo). El ejecutor hace sigmoid(macro_mu),
-                 asi que eso devuelve EXACTAMENTE el valor que tenia la
-                 constante, y la politica migrada se comporta igual.
-      * sigma -> la MEDIANA de lo que el checkpoint ya habia aprendido, para
-                 que lo nuevo explore a la misma escala que lo demas y no haya
-                 que elegir un numero.
+      * weight -> new rows to ZERO. The new dimensions do not depend on the
+                  state yet, exactly as when they were constants.
+      * bias   -> logit(the field's default). The executor applies
+                  sigmoid(macro_mu), so this returns EXACTLY the value the
+                  constant had, and the migrated policy behaves identically.
+      * sigma  -> the MEDIAN of what the checkpoint had already learned, so the
+                  new dimensions explore at the same scale as the rest and no
+                  number has to be chosen.
 
-    El defecto se lee del propio `Macro`, no de una lista paralela: antes se
-    daba por hecho que las dims nuevas eran el bloque `RANGOS_F` entero, y al
-    anadir campos que no estan en esa tabla -los pesos de la regla por turno-
-    el indice se salia. Leyendo los `dataclass` fields esto vale para
-    cualquier ampliacion futura sin tocarlo.
+    The default is read from `Macro` itself, not from a parallel list: it used
+    to assume the new dims were the whole `PARAM_TABLE` block, and when fields
+    that are not in that table were added -the per-turn rule weights- the index
+    ran off the end. Reading the dataclass fields works for any future
+    extension without being touched.
     """
     import math
-    from dataclasses import fields as _campos
+    from dataclasses import fields as _fields
     from .macro import Macro, N_MACRO
     touched = []
-    defaults = [float(f.default) for f in _campos(Macro)]
+    defaults = [float(f.default) for f in _fields(Macro)]
     lg = lambda x: math.log(max(1e-6, min(1 - 1e-6, x)) /
                             (1 - max(1e-6, min(1 - 1e-6, x))))
     for k, v in list(sd.items()):
         if k.endswith("macro_mu.weight") and v.shape[0] < N_MACRO:
             w = v.new_zeros(N_MACRO, v.shape[1]); w[: v.shape[0]] = v
-            sd[k] = w; touched.append(f"{k}: {v.shape[0]} -> {N_MACRO} (a cero)")
+            sd[k] = w; touched.append(f"{k}: {v.shape[0]} -> {N_MACRO} (zeroed)")
         elif k.endswith("macro_mu.bias") and v.shape[0] < N_MACRO:
             b_ = v.new_empty(N_MACRO); b_[: v.shape[0]] = v
             for i in range(v.shape[0], N_MACRO):
                 b_[i] = lg(defaults[i])
-            sd[k] = b_; touched.append(f"{k}: {v.shape[0]} -> {N_MACRO} (defecto del campo)")
+            sd[k] = b_; touched.append(f"{k}: {v.shape[0]} -> {N_MACRO} (field default)")
         elif k.endswith("log_sigma") and v.shape[0] < N_MACRO:
             t = v.new_full((N_MACRO,), float(v.median()))
             t[: v.shape[0]] = v
-            sd[k] = t; touched.append(f"{k}: {v.shape[0]} -> {N_MACRO} (mediana)")
+            sd[k] = t; touched.append(f"{k}: {v.shape[0]} -> {N_MACRO} (median)")
     return touched
 
 
-# Atributos renombrados al pasar el codigo a ingles. Las claves de un
-# `state_dict` son rutas de ATRIBUTO, asi que renombrar un submodulo invalida
-# todos los checkpoints anteriores. Se traducen al cargar, que es lo mismo que
-# ya se hace con las cabezas que crecen.
+# Attributes renamed when the code moved to English. `state_dict` keys are
+# ATTRIBUTE paths, so renaming a submodule invalidates every earlier
+# checkpoint. They are translated on load, the same way growing heads are.
 RENAMES = {"mundo.": "world."}
 
 
 def migrate_keys(sd: dict) -> list[str]:
-    """Traduce las claves de checkpoints anteriores al renombrado ES->EN."""
+    """Translate keys of checkpoints predating the ES->EN rename."""
     touched = []
-    for viejo, nuevo in RENAMES.items():
-        claves = [k for k in sd if k.startswith(viejo)]
-        for k in claves:
-            sd[nuevo + k[len(viejo):]] = sd.pop(k)
-        if claves:
-            touched.append(f"{viejo}* -> {nuevo}* ({len(claves)} tensores)")
+    for old, new in RENAMES.items():
+        keys = [k for k in sd if k.startswith(old)]
+        for k in keys:
+            sd[new + k[len(old):]] = sd.pop(k)
+        if keys:
+            touched.append(f"{old}* -> {new}* ({len(keys)} tensors)")
     return touched
 
 
 def migrate_sd(sd: dict) -> tuple[dict, list[str]]:
-    """Devuelve (state_dict migrado, lista de claves tocadas)."""
+    """Returns (migrated state_dict, list of touched keys)."""
     out, touched = dict(sd), []
-    touched += migrate_keys(out)        # antes que nada: los nombres viejos
+    touched += migrate_keys(out)        # first of all: the old names
     touched += migrate_macro_head(out)
     for k in ("world.glob_enc.0.weight", "world.resumen.0.weight"):
-        if k in out and out[k].shape[1] != NUEVO:
+        if k in out and out[k].shape[1] != NEW_WIDTH:
             out[k] = migrate_input(out[k])
             touched.append(k)
     return out, touched
 
 
 def load_strict(net, sd, name_="checkpoint"):
-    """Carga migrando, y REVIENTA si queda algo sin cargar.
+    """Load with migration, and RAISE if anything is left unloaded.
 
-    Deliberadamente ruidoso: el fallo original fue silencioso. Si un tensor no
-    encaja, mejor una excepcion que una politica con partes al azar que parece
-    funcionar y da numeros sin sentido.
+    Deliberately loud: the original failure was silent. If a tensor does not
+    fit, an exception beats a policy with random parts that looks like it
+    works and produces meaningless numbers.
     """
     sd, touched = migrate_sd(sd)
     act = net.state_dict()
-    # SIGMA DE LA CABEZA MICRO. Antes era constante del config; desde el
-    # 2026-09-22 es un `nn.Parameter` que aprende PPO, como el del macro. Un
-    # checkpoint anterior no lo trae, asi que se reconstruye con los valores
-    # que ESE checkpoint usaba -canal 0 = sigma_micro, resto = sigma_ops-, y
-    # entonces reproduce su conducta exacta en vez de arrancar en cualquier
-    # sitio. Sin esto `carga_estricta` revienta, que es lo correcto pero
-    # impediria reanudar nada anterior.
+    # MICRO HEAD SIGMA. It used to be a config constant; it is now an
+    # `nn.Parameter` learned by PPO, like the macro one. An older checkpoint
+    # does not carry it, so it is rebuilt with the values THAT checkpoint used
+    # -channel 0 = sigma_micro, the rest = sigma_verb- and then reproduces its
+    # exact behaviour instead of starting somewhere arbitrary. Without this,
+    # `load_strict` raises, which is correct but would make it impossible to
+    # resume anything older.
     if "log_sigma_micro" in act and "log_sigma_micro" not in sd:
         import math
         cfgd = getattr(net, "cfg", None)
@@ -160,35 +158,36 @@ def load_strict(net, sd, name_="checkpoint"):
         t[:] = math.log(s_ops)
         t[0] = math.log(s_val)
         sd = {**sd, "log_sigma_micro": t}
-        touched = list(touched) + ["log_sigma_micro (reconstruido del cfg)"]
+        touched = list(touched) + ["log_sigma_micro (rebuilt from cfg)"]
     bad = [(k, tuple(act[k].shape), tuple(sd[k].shape))
            for k in act if k in sd and act[k].shape != sd[k].shape]
     missing = [k for k in act if k not in sd]
     if bad or missing:
         raise RuntimeError(
-            f"{name_}: no encaja y se quedaria AL AZAR -> "
-            f"formas distintas {bad}, ausentes {missing}")
+            f"{name_}: does not fit and would be left RANDOM -> "
+            f"shape mismatch {bad}, missing {missing}")
     net.load_state_dict({**act, **sd})
     return touched
 
 
 def load_tolerant(net, sd, name_="checkpoint", verbose=True):
-    """Migra, carga lo que encaje, y DICE EN VOZ ALTA lo que queda al azar.
+    """Migrate, load what fits, and SAY OUT LOUD what is left random.
 
-    La tolerancia es deliberada en algunos sitios (`--init-net` arranca de un
-    preentreno con otra cabeza). Lo que no era deliberado es el silencio: el
-    mensaje decia "56/58 tensores" sin nombrarlos, y los dos ausentes eran el
-    codificador global y el resumen. Aqui se nombran, siempre.
+    Tolerance is deliberate in some places (`--init-net` starts from a
+    pretraining run with a different head). What was not deliberate is the
+    silence: the message said "56/58 tensors" without naming them, and the two
+    missing ones were the global encoder and the summary. Here they are always
+    named.
     """
     sd, touched = migrate_sd(sd)
     act = net.state_dict()
-    # SIGMA DE LA CABEZA MICRO. Antes era constante del config; desde el
-    # 2026-09-22 es un `nn.Parameter` que aprende PPO, como el del macro. Un
-    # checkpoint anterior no lo trae, asi que se reconstruye con los valores
-    # que ESE checkpoint usaba -canal 0 = sigma_micro, resto = sigma_ops-, y
-    # entonces reproduce su conducta exacta en vez de arrancar en cualquier
-    # sitio. Sin esto `carga_estricta` revienta, que es lo correcto pero
-    # impediria reanudar nada anterior.
+    # MICRO HEAD SIGMA. It used to be a config constant; it is now an
+    # `nn.Parameter` learned by PPO, like the macro one. An older checkpoint
+    # does not carry it, so it is rebuilt with the values THAT checkpoint used
+    # -channel 0 = sigma_micro, the rest = sigma_verb- and then reproduces its
+    # exact behaviour instead of starting somewhere arbitrary. Without this,
+    # `load_strict` raises, which is correct but would make it impossible to
+    # resume anything older.
     if "log_sigma_micro" in act and "log_sigma_micro" not in sd:
         import math
         cfgd = getattr(net, "cfg", None)
@@ -198,18 +197,18 @@ def load_tolerant(net, sd, name_="checkpoint", verbose=True):
         t[:] = math.log(s_ops)
         t[0] = math.log(s_val)
         sd = {**sd, "log_sigma_micro": t}
-        touched = list(touched) + ["log_sigma_micro (reconstruido del cfg)"]
+        touched = list(touched) + ["log_sigma_micro (rebuilt from cfg)"]
     ok = {k: v for k, v in sd.items() if k in act and act[k].shape == v.shape}
-    azar = [k for k in act if k not in ok]
+    random_ = [k for k in act if k not in ok]
     net.load_state_dict({**act, **ok})
     if verbose:
         if touched:
-            print(f"{name_}: migrados a {NUEVO} entradas -> {', '.join(touched)}",
+            print(f"{name_}: migrated to {NEW_WIDTH} inputs -> {', '.join(touched)}",
                   flush=True)
-        if azar:
-            print(f"AVISO {name_}: {len(azar)} tensores NO cargados, quedan AL "
-                  f"AZAR -> {', '.join(azar)}", flush=True)
+        if random_:
+            print(f"WARNING {name_}: {len(random_)} tensors NOT loaded, left "
+                  f"RANDOM -> {', '.join(random_)}", flush=True)
         else:
-            print(f"{name_}: {len(ok)}/{len(act)} tensores, carga COMPLETA",
+            print(f"{name_}: {len(ok)}/{len(act)} tensors, load COMPLETE",
                   flush=True)
-    return len(ok), len(act), azar
+    return len(ok), len(act), random_

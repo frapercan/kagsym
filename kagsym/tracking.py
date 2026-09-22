@@ -1,19 +1,20 @@
-"""Registro de experimentos con MLflow, opcional y sin acoplar.
+"""Experiment tracking with MLflow: optional and uncoupled.
 
-Regla de diseno: el harness tiene que funcionar igual sin MLflow instalado. Si
-falta el paquete, o se desactiva con KAGWORLD_MLFLOW=0, todo esto degrada a
-no-ops silenciosos. Nada de `import mlflow` en el resto del codigo.
+Design rule: the harness must work exactly the same without MLflow installed.
+If the package is missing, or tracking is disabled with KAGWORLD_MLFLOW=0,
+everything here degrades to silent no-ops. No `import mlflow` anywhere else in
+the codebase.
 
-Uso::
+Usage::
 
     with Run("ladder-v1", params={"steps": 3000}) as run:
         run.log_metrics({"loss": 0.1}, step=100)
-        run.log_curve("opp_money_res", valores)     # una serie por horizonte
+        run.log_curve("opp_money_res", values)     # one series per horizon
         run.log_artifact("runs/wm.pt")
 
-Por defecto guarda en `data/mlflow.db` (sin servidor). Para verlo:
+By default it writes to `data/mlflow.db` (no server). To view it:
 
-    .venv312/bin/mlflow ui --backend-store-uri sqlite:///data/mlflow.db
+    mlflow ui --backend-store-uri sqlite:///data/mlflow.db
 """
 from __future__ import annotations
 
@@ -21,9 +22,9 @@ import os
 from typing import Any
 
 DEFAULT_EXPERIMENT = "kaggriculture-world-model"
-# El backend de ficheros ('./mlruns') esta en modo mantenimiento y MLflow lanza
-# excepcion al usarlo. SQLite ademas encaja con el resto del proyecto, que ya
-# lleva su propia BD.
+# The file backend ('./mlruns') is in maintenance mode and MLflow raises when
+# it is used. SQLite also fits the rest of the project, which already carries
+# its own database.
 DEFAULT_URI = "sqlite:///data/mlflow.db"
 DEFAULT_ARTIFACTS = "./data/mlartifacts"
 
@@ -39,7 +40,7 @@ def available() -> bool:
 
 
 def _flatten(d: dict, prefix: str = "") -> dict:
-    """MLflow no admite valores anidados; se aplanan con puntos."""
+    """MLflow does not accept nested values; they are flattened with dots."""
     out = {}
     for k, v in d.items():
         key = f"{prefix}{k}"
@@ -98,7 +99,7 @@ class Run:
     def __exit__(self, exc_type, exc, tb) -> bool:
         if self._mlflow is not None:
             if exc_type is not None:
-                self._mlflow.set_tag("estado", f"fallo: {exc_type.__name__}")
+                self._mlflow.set_tag("status", f"failed: {exc_type.__name__}")
             self._mlflow.end_run()
         return False
 
@@ -109,24 +110,24 @@ class Run:
         try:
             self._mlflow.log_params(_flatten(params))
         except Exception as e:
-            print(f"[mlflow] no se pudieron registrar params: {e}")
+            print(f"[mlflow] could not log params: {e}")
 
     def log_metrics(self, metrics: dict, step: int | None = None) -> None:
         if self._mlflow is None:
             return
         clean = {k: float(v) for k, v in metrics.items()
-                 if isinstance(v, (int, float)) and v == v}   # descarta NaN
+                 if isinstance(v, (int, float)) and v == v}   # drops NaN
         if clean:
             try:
                 self._mlflow.log_metrics(clean, step=step)
             except Exception as e:
-                print(f"[mlflow] no se pudieron registrar metricas: {e}")
+                print(f"[mlflow] could not log metrics: {e}")
 
     def log_curve(self, name: str, values, offset: int = 1) -> None:
-        """Serie indexada (p.ej. error por horizonte), una metrica por punto.
+        """Indexed series (e.g. error by horizon), one metric per point.
 
-        MLflow la dibuja como curva, que es justo como hay que leer el error de
-        rollout: lo que importa es la forma, no el valor final.
+        MLflow draws it as a curve, which is exactly how rollout error should
+        be read: what matters is the shape, not the final value.
         """
         if self._mlflow is None:
             return
@@ -139,7 +140,7 @@ class Run:
         try:
             self._mlflow.log_artifact(path, artifact_path)
         except Exception as e:
-            print(f"[mlflow] no se pudo subir {path}: {e}")
+            print(f"[mlflow] could not upload {path}: {e}")
 
     def log_text(self, text: str, filename: str) -> None:
         if self._mlflow is None:
@@ -147,7 +148,7 @@ class Run:
         try:
             self._mlflow.log_text(text, filename)
         except Exception as e:
-            print(f"[mlflow] no se pudo subir {filename}: {e}")
+            print(f"[mlflow] could not upload {filename}: {e}")
 
     def set_tags(self, tags: dict) -> None:
         if self._mlflow is None:
@@ -155,24 +156,24 @@ class Run:
         try:
             self._mlflow.set_tags({k: str(v) for k, v in tags.items()})
         except Exception as e:
-            print(f"[mlflow] no se pudieron poner tags: {e}")
+            print(f"[mlflow] could not set tags: {e}")
 
 
 def log_horizon(run: Run, metrics: dict, prefix: str = "") -> None:
-    """Registra una evaluacion a horizonte completa: curvas + resumen final."""
+    """Log a full horizon evaluation: curves plus a final summary."""
     keys = [k for k in ("me_sym", "me_res", "opp_sym", "opp_res", "inv_sym", "inv_res",
                         "money_sym", "money_res") if k in metrics]
     for k in keys:
         run.log_curve(f"{prefix}{k}", metrics[k])
     H = metrics.get("horizon", 0)
     final = {}
-    for a, b, label in (("me_sym", "me_res", "mi_dinero"),
+    for a, b, label in (("me_sym", "me_res", "my_money"),
                         ("opp_sym", "opp_res", "rival"),
-                        ("inv_sym", "inv_res", "inventario"),
-                        ("money_sym", "money_res", "dinero")):
+                        ("inv_sym", "inv_res", "inventory"),
+                        ("money_sym", "money_res", "money")):
         if a in metrics and b in metrics:
             sym, res = metrics[a][-1], metrics[b][-1]
-            final[f"{prefix}h{H}_{label}_simb"] = sym
+            final[f"{prefix}h{H}_{label}_symbolic"] = sym
             final[f"{prefix}h{H}_{label}_res"] = res
-            final[f"{prefix}h{H}_{label}_mejora_pct"] = 100 * (1 - res / max(1e-9, sym))
+            final[f"{prefix}h{H}_{label}_gain_pct"] = 100 * (1 - res / max(1e-9, sym))
     run.log_metrics(final)
