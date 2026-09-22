@@ -85,10 +85,10 @@ def marginal_prices(obs, product: str, k: int) -> list[float]:
 def future_price(obs, product: str, horizon: int, opp_flow: float = 0.0) -> float:
     """Precio previsto dentro de `horizon` turnos.
 
-    El inventario se mueve por dos cosas conocidas -lo que drena el pueblo y lo
-    que vierte el rival- y la segunda la predice el world model. Sin modelo se
-    supone flujo cero, que es conservador: infravalora la caida futura y por
-    tanto empuja a vender antes.
+    Inventory moves for two known reasons -what the town drains and what the
+    opponent dumps- and the second is predicted by the world model. Without a
+    model, zero flow is assumed, which is conservative: it underestimates the
+    future drop and therefore pushes towards selling earlier.
     """
     inv = obs["market"]["inventory"][product]
     futuro = inv + (opp_flow - drain_rate(obs, product)) * horizon
@@ -573,8 +573,8 @@ def animal_orders(obs, max_per_turn: int = None, macro=None) -> list:
 
     Medido: el experto 2945 llega a 17 animales y nosotros a 0. Cada animal
     genera ademas 4 tareas diarias (comer, cuidar, recoger fertilizante,
-    cosechar), asi que es a la vez ingreso y trabajo con el que justificar mas
-    peones -nuestras unidades pasan el 22.3% de los turnos en PASS por falta de
+    harvest), so it is both income and work with which to justify more hands
+    -our units spend 22.3% of turns on PASS for lack of
     tareas, frente al 7.1% del experto-.
     """
     max_per_turn = (MAX_ANIMALS_PER_TURN if max_per_turn is None
@@ -656,8 +656,9 @@ def animal_orders(obs, max_per_turn: int = None, macro=None) -> list:
 def feed_orders(obs, stock_days: int = None) -> list:
     """Buy wheat to feed. Without this the animals starve.
 
-    `FEED` consume 1 trigo por animal y dia, y a los dos dias sin comer el
-    animal se escapa. Pero el trigo tiene que EXISTIR en el cobertizo, y si la
+    `FEED` consumes 1 wheat per animal per day, and after two days without
+    eating the animal escapes. But the wheat has to EXIST in the shed, and if
+    the
     granja cultiva otra cosa nunca aparece.
 
     Medido antes de existir esta funcion: forzando `macro.animales` se compraban

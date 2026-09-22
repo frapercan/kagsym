@@ -84,7 +84,7 @@ class WorldConfig:
     # not global context. "1x1" = no context, as it used to be.
     ctx_micro: str = "3x3"
     conv: str = "denso"
-    nucleo: int = 3          # tamano de la 3x3 separable; 7 amplia el campo receptivo
+    nucleo: int = 3          # kernel of the separable block; 7 widens the receptive field
     lr: float = 3e-4
     peso_aux: float = 0.1
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")

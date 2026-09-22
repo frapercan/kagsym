@@ -204,7 +204,7 @@ class ParallelEnv:
         self.por_proc = [max(1, int(n_envs * w / total)) for w in peso]
         sobran = n_envs - sum(self.por_proc)
         i = 0
-        while sobran != 0:                     # reparte el resto por peso
+        while sobran != 0:                     # hand out the remainder by weight
             k = max(range(self.n_procs), key=lambda j: peso[j] / self.por_proc[j])
             if sobran > 0:
                 self.por_proc[k] += 1; sobran -= 1

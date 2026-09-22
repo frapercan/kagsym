@@ -238,7 +238,7 @@ class DayEnv:
         # worker 1's range at episode 1,000 and several processes played THE
         # SAME episode: the batch silently stopped being independent.
         # Partitioning by residue modulo the total number of envs, two
-        # entornos distintos no pueden coincidir jamas.
+        # different envs can never coincide.
         s = self.seed0 + self.ep * self.n_total + self.idx0 + i
         self.envs[i] = FastEnv(configuration={"episodeSteps": self.steps}, seed=s)
         self.obs[i] = self.envs[i].reset()

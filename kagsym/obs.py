@@ -93,7 +93,7 @@ N_ACTION_GLOBAL = spec.N_MARKET_SLOTS
 # Normalisation scales (chosen from the typical range, not from dataset
 # statistics: that way the encoder does not depend on the data it was trained
 # on).
-INV_SCALE = 500.0        # el inventario se mueve ~cientos alrededor de I0
+INV_SCALE = 500.0        # inventory moves by ~hundreds around I0
 MONEY_SCALE = 3000.0
 YIELD_SCALE = 6.0
 # The targets (flow, spending) are emitted in PHYSICAL UNITS: product units
