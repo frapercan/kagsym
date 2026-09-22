@@ -1,18 +1,18 @@
-"""Rollouts en varios procesos. El unico cambio de orden de magnitud que queda.
+"""Rollouts across several processes. The last order-of-magnitude change.
 
-Medido antes de esto:
+Measured before this:
 
-    motor solo .................... 38 567 pasos/s
-    motor + ejecutor ..............  3 264 pasos/s
-    bucle de entrenamiento e2e ....    768 pasos/s   <- un solo proceso, 12 cores
+    engine alone .................. 38,567 steps/s
+    engine + executor .............  3,264 steps/s
+    end-to-end training loop ......    768 steps/s   <- one process, 12 cores
 
-El reparto encaja bien porque la decision se toma UNA VEZ AL DIA: hay 30
-sincronizaciones por episodio, no 720. El proceso principal hace un unico
-forward por lote en GPU al empezar el dia, reparte los vectores, y los
-trabajadores ejecutan sus 24 turnos en paralelo sin hablar con nadie.
+The split works well because the decision is made ONCE PER DAY: there are 30
+synchronisations per episode, not 720. The main process does a single batched
+forward on GPU at the start of the day, distributes the vectors, and the
+workers run their 24 turns in parallel without talking to anyone.
 
-Los trabajadores son PERSISTENTES y mantienen sus propios entornos: mandar el
-estado del motor por la tuberia en cada paso costaria mas que simularlo.
+Workers are PERSISTENT and keep their own environments: sending the engine
+state down the pipe on every step would cost more than simulating it.
 """
 from __future__ import annotations
 
@@ -26,11 +26,11 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
     import os
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    # UN HILO POR TRABAJADOR. torch arranca con tantos hilos como cores, asi que
-    # 10 trabajadores pedian 120 hilos sobre 12 nucleos y se pasaban el tiempo
-    # peleandose. Medido: el auto-juego costaba 230 s/update cuando el mismo
-    # numero de entornos contra v48 -que tambien es un agente completo- costaba
-    # 12 s. La diferencia no era simular dos agentes, era la contencion.
+    # ONE THREAD PER WORKER. torch starts with as many threads as cores, so 10
+    # workers asked for 120 threads on 12 cores and spent their time fighting
+    # each other. Measured: self-play cost 230 s/update when the same number of
+    # environments against a public agent -also a full agent- cost 12 s. The
+    # difference was not simulating two agents, it was contention.
     try:
         import torch
         torch.set_num_threads(1)
@@ -38,12 +38,13 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
         pass
     from kagsym.symbolic import tasks as _T
     if hours:
-        # Igual que TOPE_PEONES: global por proceso, no llega desde el padre.
+        # Like HAND_CAP: a per-process global, it does not arrive from the parent.
         from . import spec as _S
         _S.set_turns_per_day(hours)
     _T.MICRO_MODE = mode
-    # El tope vive en un global de modulo y los trabajadores son PROCESOS
-    # aparte: ponerlo en el padre no llega aqui. Hay que pasarlo explicito.
+    # The cap lives in a module global and workers are separate PROCESSES:
+    # setting it in the parent does not reach here. It must be passed
+    # explicitly.
     if tope_peones is not None:
         from . import macro as _M
         _M.HAND_CAP = tope_peones
@@ -64,9 +65,9 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
                        env.mean_useful(), env.rival_stats(),
                        env.mean_unsold(), env.masks()))
         elif cmd == "autojuego":
-            # Pesos del rival: una instantanea de nuestra propia politica. Se
-            # mandan por la tuberia cada vez que se congela una version nueva,
-            # no cada paso: el coste es despreciable frente a simular.
+            # Opponent weights: a snapshot of our own policy. They are sent
+            # down the pipe each time a new version is frozen, not every step:
+            # the cost is negligible against simulating.
             import io
             import torch
             from kagsym.symbolic.executor import Agent as _Ag
@@ -80,28 +81,29 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
             _net.eval()
 
             def factory():
-                # Decide UNA VEZ AL DIA, igual que nosotros. Llamar a la red
-                # cada turno es 24x mas caro y ademas ASIMETRICO: el rival
-                # jugaria con otra frecuencia de decision y no seria auto-juego.
+                # Decides ONCE PER DAY, exactly as we do. Calling the network
+                # every turn is 24x more expensive and also ASYMMETRIC: the
+                # opponent would play at a different decision frequency and it
+                # would not be self-play.
                 ag = _Ag(episode_steps=steps, macro=_Mac.from_vector([0.5] * N_MACRO))
-                # MISMA exploracion que nosotros. Con el rival determinista
-                # (eps=0) el emparejamiento es "nosotros con ruido" contra
-                # "nosotros sin ruido", y perdemos por el handicap, no por ser
-                # peores: medido, el ruido cuesta 40 972 -> 18 967 $ con el
-                # mismo vector. Eso sesgaba la senal de victoria, que es
-                # justamente lo unico que el auto-juego venia a aportar.
+                # SAME exploration as ours. With a deterministic opponent
+                # (eps=0) the matchup is "us with noise" against "us without
+                # noise", and we lose to the handicap, not to being worse:
+                # measured, the noise costs $40,972 -> $18,967 with the same
+                # vector. That biased the win signal, which is precisely the
+                # only thing self-play was there to provide.
                 eps_r = torch.randn(1, N_MACRO)
                 _nc = 1 + getattr(_net, "n_ops", 0)
                 eps_u = torch.randn(10, 10) if _nc == 1 else torch.randn(_nc, 10, 10)
-                # UN SIGMA POR CANAL, igual que el entrenador. Antes aqui se
-                # usaba 0.15 plano para los 16 canales, y el 0.15 esta
-                # calibrado para el canal de VALOR en dolares-symlog: aplicado
-                # a los logits de verbo son CINCO veces el sigma que usamos
-                # nosotros (0.03), y con ese ruido el verbo es 96 % ruido -lo
-                # dice el propio docstring de `sigma_ops`-. O sea que el rival
-                # congelado no era una copia nuestra: eramos nosotros con la
-                # cabeza de verbos lobotomizada. Medido: marcaba 1.413 $ contra
-                # los 2.048 de la politica de la que era copia.
+                # ONE SIGMA PER CHANNEL, exactly as the trainer does. This
+                # used to use a flat 0.15 for all channels, and 0.15 is
+                # calibrated for the VALUE channel in symlog dollars: applied
+                # to verb logits it is FIVE times the sigma we use (0.03), and
+                # at that noise level the verb is 96% noise -as the
+                # `sigma_verb` docstring says-. In other words the frozen
+                # opponent was not a copy of us: it was us with the verb head
+                # lobotomised. Measured: it scored $1,413 against the $2,048 of
+                # the policy it was a copy of.
                 _sg = float(cfgd.get("sigma_micro", 0.15))
                 if _nc > 1:
                     _sg = torch.full((_nc, 1, 1),
@@ -110,12 +112,12 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
                 estado = {"dia": None, "mapa": None}
 
                 def jugar(ob):
-                    # El DIA lo da el motor en la observacion. Antes esto era
-                    # `int(ob["step"]) // 24` con el 24 cableado: en cualquier
-                    # celda que no fuese de 24 turnos/dia el rival congelado
-                    # cambiaba de decision cada DOS dias de juego y jugaba
-                    # mutilado. Medido en 12h x 10d: una copia exacta de una
-                    # politica que marca 2.089 $ sacaba 1.348.
+                    # The DAY comes from the engine in the observation. This
+                    # used to be `int(ob["step"]) // 24` with 24 hardcoded: in
+                    # any cell that was not 24 turns/day the frozen opponent
+                    # changed its decision every TWO game days and played
+                    # crippled. Measured at 12h x 10d: an exact copy of a
+                    # policy scoring $2,089 made $1,348.
                     d_ = int(ob["day"])
                     if estado["dia"] != d_:
                         g, b = _O.encode_obs(ob)
@@ -144,11 +146,10 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
             env.set_rival_macro(datos)
             conn.send(True)
         elif cmd == "olvida_resultados":
-            # Vacia el historial de victorias. Hace falta al PROMOCIONAR el
-            # rival: `win_rate` promedia los ultimos 60 episodios, que son
-            # todos victorias contra el rival VIEJO, asi que sin esto el
-            # umbral se vuelve a cruzar en la comprobacion siguiente y
-            # promociona en cascada.
+            # Clears the win history. Needed when PROMOTING the opponent:
+            # `win_rate` averages the last 60 episodes, which are all wins
+            # against the OLD opponent, so without this the threshold is
+            # crossed again on the next check and promotion cascades.
             env.resultados.clear()
             conn.send(True)
         elif cmd == "nivel":
@@ -160,45 +161,45 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
 
 
 class ParallelEnv:
-    """Misma interfaz que `EntornoDia`, repartida entre procesos."""
+    """The same interface as `DayEnv`, spread across processes."""
 
     def __init__(self, n_envs, n_procs=8, steps=720, seed0=1, macro=None, level=2,
                  mode="residuo", tope_peones=None, hours=None):
         self.n_procs = min(n_procs, n_envs)
         self.n = n_envs
-        # HORIZONTE POR TRABAJADOR. `pasos` puede ser una lista: cada proceso
-        # juega partidas de una longitud distinta y el lote de un update mezcla
-        # los tres. Es posible porque `spec.EPISODE_STEPS` es global POR
-        # PROCESO, y los trabajadores son procesos aparte.
+        # HORIZON PER WORKER. `steps` may be a list: each process plays
+        # episodes of a different length and one update's batch mixes them.
+        # This is possible because `spec.EPISODE_STEPS` is a PER-PROCESS
+        # global, and workers are separate processes.
         #
-        # Por que importa que sea MEZCLADO y no secuencial: en secuencia la
-        # politica entrena solo a 5 dias, luego solo a 8... y olvida, porque
-        # nada en el gradiente le pide recordar. Mezclado, un unico gradiente
-        # tiene que servir para los tres horizontes a la vez, y la señal de
-        # horizonte en la observacion (obs.py, bloque "time") le permite
-        # condicionar en vez de promediar.
-        # `horas` y `tope_peones` admiten lista por el mismo motivo: `spec` y
-        # `_M.TOPE_PEONES` son globales POR PROCESO. Asi un lote puede mezclar
-        # rejilla entera -horas, dias y tope a la vez-, que es lo que las dos
-        # dimensiones absolutas de la observacion (EPISODE_STEPS/720 y
-        # tope/HANDS_REF) permiten condicionar en vez de promediar.
+        # Why MIXED matters and sequential does not: in sequence the policy
+        # trains only at 5 days, then only at 8... and forgets, because nothing
+        # in the gradient asks it to remember. Mixed, a single gradient has to
+        # serve all three horizons at once, and the horizon signal in the
+        # observation (obs.py, "time" block) lets it condition instead of
+        # averaging.
+        # `hours` and `hand_cap` accept lists for the same reason: `spec` and
+        # `_M.HAND_CAP` are PER-PROCESS globals. So a batch can mix an entire
+        # grid -hours, days and cap at once- which is what the two absolute
+        # dimensions of the observation (EPISODE_STEPS/720 and cap/HANDS_REF)
+        # let it condition on instead of average over.
         def _split_envs(v):
             if isinstance(v, (list, tuple)):
                 return [v[i % len(v)] for i in range(self.n_procs)]
             return [v] * self.n_procs
 
-        self.pasos_proc = [int(x) for x in _split_envs(steps)]
-        self.horas_proc = _split_envs(hours)
+        self.steps_proc = [int(x) for x in _split_envs(steps)]
+        self.hours_proc = _split_envs(hours)
         self.tope_proc = _split_envs(tope_peones)
 
-        # REPARTO POR COSTE, no por cabeza. Con una rejilla heterogenea un
-        # peldano de 720 turnos cuesta 30 veces uno de 24, y repartir los
-        # episodios a partes iguales deja a diez trabajadores esperando al
-        # lento en CADA update. Se dan episodios en proporcion inversa a su
-        # longitud, asi que todos tardan mas o menos lo mismo y el lote sigue
-        # sumando `n_envs`. Minimo uno por trabajador: un peldano sin episodios
-        # no aporta gradiente y la red dejaria de ver esa escala.
-        peso = [1.0 / p for p in self.pasos_proc]
+        # SPLIT BY COST, not per head. With a heterogeneous grid a 720-turn
+        # rung costs 30 times a 24-turn one, and splitting episodes evenly
+        # leaves ten workers waiting on the slow one on EVERY update. Episodes
+        # are handed out in inverse proportion to their length, so everyone
+        # takes roughly the same time and the batch still sums to `n_envs`.
+        # Minimum one per worker: a rung with no episodes contributes no
+        # gradient and the network would stop seeing that scale.
+        peso = [1.0 / p for p in self.steps_proc]
         total = sum(peso)
         self.por_proc = [max(1, int(n_envs * w / total)) for w in peso]
         sobran = n_envs - sum(self.por_proc)
@@ -224,14 +225,14 @@ class ParallelEnv:
         vec = list(macro.to_vector()) if hasattr(macro, "to_vector") else list(macro)
         for k, m in enumerate(self.por_proc):
             padre, hijo = ctx.Pipe()
-            # Semillas DISJUNTAS por trabajador: si se solapan, varios procesos
-            # juegan la misma partida y el lote deja de ser independiente.
+            # DISJOINT seeds per worker: if they overlap, several processes
+            # play the same episode and the batch stops being independent.
             p = ctx.Process(target=_worker,
-                            args=(hijo, m, self.pasos_proc[k], seed0, vec,
+                            args=(hijo, m, self.steps_proc[k], seed0, vec,
                                   (level[k % len(level)]
                                    if isinstance(level, (list, tuple)) else level),
                                   mode, self.tope_proc[k],
-                                  self.horas_proc[k], off, n_envs),
+                                  self.hours_proc[k], off, n_envs),
                             daemon=True)
             p.start()
             self.conns.append(padre)
@@ -268,51 +269,51 @@ class ParallelEnv:
         self._masks = np.concatenate(masks_) if masks_ else None
         return np.concatenate(rec), np.concatenate(fin)
 
-    def _etiqueta(self, k):
-        """Nombre del peldano del trabajador k: "8h x 13d".
+    def _rung_label(self, k):
+        """Name of worker k's rung: "8h x 13d".
 
-        Antes se etiquetaba con `pasos // 24`, que da por hecho 24 horas al
-        dia. Con la rejilla las horas cambian por trabajador, asi que esa
-        etiqueta juntaba peldanos distintos bajo el mismo nombre: `5h x 21d` y
-        `8h x 13d` son 105 y 104 pasos, o sea "4 dias" los dos.
+        It used to be labelled with `steps // 24`, which assumes 24 hours per
+        day. With a grid the hours vary per worker, so that label merged
+        different rungs under the same name: `5h x 21d` and `8h x 13d` are 105
+        and 104 steps, i.e. "4 days" for both.
         """
-        h = self.horas_proc[k] or 24
-        return f"{h}h x {self.pasos_proc[k] // h}d"
+        h = self.hours_proc[k] or 24
+        return f"{h}h x {self.steps_proc[k] // h}d"
 
     def money_by_horizon(self):
-        """{dias: dinero medio} en vez de un solo promedio.
+        """{rung: mean money} instead of a single average.
 
-        Promediar dinero sobre horizontes distintos NO significa nada: una
-        partida de 15 dias gana menos que una de 30 por construccion, asi que
-        la media sube o baja segun que mezcla de episodios haya cerrado, no
-        segun lo bien que juegue la politica.
+        Averaging money over different horizons means NOTHING: a 15-day game
+        earns less than a 30-day one by construction, so the mean rises or
+        falls with whichever mix of episodes happened to close, not with how
+        well the policy plays.
         """
         out = {}
-        for k, steps in enumerate(self.pasos_proc):
+        for k, steps in enumerate(self.steps_proc):
             d = self._din[k]
             if d is None or (isinstance(d, float) and d != d):
                 continue
-            out.setdefault(self._etiqueta(k), []).append(float(d))
+            out.setdefault(self._rung_label(k), []).append(float(d))
         return {k: sum(v) / len(v) for k, v in out.items() if v}
 
     def rival_by_horizon(self):
-        """{dias: dinero medio del RIVAL} desglosado, no promediado."""
+        """{rung: mean OPPONENT money}, broken down, not averaged."""
         out = {}
-        for k, steps in enumerate(self.pasos_proc):
+        for k, steps in enumerate(self.steps_proc):
             r = self._riv[k]
             if not isinstance(r, dict):
                 continue
             d = r.get("dinero")
             if d is None or d != d:
                 continue
-            out.setdefault(self._etiqueta(k), []).append(float(d))
+            out.setdefault(self._rung_label(k), []).append(float(d))
         return {k: sum(v) / len(v) for k, v in out.items() if v}
 
     def masks(self):
         return getattr(self, "_masks", None)
 
     def set_selfplay(self, net):
-        """Congela la politica actual como rival en todos los trabajadores."""
+        """Freeze the current policy as the opponent in every worker."""
         sd = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
         cfgd = dict(vars(net.cfg))
         for c in self.conns:
@@ -321,19 +322,20 @@ class ParallelEnv:
             c.recv()
 
     def set_selfplay_on(self, idxs, net):
-        """Congela la politica como rival SOLO en los trabajadores dados.
+        """Freeze the policy as the opponent ONLY in the given workers.
 
-        `pon_autojuego` es global: sustituye el rival de los once peldanos a la
-        vez, asi que no sirve para el relevo POR MERITO, que es por peldano.
-        Y sin una version por peldano el relevo tenia que caer en
-        `pon_rival_macro`, que manda un VECTOR: nuestro ejecutor con la
-        heuristica de tablero y sin cabeza micro.
+        `set_selfplay` is global: it replaces the opponent on all rungs at
+        once, so it cannot serve the MERIT-BASED relief, which is per rung.
+        And without a per-rung version the relief had to fall back on
+        `set_rival_macro`, which sends a VECTOR: our executor with the
+        hand-written board heuristic and no micro head.
 
-        Eso no es auto-juego. Medido con el MISMO vector macro en los dos
-        lados, 5 semillas de 24h x 30d: la red hace 64.762 $ y el rival de
-        vector 29.924, o sea +116 % y 5 de 5. El rival valia la mitad que
-        nosotros por construccion, y por eso el relevo lo sustituia una y otra
-        vez -105 veces en la run de la noche- sin que dejase de perder.
+        That is not self-play. Measured with the SAME macro vector on both
+        sides, 5 seeds of 24h x 30d: the network makes $64,762 and the
+        vector-only opponent $29,924, i.e. +116% and 5 of 5. The opponent was
+        worth half of us by construction, which is why the relief replaced it
+        again and again -105 times in one overnight run- without it ever
+        ceasing to lose.
         """
         sd = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
         cfgd = dict(vars(net.cfg))
@@ -345,14 +347,14 @@ class ParallelEnv:
                 self.conns[k].recv()
 
     def set_rival_cap(self, cap):
-        """Rival = v48 con ese tope de peones (None = sin tope).
+        """Opponent = a public agent with that hand cap (None = uncapped).
 
-        Se fija explicito en vez de por `nivel`, porque la escalera de ligas
-        muestrea topes (3/5/8/11) que no coinciden con los peldanos de ESCALERA.
+        Set explicitly rather than via `level`, because the league ladder
+        samples caps (3/5/8/11) that do not line up with the LADDER rungs.
 
-        Admite LISTA, un tope por trabajador, igual que `horas` y `pasos`: en
-        una rejilla el tope del rival es el tercer eje del peldano y tiene que
-        variar con el. Con un solo valor se aplica a todos, como antes.
+        Accepts a LIST, one cap per worker, like `hours` and `steps`: in a grid
+        the opponent cap is the rung's third axis and has to vary with it. A
+        single value applies to all, as before.
         """
         vals = (list(cap) if isinstance(cap, (list, tuple))
                 else [cap] * self.n_procs)
@@ -362,24 +364,23 @@ class ParallelEnv:
             c.recv()
 
     def set_rival_macro(self, vector):
-        """Propaga el rival-experto a los trabajadores (procesos aparte).
+        """Propagate the expert opponent to the workers (separate processes).
 
-        Admite LISTA, un vector por trabajador, y `None` en una posicion deja
-        ese trabajador con el agente publico.
+        Accepts a LIST, one vector per worker; `None` in a position leaves that
+        worker on the public agent.
 
-        Por que hace falta por trabajador. Medido el 2026-09-21: `v48` hace
-        60.426 $ a 24h x 30d y practicamente CERO a cualquier otra escala
-        (13h x 21d: 0 $; 8h x 13d: 0 $; 6h x 6d: 7 $). Es un reproductor de
-        cinta indexado por paso, construida para 719 pasos a 24 horas al dia;
-        al cambiar horas o dias la cinta se desincroniza y el agente compra
-        cuando tocaba cosechar. O sea que en toda la escalera reducida NO HAY
-        adversario: el termino de victoria es gratis y el mercado compartido no
-        lo vacia nadie.
+        Why it has to be per worker. Measured: `v48` makes $60,426 at 24h x 30d
+        and essentially ZERO at any other scale (13h x 21d: $0; 8h x 13d: $0;
+        6h x 6d: $7). It is a tape player indexed by step, built for 719 steps
+        at 24 hours per day; change the hours or the days and the tape
+        desynchronises, so the agent buys when it should be harvesting. In
+        other words, across the whole reduced ladder there IS NO opponent: the
+        win term is free and nobody drains the shared market.
 
-        Con un vector por peldano, el rival de los peldanos reducidos pasa a
-        ser NUESTRO ejecutor con el macro que el CEM encontro para esa escala
-        -que si juega ahi, y llega al techo medido- mientras el peldano de
-        competicion conserva a v48.
+        With one vector per rung, the opponent on the reduced rungs becomes OUR
+        executor with the macro CEM found for that scale -which does play
+        there, and reaches the measured ceiling- while the competition rung
+        keeps the public agent.
         """
         if isinstance(vector, (list, tuple)) and vector and (
                 vector[0] is None or hasattr(vector[0], "__len__")):
@@ -393,13 +394,14 @@ class ParallelEnv:
             c.recv()
 
     def raise_level(self, level):
-        """Admite LISTA, un nivel por trabajador.
+        """Accepts a LIST, one level per worker.
 
-        Por que hace falta: el tope de peones gradua la DIFICULTAD del rival,
-        pero los cuatro peldanos siguen siendo el mismo agente. Y los publicos
-        no se parecen -medido: el que mas nos estorba es v16-rc5 (nos deja
-        36.139 $) aunque v48 puntue mas (153.720)-. Entrenar contra un solo
-        estilo arriesga aprender a batir a ESE, no a jugar.
+        Why it is needed: the hand cap grades the opponent's DIFFICULTY, but
+        the rungs would still all be the same agent. And the public agents do
+        not resemble each other -measured: the one that hurts us most is
+        v16-rc5 (it leaves us $36,139) even though v48 scores higher
+        ($153,720)-. Training against a single style risks learning to beat
+        THAT one rather than learning to play.
         """
         vals = (list(level) if isinstance(level, (list, tuple))
                 else [level] * self.n_procs)
@@ -413,9 +415,11 @@ class ParallelEnv:
         return float(np.mean(v)) if v else float("nan")
 
     def forget_results(self):
-        """Vacia el historial de victorias en todos los trabajadores y en el
-        agregado del padre. Lo usa la promocion de rival: contra el rival nuevo
-        la tasa tiene que medirse desde cero, no arrastrar la del anterior."""
+        """Clear the win history in every worker and in the parent aggregate.
+
+        Used by opponent promotion: against a new opponent the rate has to be
+        measured from scratch, not carried over from the previous one.
+        """
         for c in self.conns:
             c.send(("olvida_resultados", None))
         for c in self.conns:
@@ -423,9 +427,12 @@ class ParallelEnv:
         self._wr = [float("nan")] * self.n_procs
 
     def rival_per_rung(self):
-        """Dinero del rival en CADA peldano. El dato ya se recibia por
-        trabajador (`_riv[k]`) y no se exponia: sin el no se puede comprobar
-        que la escalera este graduada ni que cada peldano aporte algo."""
+        """Opponent money on EACH rung.
+
+        The data already arrived per worker (`_riv[k]`) and was not exposed:
+        without it there is no way to check that the ladder is graded or that
+        each rung contributes anything.
+        """
         out = []
         for d in self._riv:
             try:
@@ -437,10 +444,10 @@ class ParallelEnv:
     def win_rate_per_rung(self):
         """Tasa de victoria de CADA trabajador, o sea de cada peldano.
 
-        Cada trabajador juega un peldano distinto de la escalera, asi que su
-        `_wr` es exactamente lo exprimido que esta ese peldano. Con la media
-        global esto no se ve: un peldano ganado al 100 % y otro perdido al
-        100 % dan lo mismo que dos al 50 %, y son situaciones opuestas.
+        Each worker plays a different rung of the ladder, so its `_wr` is
+        exactly how exhausted that rung is. The global mean hides this: one
+        rung won 100% and another lost 100% average the same as two at 50%,
+        and those are opposite situations.
         """
         return list(self._wr)
 
