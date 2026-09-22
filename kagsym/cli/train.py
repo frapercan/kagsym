@@ -1339,6 +1339,24 @@ def main():
                         _p4 = _pool_p[_assign[_k4]]
                         _pool_p[_assign[_k4]] = (0.7 * _p4 + 0.3 * _v4
                                                if _p4 is not None else _v4)
+                # AND THE ESTIMATE OF AN UNPLAYED RUNG DECAYS. Only the
+                # rungs that had a worker get their estimate updated, so a
+                # rung that drops to 0 workers keeps its last p FOREVER: its
+                # information stays at p(1-p) ~ 0 and it is never sampled
+                # again. Abandonment was permanent, and it was decided on
+                # almost no data -measured, by update 25 of a from-scratch run
+                # four of eleven rungs had been dropped for good, on a policy
+                # 25 updates old.
+                #
+                # Not looking at something does not make you sure of it. The
+                # estimate is pulled back toward the uninformed prior with the
+                # SAME weight used for real data, so a rung comes back into
+                # play after a few rounds of silence and its estimate is
+                # refreshed instead of frozen.
+                _played = set(_assign)
+                for _j5 in range(len(_pool_p)):
+                    if _j5 not in _played and _pool_p[_j5] is not None:
+                        _pool_p[_j5] = 0.7 * _pool_p[_j5] + 0.3 * 0.5
                 _info = [( (p4 * (1.0 - p4)) if p4 is not None else 0.25 )
                          for p4 in _pool_p]          # unmeasured -> p=0.5
                 # FIXED QUOTAS, outside the information split. `p(1-p)`
