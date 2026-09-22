@@ -22,13 +22,13 @@ def instrumenta(ckpt):
     from kagsym.macro import Macro, N_MACRO
     from kagsym.migrate_ckpt import load_strict
     from kagsym.nets import world as M
-    from kagsym.nets.world import AgenteE2E, MundoConfig
+    from kagsym.nets.world import E2EAgent, WorldConfig
     import kagsym.macro as _M
     d = torch.load(ckpt, map_location="cpu", weights_only=False)
     ops = bool((d.get("cfg") or {}).get("con_ops", False))
-    T.MODO_MICRO = "ops" if ops else "residuo"
-    spec.set_turns_per_day(H); spec.set_episode_steps(H * D); _M.TOPE_PEONES = None
-    net = AgenteE2E(MundoConfig(device="cpu", con_ops=ops))
+    T.MICRO_MODE = "ops" if ops else "residuo"
+    spec.set_turns_per_day(H); spec.set_episode_steps(H * D); _M.HAND_CAP = None
+    net = E2EAgent(WorldConfig(device="cpu", con_ops=ops))
     load_strict(net, d["sd"], ckpt); net.eval()
     HIST = torch.zeros(1, M.N_HIST)
     ven = [collections.Counter(), collections.Counter()]   # uds vendidas

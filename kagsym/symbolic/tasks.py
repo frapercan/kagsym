@@ -154,11 +154,11 @@ def _acceso_cobertizo():
 _ACCESO = None
 
 
-def _es_acceso_cobertizo(x: int, y: int) -> bool:
+def _is_shed_access(x: int, y: int) -> bool:
     return (x, y) in _acceso_cobertizo()
 
 
-def _tarea_cobertizo(obs, farm, ctx=None, macro=None):
+def _shed_task(obs, farm, ctx=None, macro=None):
     """Que sacar del cobertizo. Sin esto la cadena del animal no se cierra:
     se compra, cae en el cobertizo y se queda ahi para siempre.
 
@@ -211,7 +211,7 @@ def _tarea_cobertizo(obs, farm, ctx=None, macro=None):
                             if isinstance(t, dict) and t.get("kind") == "PLANT"
                             and t.get("fertilized_until_day", -1) < obs["day"])
         if fertilizables > 0:
-            n = min(fert, fertilizables, int(FERT_VIAJE))
+            n = min(fert, fertilizables, int(FERT_PER_TRIP))
             return (2.0 * unit_price(obs, "FERTILIZER"), ["PICKUP", "FERTILIZER", n])
 
     # 3) trigo para alimentar a los animales que aun no han comido
@@ -227,7 +227,7 @@ def _tarea_cobertizo(obs, farm, ctx=None, macro=None):
 REQUIERE = {"FEED": "WHEAT", "FERTILIZE": "FERTILIZER"}
 
 
-def _puede_soltar(inv) -> bool:
+def _can_drop(inv) -> bool:
     """DROP solo tiene sentido con algo encima."""
     return any(int(v) > 0 for v in (inv or {}).values())
 
@@ -349,8 +349,8 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
     if ctx is None:
         ctx = contexto_turno(obs, farm)
 
-    if _es_acceso_cobertizo(x, y):
-        t = _tarea_cobertizo(obs, farm, ctx, macro)
+    if _is_shed_access(x, y):
+        t = _shed_task(obs, farm, ctx, macro)
         if t is not None:
             return t
 
@@ -378,7 +378,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
     if kind == "WEED":
         crop = best_crop(obs, seeds_only=True, free_tiles=free_capacity)
         v = cycle_profit(obs, crop) / max(1, cycle_days(crop)) if crop else 1.0
-        return (v * VALOR_DIG, ["DIG"])    # fraccion expuesta, no fija
+        return (v * DIG_VALUE, ["DIG"])    # fraccion expuesta, no fija
 
     if kind == "PLANT":
         cd = spec.CROPS[tile["crop"]]
@@ -421,7 +421,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         # Mando de fertilizar: 0 lo apaga, y lo decide la busqueda.
         from ..macro import peso_fertilizar
         _pf = peso_fertilizar(macro) if macro is not None else 0.0
-        if _pf > 0.0 or MODO_MICRO == "directo":
+        if _pf > 0.0 or MICRO_MODE == "directo":
             # FERTILIZAR, DESPUES de regar. Estaba ANTES y hacia `return`, asi que
             # una planta que necesitaba las dos cosas se fertilizaba y el riego
             # nunca llegaba a evaluarse: moria esa noche. El sintoma era plantar
@@ -429,7 +429,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
             if (not cd["ongoing"] and tile.get("fertilized_until_day", -1) < day):
                 w0 = (cd["max_yield_day"] + 1) // 2
                 if w0 <= age + 1 <= cd["max_yield_day"] and tile["yield_units"] < cd["max_yield"]:
-                    dias_utiles = min(HORIZONTE_FERTILIZAR,
+                    dias_utiles = min(FERTILIZER_HORIZON,
                                       cd["max_yield_day"] - age, days_left(obs))
                     if dias_utiles > 0:
                         # VALOR MARGINAL, no bruto. El bonus anade +1 unidad por dia
@@ -440,7 +440,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
                         return (_pf * dias_utiles * price * _tasa_riego(farm), ["FERTILIZE"])
             elif cd["ongoing"] and tile.get("fertilized_until_day", -1) < day:
                 if age >= cd["first_yield_day"] - 1 and days_left(obs) > 1:
-                    return (_pf * min(HORIZONTE_FERTILIZAR, days_left(obs))
+                    return (_pf * min(FERTILIZER_HORIZON, days_left(obs))
                             * price * _tasa_riego(farm), ["FERTILIZE"])
 
         if maduro and (cd["ongoing"] or age >= cd["max_yield_day"]):
@@ -473,22 +473,22 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
     return None
 
 
-DESCUENTO_POR_PASO = 0.82   # un paso cuesta un turno: se descuenta el valor
+STEP_DISCOUNT = 0.82   # un paso cuesta un turno: se descuenta el valor
 # Dos mas que estaban a ojo. Auditoria del 2026-09-21: exponer 12 constantes
 # similares subio el techo de la celda de 939 a 1201 $ (+27,9 %), asi que
 # ninguna se da por buena sin haber entrado en una busqueda.
-VALOR_DIG = 0.9             # desbrozar, como fraccion del valor de plantar
+DIG_VALUE = 0.9             # desbrozar, como fraccion del valor de plantar
 # FORMA CON QUE EL MAPA DE LA RED ENTRA EN EL VALOR. `expm1` es exponencial, asi
 # que GANANCIA decide si el mapa SUGIERE o IMPONE, y TOPE donde se corta. Nadie
 # las busco nunca. Puede explicar por que el mapa saturaba con 4 parametros:
 # quiza no era que 4 bastaran, sino que la transformacion limita su efecto.
-GANANCIA_MAPA = 1.0   # cuanto pesa lo que emite la red (los tres modos)
-TOPE_MAPA = 20.0      # corte en `ops`/`directo`, dentro de expm1
-TOPE_RESIDUO = 3.0    # corte en `residuo`: exp(3) = 20x de amplificacion o
+MAP_GAIN = 1.0   # cuanto pesa lo que emite la red (los tres modos)
+MAP_CAP = 20.0      # corte en `ops`/`directo`, dentro de expm1
+RESIDUAL_CAP = 3.0    # corte en `residuo`: exp(3) = 20x de amplificacion o
                       # de hundimiento sobre la heuristica. Decide si la red
                       # SUGIERE o IMPONE, y es el unico camino que ejecutamos.
-HORIZONTE_FERTILIZAR = 3    # dias que se le cuentan al bono del fertilizante
-FERT_VIAJE = 4.0            # fertilizante que se recoge de una vez. Aprendido.
+FERTILIZER_HORIZON = 3    # dias que se le cuentan al bono del fertilizante
+FERT_PER_TRIP = 4.0            # fertilizante que se recoge de una vez. Aprendido.
 
 
 # ---------------------------------------------------------------------------
@@ -531,8 +531,8 @@ N_OPS = len(OPS_VOCAB)
 # de PPO se saturan en el tope de +-10 tras UN paso de gradiente -el cociente es
 # un producto sobre ~1 570 dimensiones de puro ruido-. No es una eleccion de
 # diseno incluirlas: es un fallo.
-MASCARA_ACUM = None
-FILTRA_INVENTARIO = False
+MASK_ACC = None
+FILTER_BY_INVENTORY = False
 
 # MUESTREO DEL VERBO. Por defecto apagado: el ejecutor UMBRALIZA con argmax,
 # que es lo correcto en evaluacion determinista. Encenderlo hace que el verbo
@@ -544,7 +544,7 @@ import numpy as np
 METODO_ASIGNACION = "humgaro"
 
 # UMBRAL de las casillas EXTRA. Lo fija `macro.aplica_parametros` una vez por
-# turno desde el parametro aprendido `f_umbral_extra`; este valor solo es el
+# turno desde el parametro aprendido `f_extra_threshold`; este valor solo es el
 # de arranque y equivale a "ninguna casilla extra entra".
 #
 # Que son las casillas extra. Medido el 2026-09-21 en campeonato: la heuristica
@@ -564,41 +564,41 @@ METODO_ASIGNACION = "humgaro"
 # entre las opciones legales y el VALOR lo emite la red. No hay orden de
 # preferencia ni valor escritos a mano: seria volver a meter una heuristica
 # donde justamente se esta quitando.
-UMBRAL_EXTRA = 2500.0
-MUESTREA_VERBO = False
-TEMP_VERBO = 1.0
-_RNG_VERBO = np.random.default_rng(0)
+EXTRA_TILE_THRESHOLD = 2500.0
+SAMPLE_VERB = False
+VERB_TEMP = 1.0
+_VERB_RNG = np.random.default_rng(0)
 
 
-GRAD_ACUM = None
+GRAD_ACC = None
 
 
 def siembra_verbo(seed: int) -> None:
-    global _RNG_VERBO
-    _RNG_VERBO = np.random.default_rng(seed)
+    global _VERB_RNG
+    _VERB_RNG = np.random.default_rng(seed)
 
 
 def activa_grad(n_ops: int) -> None:
-    global GRAD_ACUM
-    GRAD_ACUM = np.zeros(n_ops, dtype=np.float64)
+    global GRAD_ACC
+    GRAD_ACC = np.zeros(n_ops, dtype=np.float64)
 
 
 def recoge_grad():
-    global GRAD_ACUM
-    g, GRAD_ACUM = GRAD_ACUM, None
+    global GRAD_ACC
+    g, GRAD_ACC = GRAD_ACC, None
     return g
 
 
 def enable_mask():
     import numpy as np
-    global MASCARA_ACUM
-    MASCARA_ACUM = np.zeros((1 + N_OPS, BOARD, BOARD), dtype=np.float32)
+    global MASK_ACC
+    MASK_ACC = np.zeros((1 + N_OPS, BOARD, BOARD), dtype=np.float32)
 
 
-def recoge_mascara():
-    global MASCARA_ACUM
-    m = MASCARA_ACUM
-    MASCARA_ACUM = None
+def collect_mask():
+    global MASK_ACC
+    m = MASK_ACC
+    MASK_ACC = None
     return m
 
 
@@ -614,7 +614,7 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
         ctx = contexto_turno(obs, farm)
     out = []
 
-    if _es_acceso_cobertizo(x, y):
+    if _is_shed_access(x, y):
         shed = obs["private"]["shed"]
         hay = [a for a in spec.ANIMALS if int(shed.get(a, 0)) > 0]
         if hay:
@@ -657,7 +657,7 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
                                 if isinstance(t, dict) and t.get("kind") == "PLANT"
                                 and t.get("fertilized_until_day", -1) < obs["day"])
             out.append((OPS_IX["PICKUP_FERTILIZER"],
-                        ["PICKUP", "FERTILIZER", max(1, min(fert, fertilizables, int(FERT_VIAJE)))]))
+                        ["PICKUP", "FERTILIZER", max(1, min(fert, fertilizables, int(FERT_PER_TRIP)))]))
         out.append((OPS_IX["DROP"], ["DROP"]))
 
     if tile is None:
@@ -723,13 +723,13 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
     free = free_capacity
     ctx = contexto_turno(obs, farm)
     _invs_turno = (obs["private"].get("inventories") or []
-                   if MODO_MICRO == "ops" else [])
+                   if MICRO_MODE == "ops" else [])
     _invs_turno = [iv for iv in _invs_turno if isinstance(iv, dict)] or [{}]
     for y in range(BOARD):
         for x in range(BOARD):
             if not unlocked(farm, x, y):
                 continue
-            if MODO_MICRO == "ops" and verb_map is not None:
+            if MICRO_MODE == "ops" and verb_map is not None:
                 # E2E: la LEGALIDAD la da el motor, el VERBO lo elige la red.
                 # OJO: solo se entra aqui CON mapa_ops. `MODO_MICRO` es global
                 # al proceso, asi que un agente SIN red -el rival de una liga,
@@ -757,13 +757,13 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                 # agregado esta en la observacion, asi que evitarlo es
                 # aprendible; ensenarlo por CLONACION no, porque el experto
                 # nunca esta en esa situacion.
-                if FILTRA_INVENTARIO and _invs_turno:
+                if FILTER_BY_INVENTORY and _invs_turno:
                     options = [o_ for o_ in options
-                                if any(_puede(iv, o_[1]) for iv in _invs_turno)]
+                                if any(_can_do(iv, o_[1]) for iv in _invs_turno)]
                 if not options:
                     continue
                 if verb_map is not None:
-                    if MUESTREA_VERBO:
+                    if SAMPLE_VERB:
                         # MUESTREAR en vez de UMBRALIZAR. El argmax hace que
                         # mover un logit no cambie NADA hasta que cruza a otro
                         # verbo: derivada cero en casi todo punto, por
@@ -776,32 +776,32 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                         _lg = np.array([float(verb_map[o[0]][y][x])
                                         for o in options], dtype=np.float64)
                         _lg -= _lg.max()
-                        _pr = np.exp(_lg / max(1e-6, TEMP_VERBO))
+                        _pr = np.exp(_lg / max(1e-6, VERB_TEMP))
                         _pr /= _pr.sum()
-                        _sel = int(_RNG_VERBO.choice(len(options), p=_pr))
+                        _sel = int(_VERB_RNG.choice(len(options), p=_pr))
                         k, op = options[_sel]
-                        if GRAD_ACUM is not None:
+                        if GRAD_ACC is not None:
                             # d/dlogit_j de log p(elegido) = [j==elegido] - p_j,
                             # solo sobre las opciones LEGALES de esta casilla.
                             # Sumado sobre todas las decisiones del episodio da
                             # el gradiente de score-function que usa REINFORCE.
                             for _i, (_k, _) in enumerate(options):
-                                GRAD_ACUM[_k] += (1.0 if _i == _sel else 0.0) - _pr[_i]
+                                GRAD_ACC[_k] += (1.0 if _i == _sel else 0.0) - _pr[_i]
                     else:
                         k, op = max(options,
                                     key=lambda o: float(verb_map[o[0]][y][x]))
                     # Solo el APRENDIZ trae mapa_ops; el rival no, asi que esto
                     # distingue quien acumula sin pasar banderas por la tuberia.
-                    if MASCARA_ACUM is not None:
-                        MASCARA_ACUM[0, y, x] = 1.0        # el valor decidio aqui
+                    if MASK_ACC is not None:
+                        MASK_ACC[0, y, x] = 1.0        # el valor decidio aqui
                         if len(options) > 1:
                             for _k, _ in options:
-                                MASCARA_ACUM[1 + _k, y, x] = 1.0   # hubo comparacion
+                                MASK_ACC[1 + _k, y, x] = 1.0   # hubo comparacion
                 else:
                     k, op = options[0]
                 r = float(value_map[y][x]) if value_map is not None else 0.0
                 v = math.copysign(
-                    math.expm1(abs(min(TOPE_MAPA, GANANCIA_MAPA * r))), r)
+                    math.expm1(abs(min(MAP_CAP, MAP_GAIN * r))), r)
                 tasks[(x, y)] = (v, op)
                 if op[0] == "PLANT":
                     free -= 1
@@ -821,7 +821,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
             if t is not None:
                 if value_map is not None:
                     import math
-                    if MODO_MICRO == "directo":
+                    if MICRO_MODE == "directo":
                         # La red EMITE el valor; la heuristica desaparece. Es la
                         # tesis e2e: que el valor de actuar en una casilla lo
                         # decida el aprendizaje, no una tabla que escribi yo
@@ -832,15 +832,15 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                         # se deshace para volver a dolares.
                         r = float(value_map[y][x])
                         t = (math.copysign(math.expm1(
-                            abs(min(TOPE_MAPA, GANANCIA_MAPA * r))), r), t[1])
+                            abs(min(MAP_CAP, MAP_GAIN * r))), r), t[1])
                     else:
                         # MULTIPLICATIVO: residuo sobre la heuristica. Se
                         # conserva para poder medir contra el, que es la unica
                         # forma de saber si el modo directo aporta.
                         r = float(value_map[y][x])
-                        _z = GANANCIA_MAPA * r
-                        t = (t[0] * math.exp(max(-TOPE_RESIDUO,
-                                                 min(TOPE_RESIDUO, _z))), t[1])
+                        _z = MAP_GAIN * r
+                        t = (t[0] * math.exp(max(-RESIDUAL_CAP,
+                                                 min(RESIDUAL_CAP, _z))), t[1])
                 tasks[(x, y)] = t
                 if t[1][0] == "PLANT":
                     free -= 1
@@ -848,7 +848,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
     # considera legales. La LEGALIDAD la da el motor, el VERBO lo elige la red
     # entre las opciones legales y el VALOR lo emite la red; el UMBRAL que
     # decide si merece ocupar una unidad es el parametro aprendido
-    # `f_umbral_extra`. No hay orden de preferencia ni valor escritos a mano.
+    # `f_extra_threshold`. No hay orden de preferencia ni valor escritos a mano.
     #
     # Va despues del barrido principal a proposito: resolviendolas en linea,
     # una casilla extra con PLANT consumia `libre` y estrangulaba las tareas de
@@ -862,22 +862,22 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
         _lg = np.array([float(verb_map[o[0]][_y][_x]) for o in _ex],
                        dtype=np.float64)
         _lg -= _lg.max()
-        _pr = np.exp(_lg / max(1e-6, TEMP_VERBO))
+        _pr = np.exp(_lg / max(1e-6, VERB_TEMP))
         _pr /= _pr.sum()
-        if MUESTREA_VERBO:
-            _sel = int(_RNG_VERBO.choice(len(_ex), p=_pr))
-            if GRAD_ACUM is not None:
+        if SAMPLE_VERB:
+            _sel = int(_VERB_RNG.choice(len(_ex), p=_pr))
+            if GRAD_ACC is not None:
                 # score-function, igual que en `ops`: sin muestrear, el argmax
                 # deja derivada cero en casi todo punto.
                 for _i, (_k2, _) in enumerate(_ex):
-                    GRAD_ACUM[_k2] += (1.0 if _i == _sel else 0.0) - _pr[_i]
+                    GRAD_ACC[_k2] += (1.0 if _i == _sel else 0.0) - _pr[_i]
         else:
             _sel = int(np.argmax(_lg))
         _k2, _o2 = _ex[_sel]
         _r2 = float(value_map[_y][_x])
         _v2 = math.copysign(
-            math.expm1(abs(min(TOPE_MAPA, GANANCIA_MAPA * _r2))), _r2)
-        _v2 -= UMBRAL_EXTRA
+            math.expm1(abs(min(MAP_CAP, MAP_GAIN * _r2))), _r2)
+        _v2 -= EXTRA_TILE_THRESHOLD
         if _v2 <= 0.0:
             continue
         if _o2[0] == "PLANT":
@@ -885,23 +885,23 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                 continue
             free -= 1
         tasks[(_x, _y)] = (_v2, _o2)
-        if MASCARA_ACUM is not None:
-            MASCARA_ACUM[0, _y, _x] = 1.0
+        if MASK_ACC is not None:
+            MASK_ACC[0, _y, _x] = 1.0
             if len(_ex) > 1:
                 for _k3, _ in _ex:
-                    MASCARA_ACUM[1 + _k3, _y, _x] = 1.0
+                    MASK_ACC[1 + _k3, _y, _x] = 1.0
 
     return tasks
 
 
-def _accion(pos, tile, tasks) -> list:
+def _action_for(pos, tile, tasks) -> list:
     """Ejecutar la tarea si ya se esta encima; si no, dar un paso hacia ella."""
     if tile == pos:
         return tasks[tile][1]
     return [step_toward(pos, tile)]
 
 
-def _puede(inv, op) -> bool:
+def _can_do(inv, op) -> bool:
     """Si la unidad NO lleva lo que la operacion consume, el motor la ignora.
 
     FEED gasta 1 trigo del inventario DE LA UNIDAD, FERTILIZE 1 fertilizante, y
@@ -910,7 +910,7 @@ def _puede(inv, op) -> bool:
     asignacion prefiera cualquier otra cosa, incluida la columna ficticia.
     """
     if op[0] == "DROP":
-        return _puede_soltar(inv)
+        return _can_drop(inv)
     req = REQUIERE.get(op[0])
     if req is not None:
         return int(inv.get(req, 0)) > 0
@@ -932,16 +932,16 @@ def _asignar_greedy(units, tasks, invs=None) -> list:
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
         best, mejor_v = None, 0.0
         for tile, (value, _op) in tasks.items():
-            if tile in tomadas or not _puede(inv, _op):
+            if tile in tomadas or not _can_do(inv, _op):
                 continue
-            v = value * (DESCUENTO_POR_PASO ** dist(pos, tile))
+            v = value * (STEP_DISCOUNT ** dist(pos, tile))
             if v > mejor_v:
                 best, mejor_v = tile, v
         if best is None:
             actions.append(["PASS"])
             continue
         tomadas.add(best)
-        actions.append(_accion(pos, best, tasks))
+        actions.append(_action_for(pos, best, tasks))
     return actions
 
 
@@ -958,10 +958,10 @@ def _asignar_greedy(units, tasks, invs=None) -> list:
 # "directo":  la red EMITE la valoracion; la OPERACION sigue siendo heuristica.
 # "ops":      la red emite valoracion Y operacion. La heuristica desaparece
 #             del tablero por completo: solo queda legalidad del motor.
-MODO_MICRO = "residuo"
+MICRO_MODE = "residuo"
 
 
-def _asignar_humgaro(units, tasks, invs=None, previous=None, adherencia=0.0) -> list:
+def _assign_hungarian(units, tasks, invs=None, previous=None, adherencia=0.0) -> list:
     """Asignacion de coste minimo: maximiza el valor descontado TOTAL.
 
     El greedy falla de una forma concreta y frecuente: la primera unidad se
@@ -985,9 +985,9 @@ def _asignar_humgaro(units, tasks, invs=None, previous=None, adherencia=0.0) -> 
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
         for j, tile in enumerate(tiles):
             v, op = tasks[tile]
-            if not _puede(inv, op):
+            if not _can_do(inv, op):
                 continue                  # queda en 0: pierde contra la ficticia
-            row[j] = v * (DESCUENTO_POR_PASO ** dist(pos, tile))
+            row[j] = v * (STEP_DISCOUNT ** dist(pos, tile))
             if adherencia and previous is not None and previous.get(i) == tile:
                 row[j] *= (1.0 + adherencia)
 
@@ -998,7 +998,7 @@ def _asignar_humgaro(units, tasks, invs=None, previous=None, adherencia=0.0) -> 
             if previous is not None:
                 previous[i] = None
         else:
-            actions.append(_accion(units[i], tiles[j], tasks))
+            actions.append(_action_for(units[i], tiles[j], tasks))
             if previous is not None:
                 previous[i] = tiles[j]
     return actions
@@ -1027,16 +1027,16 @@ def _valor_ruta(start_, tiles, tasks, presup, inv, depth=4):
             break
         d = dist(pos, start_) if pos is not start_ else 0
         v_, op = tasks[pos]
-        if not _puede(inv, op):
+        if not _can_do(inv, op):
             break
         spent += 1 + (dist(pos, start_) if total else 0)
         if spent > presup:
             break
-        total += v_ * (DESCUENTO_POR_PASO ** spent)
+        total += v_ * (STEP_DISCOUNT ** spent)
         if not rest:
             break
         next_ = max(rest, key=lambda c: tasks[c][0] /
-                  (1.0 + dist(pos, c)) if _puede(inv, tasks[c][1]) else -1e9)
+                  (1.0 + dist(pos, c)) if _can_do(inv, tasks[c][1]) else -1e9)
         if tasks[next_][0] <= 0:
             break
         rest.remove(next_); pos = next_
@@ -1053,13 +1053,13 @@ def _asignar_ruta(units, tasks, invs, previous, adherencia, presup):
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
         for j, c in enumerate(tiles):
             v_, op = tasks[c]
-            if not _puede(inv, op):
+            if not _can_do(inv, op):
                 continue
             travel = dist(pos, c)
             if travel >= presup:
                 continue
             r = _valor_ruta(c, tiles, tasks, presup - travel, inv)
-            value[i][j] = r * (DESCUENTO_POR_PASO ** travel)
+            value[i][j] = r * (STEP_DISCOUNT ** travel)
             if adherencia and previous is not None and previous.get(i) == c:
                 value[i][j] *= (1.0 + adherencia)
     actions = []
@@ -1068,7 +1068,7 @@ def _asignar_ruta(units, tasks, invs, previous, adherencia, presup):
             actions.append(["PASS"])
             if previous is not None: previous[i] = None
         else:
-            actions.append(_accion(units[i], tiles[j], tasks))
+            actions.append(_action_for(units[i], tiles[j], tasks))
             if previous is not None: previous[i] = tiles[j]
     return actions
 
@@ -1100,4 +1100,4 @@ def assign_units(obs, free_capacity: int, method: str = None,
         from .. import spec as _sp
         presup = max(1, _sp.TURNS_PER_DAY - int(obs.get("hour", 0)))
         return _asignar_ruta(units, tasks, invs, previous, adh, presup)
-    return _asignar_humgaro(units, tasks, invs, previous, adh)
+    return _assign_hungarian(units, tasks, invs, previous, adh)

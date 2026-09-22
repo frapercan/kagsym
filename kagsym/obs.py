@@ -193,7 +193,7 @@ def _tope_peones():
     crear un ciclo de importacion entre obs y macro."""
     try:
         from . import macro as _M
-        return _M.TOPE_PEONES
+        return _M.HAND_CAP
     except Exception:
         return None
 
@@ -245,12 +245,12 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     horas_q = (spec.TURNS_PER_DAY - hour) / spec.TURNS_PER_DAY
     puede_contratar = 1.0 if hour <= 3 else 0.0
     n_unid = 1 + len(farms[me]["hands"])
-    acciones_q = n_unid * (spec.TURNS_PER_DAY - hour)
+    action_q = n_unid * (spec.TURNS_PER_DAY - hour)
     sin_regar = sum(1 for row in farms[me]["tiles"] for t in row
                     if isinstance(t, dict) and t.get("kind") == "PLANT"
                     and not t.get("watered_today"))
     holgura = 0.0 if sin_regar == 0 else max(-1.0, min(1.0,
-              (acciones_q / 3.0 - sin_regar) / max(1.0, sin_regar)))
+              (action_q / 3.0 - sin_regar) / max(1.0, sin_regar)))
     g[GLOBAL_SLICES["time"]] = ([
         day / spec.N_DAYS,
         hour / spec.TURNS_PER_DAY,
@@ -306,9 +306,9 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
 
 
 HIST_TURNS = 4
-HORIZONTES = (4, 12, 24, 48)
+HORIZONS = (4, 12, 24, 48)
 N_OPP_HIST = (spec.TURNS_PER_DAY
-              + len(HORIZONTES) * len(spec.PRODUCTS)
+              + len(HORIZONS) * len(spec.PRODUCTS)
               + HIST_TURNS * len(spec.PRODUCTS))
 
 
@@ -352,7 +352,7 @@ def legal_ops(obs) -> "np.ndarray":
     m[:, ix["PASS"]] = True
 
     seeds = priv.get("seeds", {}) or {}
-    hay_semilla = any(int(v) > 0 for v in seeds.values())
+    has_seed = any(int(v) > 0 for v in seeds.values())
     cobertizo = priv.get("shed", {}) or {}
     hay_en_cobertizo = any(int(v) > 0 for v in cobertizo.values())
     invs = priv.get("inventories", priv.get("inventory", [])) or []
@@ -378,7 +378,7 @@ def legal_ops(obs) -> "np.ndarray":
             continue
 
         if t is None:
-            if hay_semilla:
+            if has_seed:
                 m[i, ix["PLANT"]] = True
             m[i, ix["BUILD_COOP"]] = True
             m[i, ix["BUILD_PASTURE"]] = True
@@ -442,8 +442,8 @@ N_HIST_RIVAL = len(VENTANAS_RIVAL) * len(spec.PRODUCTS)
 # fresa y melon 10, y la fresa repite cada 2. Una escala geometrica los cubre
 # con pocos objetivos y reparte la dificultad como se degrada la informacion
 # real: cerca predecible, lejos grueso.
-HORIZONTES_AUX = (1, 2, 3, 5, 8, 13)
-N_AUX_RIVAL = len(HORIZONTES_AUX) * len(spec.PRODUCTS)
+AUX_HORIZONS = (1, 2, 3, 5, 8, 13)
+N_AUX_RIVAL = len(AUX_HORIZONS) * len(spec.PRODUCTS)
 
 
 def rival_ready(obs, opp: int = None) -> np.ndarray:
@@ -474,13 +474,13 @@ def rival_flow(obs, opp: int = None) -> np.ndarray:
                     continue
                 prod, age = t["crop"], dia - int(t.get("planted_day", dia))
                 # cuantos dias faltan para que de fruto
-                falta = max(0, int(cd["first_yield_day"]) - age)
+                missing = max(0, int(cd["first_yield_day"]) - age)
             elif "animal" in t:
                 a = spec.ANIMALS.get(t.get("animal"))
                 if a is None:
                     continue
                 prod = a["product"]
-                falta = max(0, int(a["first_yield_day"])
+                missing = max(0, int(a["first_yield_day"])
                             - (dia - int(t.get("placed_day", dia))))
             else:
                 continue
@@ -488,6 +488,6 @@ def rival_flow(obs, opp: int = None) -> np.ndarray:
             if j is None:
                 continue
             for k, v in enumerate(VENTANAS_RIVAL):
-                if falta <= v:
+                if missing <= v:
                     out[k, j] += max(listo, 1.0)
     return out.reshape(-1)

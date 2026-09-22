@@ -23,13 +23,13 @@ from dataclasses import dataclass, fields
 
 from . import spec
 
-N_NIVELES = 8        # cuanto de cada cosa
-CATEGORIAS = ["tierra", "pienso", "animal", "venta", "semilla", "peon"]
-N_PRIORIDAD = len(CATEGORIAS)
-N_FIJADAS = 30       # las que estaban a ojo; ver el bloque en `Macro`
-N_MERCADO = 9        # un multiplicador de valor por producto, aprendido
-N_TURNO = 5          # coeficientes de la regla de venta POR TURNO
-N_MACRO = N_NIVELES + N_PRIORIDAD + N_FIJADAS + N_MERCADO + N_TURNO
+N_LEVELS = 8        # cuanto de cada cosa
+CATEGORIES = ["land", "feed", "animal", "sell", "seed", "hand"]
+N_PRIORITIES = len(CATEGORIES)
+N_EXPOSED = 30       # las que estaban a ojo; ver el bloque en `Macro`
+N_MARKET = 9        # un multiplicador de valor por producto, aprendido
+N_TURN = 5          # coeficientes de la regla de venta POR TURNO
+N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
 # El coste del peon 16 del dia es 987 $ el solo -medido-, pero eso es una razon
 # ECONOMICA que la busqueda puede descubrir sola, no un limite del motor: el
 # motor no topa las contrataciones. Ya no hay constante; ver `peones_objetivo`.
@@ -58,12 +58,12 @@ class Macro:
     # orden de una lista que escribi a mano.
     #
     # Pasan por softmax: lo que importa es el reparto relativo, no la escala.
-    p_tierra: float = 0.5
-    p_pienso: float = 0.5
+    p_land: float = 0.5
+    p_feed: float = 0.5
     p_animal: float = 0.5
-    p_venta: float = 0.5
-    p_semilla: float = 0.5
-    p_peon: float = 0.5
+    p_sell: float = 0.5
+    p_seed: float = 0.5
+    p_hand: float = 0.5
     # ------------------------------------------------------------------
     # LO QUE ESTABA A OJO. Auditoria del 2026-09-21: catorce constantes
     # repartidas por mercado.py, tareas.py, ejecutor.py y este fichero
@@ -76,26 +76,26 @@ class Macro:
     # definicion de lo que el docstring de arriba manda aprender.
     #
     # Todas en [0,1]; `parametros()` las lleva a su rango real.
-    f_mano_obra: float = 0.137      # 0.15 / 1.09   -> reproduce el valor viejo
-    f_semilla: float = 0.479        # 0.50
-    f_margen_peon: float = 0.359    # 3.0
-    f_dias_pienso: float = 0.385    # 3.0
-    f_sat_alta: float = 0.797       # 0.85
-    f_sat_baja: float = 0.588       # 0.60
-    f_land_retorno: float = 0.273   # 2.0
-    f_land_caja: float = 0.286      # 1.5
-    f_descuento_paso: float = 0.653 # 0.82
-    f_factor_riego: float = 0.318   # 0.50
-    f_turnos_ini: float = 0.375     # 3.0
-    f_turnos_min: float = 0.333     # 2.0
-    f_valor_dig: float = 0.421      # 0.90
+    f_labour: float = 0.137      # 0.15 / 1.09   -> reproduce el valor viejo
+    f_seed: float = 0.479        # 0.50
+    f_hand_margin: float = 0.359    # 3.0
+    f_feed_days: float = 0.385    # 3.0
+    f_sat_high: float = 0.797       # 0.85
+    f_sat_low: float = 0.588       # 0.60
+    f_land_return: float = 0.273   # 2.0
+    f_land_cash: float = 0.286      # 1.5
+    f_step_discount: float = 0.653 # 0.82
+    f_watering: float = 0.318   # 0.50
+    f_turns_init: float = 0.375     # 3.0
+    f_turns_min: float = 0.333     # 2.0
+    f_dig_value: float = 0.421      # 0.90
     # INTERFAZ entre lo aprendido y lo simbolico: `expm1` es exponencial, asi
     # que la ganancia decide si el mapa de la red SUGIERE o IMPONE, y el tope
     # donde se corta. Nadie las busco nunca.
-    f_ganancia_mapa: float = 0.231  # 1.0
-    f_tope_mapa: float = 0.655      # 20.0
+    f_map_gain: float = 0.231  # 1.0
+    f_map_cap: float = 0.655      # 20.0
     f_max_animal: float = 0.111     # 2  (el limite del motor es 10, no 2)
-    f_tope_residuo: float = 0.2784   # 3.0 -> exp(3) = 20x sobre la heuristica
+    f_residual_cap: float = 0.2784   # 3.0 -> exp(3) = 20x sobre la heuristica
     # UMBRAL de las casillas que la heuristica declara vacias y el motor
     # considera legales -5,81 por turno frente a 8,94 ofrecidas-. Es lo que
     # esa casilla tiene que valer, en dolares emitidos por la red, para
@@ -104,7 +104,7 @@ class Macro:
     # Por defecto 0.5 -> 2.500 $, muy por encima de cualquier tarea real, o
     # sea que al arrancar NINGUNA casilla extra entra y la conducta es
     # identica a la anterior. El entrenamiento lo baja si compensa.
-    f_umbral_extra: float = 0.5
+    f_extra_threshold: float = 0.5
     # CABEZA DE MERCADO: un multiplicador por producto sobre su valor de venta.
     #
     # Es la ULTIMA capa de decision que no se aprendia. El tablero ya lo decide
@@ -138,10 +138,10 @@ class Macro:
     # o sea que cada uno decide mas que casi cualquier otra cosa del vector.
     # `suelo_obra` midio 0.0 % a esta caja, pero es un SUELO EN DOLARES: con
     # otra caja inicial muerde, y el modelo tiene que servir en otra liga.
-    f_fert_animal: float = 0.5   # 0.50  credito de estiercol al valorar un animal
-    f_caja_pienso: float = 0.5   # 0.25  fraccion de caja que puede irse en pienso
-    f_suelo_obra: float = 0.5    # 60.0  suelo del presupuesto de mano de obra
-    f_urgencia: float = 0.5      # 2.0   dias de liquidacion al cerrar la temporada
+    f_manure_credit: float = 0.5   # 0.50  credito de estiercol al valorar un animal
+    f_feed_cash: float = 0.5   # 0.25  fraccion de caja que puede irse en pienso
+    f_labour_floor: float = 0.5    # 60.0  suelo del presupuesto de mano de obra
+    f_liquidation: float = 0.5      # 2.0   dias de liquidacion al cerrar la temporada
     # ------------------------------------------------------------------
     # REGLA DE VENTA POR TURNO. Hasta aqui, todo lo aprendido del mercado era
     # un NIVEL por producto, constante durante las 24 horas: la red se llama
@@ -160,11 +160,11 @@ class Macro:
     # w = logit(f), asi que 0.5 -> w = 0 -> exp(0) = 1: al arrancar esto es
     # EXACTAMENTE la conducta anterior. Sin constante de escala, por el mismo
     # motivo que en `parametros()`: sigmoide y logit se cancelan.
-    w_precio: float = 0.5      # reaccion a la caida de precio prevista
+    w_price: float = 0.5      # reaccion a la caida de precio prevista
     w_rival: float = 0.5       # reaccion a lo que el rival esta a punto de verter
-    w_cobertizo: float = 0.5   # reaccion a la presion de almacen
-    w_estacion: float = 0.5    # reaccion al avance de la temporada
-    w_caja: float = 0.5        # reaccion a cuanta riqueza esta inmovilizada
+    w_shed: float = 0.5   # reaccion a la presion de almacen
+    w_season: float = 0.5    # reaccion al avance de la temporada
+    w_cash: float = 0.5        # reaccion a cuanta riqueza esta inmovilizada
     # ------------------------------------------------------------------
     # TERCERA HORNADA, 2026-09-22. Auditoria ESTRUCTURAL: las dos anteriores
     # buscaban constantes de modulo y literales; esta recorre cada punto de
@@ -176,14 +176,14 @@ class Macro:
     # 8,4 unidades -umbral 16,8-, o sea que buena parte de la partida NO SE
     # COMPRA SEMILLA. Encaja con el sintoma que perseguiamos: 15,4 plantas
     # vivas contra las 44 de v48 con la misma siembra.
-    f_stock_semilla: float = 0.5   # 2.0   semillas por unidad antes de dejar de comprar
-    f_reserva_animal: float = 0.5  # 300.0 caja a reservar antes de comprar un animal
-    f_acciones_animal: float = 0.5 # 3.0   acciones/dia que cuesta sostener un animal
-    f_hora_contrata: float = 0.5   # 3.0   ultima hora del dia en que se contrata
-    f_dias_peon: float = 0.5       # 2.0   dias minimos para amortizar un peon
-    f_sube_coste: float = 0.5      # 0.5   cuanto sube el coste/casilla al secarse
-    f_baja_coste: float = 0.5      # 0.93  cuanto baja cuando no se seca nada
-    f_fert_viaje: float = 0.5      # 4.0   fertilizante que se coge de una vez
+    f_seed_stock: float = 0.5   # 2.0   semillas por unidad antes de dejar de comprar
+    f_animal_reserve: float = 0.5  # 300.0 caja a reservar antes de comprar un animal
+    f_actions_per_animal: float = 0.5 # 3.0   acciones/dia que cuesta sostener un animal
+    f_last_hire_hour: float = 0.5   # 3.0   ultima hora del dia en que se contrata
+    f_min_hand_days: float = 0.5       # 2.0   dias minimos para amortizar un peon
+    f_cost_rise: float = 0.5      # 0.5   cuanto sube el coste/casilla al secarse
+    f_cost_decay: float = 0.5      # 0.93  cuanto baja cuando no se seca nada
+    f_fert_per_trip: float = 0.5      # 4.0   fertilizante que se coge de una vez
 
     @staticmethod
     def default() -> "Macro":
@@ -204,13 +204,13 @@ class Macro:
 # entrenar en un juego mas pequeno y coherente: menos unidades = ejecutor mas
 # barato (el ejecutor es el 94 % del coste) y espacio de accion menor, sin
 # truncar la partida -que invierte el signo de la ventaja, medido-.
-TOPE_PEONES = None
+HAND_CAP = None
 # FACTOR DE RIEGO. "la mitad del presupuesto se va en moverse: medido 42.3% en
 # el experto" -pero 0.5 es una constante a ojo y nunca ha entrado en ninguna
 # busqueda, igual que las tres del mercado que al exponerlas dieron +12,8 %.
-FACTOR_RIEGO = 0.5
-# Acciones al dia que cuesta sostener un animal. Aprendido (`f_acciones_animal`).
-ACCIONES_ANIMAL = 3.0
+WATERING_FACTOR = 0.5
+# Acciones al dia que cuesta sostener un animal. Aprendido (`f_actions_per_animal`).
+ACTIONS_PER_ANIMAL = 3.0
 
 
 # (nombre, minimo, rango). Los rangos salen de la busqueda que encontro 1.258 $.
@@ -242,37 +242,37 @@ ACCIONES_ANIMAL = 3.0
 #
 # `umbral_extra` no tiene original porque es nuevo: su defecto es el p95 MEDIDO
 # de lo que valen las tareas que propone la heuristica (424 $ sobre 6.431).
-RANGOS_F = [
-    ("mano_obra",      0.15,  "fraccion"),
-    ("semilla",        0.50,  "fraccion"),
-    ("margen_peon",    3.00,  "positivo"),
-    ("dias_pienso",    3.00,  "positivo"),
-    ("sat_alta",       0.85,  "fraccion"),
-    ("sat_baja",       0.60,  "fraccion"),
-    ("land_retorno",   2.00,  "positivo"),
-    ("land_caja",      1.50,  "positivo"),
-    ("descuento_paso", 0.82,  "fraccion"),
-    ("factor_riego",   0.50,  "positivo"),
-    ("umbral_extra", 424.0,   "positivo"),
-    ("turnos_ini",     3.00,  "positivo"),
-    ("turnos_min",     2.00,  "positivo"),
-    ("valor_dig",      0.90,  "positivo"),
-    ("ganancia_mapa",  1.00,  "positivo"),
-    ("tope_mapa",     20.00,  "positivo"),
-    ("max_animal",     2.00,  "positivo"),
-    ("tope_residuo",   3.00,  "positivo"),
-    ("fert_animal",    0.50,  "fraccion"),
-    ("caja_pienso",    0.25,  "fraccion"),
-    ("suelo_obra",    60.00,  "positivo"),
-    ("urgencia",       2.00,  "positivo"),
-    ("stock_semilla",  2.00,  "positivo"),
-    ("reserva_animal", 300.0, "positivo"),
-    ("acciones_animal", 3.00, "positivo"),
-    ("hora_contrata",  3.00,  "positivo"),
-    ("dias_peon",      2.00,  "positivo"),
-    ("sube_coste",     0.50,  "fraccion"),
-    ("baja_coste",     0.93,  "fraccion"),
-    ("fert_viaje",     4.00,  "positivo"),
+PARAM_TABLE = [
+    ("labour",      0.15,  "fraction"),
+    ("seed",        0.50,  "fraction"),
+    ("hand_margin",    3.00,  "positive"),
+    ("feed_days",    3.00,  "positive"),
+    ("sat_high",       0.85,  "fraction"),
+    ("sat_low",       0.60,  "fraction"),
+    ("land_return",   2.00,  "positive"),
+    ("land_cash",      1.50,  "positive"),
+    ("step_discount", 0.82,  "fraction"),
+    ("watering",   0.50,  "positive"),
+    ("extra_threshold", 424.0,   "positive"),
+    ("turns_init",     3.00,  "positive"),
+    ("turns_min",     2.00,  "positive"),
+    ("dig_value",      0.90,  "positive"),
+    ("map_gain",  1.00,  "positive"),
+    ("map_cap",     20.00,  "positive"),
+    ("max_animal",     2.00,  "positive"),
+    ("residual_cap",   3.00,  "positive"),
+    ("manure_credit",    0.50,  "fraction"),
+    ("feed_cash",    0.25,  "fraction"),
+    ("labour_floor",    60.00,  "positive"),
+    ("liquidation",       2.00,  "positive"),
+    ("seed_stock",  2.00,  "positive"),
+    ("animal_reserve", 300.0, "positive"),
+    ("actions_per_animal", 3.00, "positive"),
+    ("last_hire_hour",  3.00,  "positive"),
+    ("min_hand_days",      2.00,  "positive"),
+    ("cost_rise",     0.50,  "fraction"),
+    ("cost_decay",     0.93,  "fraction"),
+    ("fert_per_trip",     4.00,  "positive"),
 ]
 
 # Coeficientes de la regla de venta por turno. NO estan en RANGOS_F porque su
@@ -280,14 +280,18 @@ RANGOS_F = [
 # defecto. El defecto de un coeficiente aditivo es 0, y `defecto * exp(z)` se
 # degenera en 0 para siempre. La forma natural es w = logit(f) directamente,
 # que cumple lo mismo: f = 0.5 reproduce la conducta anterior y no hay bordes.
-PESOS_TURNO = ("precio", "rival", "cobertizo", "estacion", "caja")
+TURN_WEIGHTS = ("price", "rival", "shed", "season", "cash")
 
 
 def turn_weights(macro) -> dict:
     """Cuanto reacciona la venta a cada senal del turno. Defecto 0 = regla de hoy."""
     if macro is None:
-        return {k: 0.0 for k in PESOS_TURNO}
-    return {k: _logit(getattr(macro, "w_" + k, 0.5)) for k in PESOS_TURNO}
+        return {k: 0.0 for k in TURN_WEIGHTS}
+    # NO default on getattr. It used to be `getattr(macro, "w_"+k, 0.5)`, and
+    # when a field was renamed and this tuple was not, the lookup silently fell
+    # back to the neutral value and the whole per-turn rule switched itself off
+    # without a single error. An AttributeError here is the correct outcome.
+    return {k: _logit(getattr(macro, "w_" + k)) for k in TURN_WEIGHTS}
 
 
 def market_factors(macro: Macro) -> dict:
@@ -295,7 +299,9 @@ def market_factors(macro: Macro) -> dict:
     from . import spec as _sp
     out = {}
     for pr in _sp.PRODUCTS:
-        f = getattr(macro, "m_" + pr.lower(), 0.5)
+        # no default: a renamed field must raise, not silently
+        # fall back to neutral (see `turn_weights`)
+        f = getattr(macro, "m_" + pr.lower())
         out[pr] = math.exp(_logit(f))
     return out
 
@@ -311,12 +317,12 @@ def _logit(f: float) -> float:
 def params(macro: Macro) -> dict:
     """Los que estaban a ojo, ya en sus unidades reales y SIN borde."""
     out = {}
-    for n, defecto, tipo in RANGOS_F:
+    for n, default, kind in PARAM_TABLE:
         z = _logit(getattr(macro, "f_" + n))
-        if tipo == "fraccion":
-            out[n] = 1.0 / (1.0 + math.exp(-(_logit(defecto) + z)))
+        if kind == "fraction":
+            out[n] = 1.0 / (1.0 + math.exp(-(_logit(default) + z)))
         else:
-            out[n] = defecto * math.exp(z)
+            out[n] = default * math.exp(z)
     return out
 
 
@@ -331,43 +337,43 @@ def apply_params(macro: Macro) -> None:
         return
     from .symbolic import market_ops as _M, tasks as _T, executor as _E
     p = params(macro)
-    _M.PRESUPUESTO_MANO_OBRA = p["mano_obra"]
-    _M.FRACCION_SEMILLA      = p["semilla"]
-    _M.MARGEN_PEON           = p["margen_peon"]
-    _M.DIAS_STOCK_PIENSO     = p["dias_pienso"]
-    _M.SAT_ALTA              = p["sat_alta"]
-    _M.SAT_BAJA              = p["sat_baja"]
-    _M.LAND_RETORNO          = p["land_retorno"]
-    _M.LAND_CAJA             = p["land_caja"]
-    _T.DESCUENTO_POR_PASO    = p["descuento_paso"]
-    _T.VALOR_DIG             = p["valor_dig"]
-    _E.TURNOS_CASILLA_INI    = p["turnos_ini"]
-    _E.TURNOS_CASILLA_MIN    = p["turnos_min"]
-    _T.GANANCIA_MAPA         = p["ganancia_mapa"]
-    _T.TOPE_MAPA             = p["tope_mapa"]
+    _M.LABOUR_BUDGET_FRACTION = p["labour"]
+    _M.SEED_BUDGET_FRACTION      = p["seed"]
+    _M.HAND_MARGIN           = p["hand_margin"]
+    _M.FEED_STOCK_DAYS     = p["feed_days"]
+    _M.SAT_HIGH              = p["sat_high"]
+    _M.SAT_LOW              = p["sat_low"]
+    _M.LAND_RETURN          = p["land_return"]
+    _M.LAND_CASH             = p["land_cash"]
+    _T.STEP_DISCOUNT    = p["step_discount"]
+    _T.DIG_VALUE             = p["dig_value"]
+    _E.TURNS_PER_TILE_INIT    = p["turns_init"]
+    _E.TURNS_PER_TILE_MIN    = p["turns_min"]
+    _T.MAP_GAIN         = p["map_gain"]
+    _T.MAP_CAP             = p["map_cap"]
     # El TECHO lo pone el motor, no nosotros: `maxMarketOrdersPerTurn`. Cuantos
     # animales comprar por turno es politica; cuantos CABEN es mecanica.
-    _M.MAX_ANIMAL_TURNO      = max(1, min(int(spec.DEFAULT_CONFIG["maxMarketOrdersPerTurn"]),
+    _M.MAX_ANIMALS_PER_TURN      = max(1, min(int(spec.DEFAULT_CONFIG["maxMarketOrdersPerTurn"]),
                                           int(round(p["max_animal"]))))
     # Hecho del motor, no parametro: el fertilizante dura 3 dias exactos.
-    _T.HORIZONTE_FERTILIZAR  = int(spec.FERTILIZER_DAYS)
-    _T.TOPE_RESIDUO          = p["tope_residuo"]
-    _M.FERT_ANIMAL           = p["fert_animal"]
-    _M.CAJA_PIENSO           = p["caja_pienso"]
-    _M.SUELO_OBRA            = p["suelo_obra"]
-    _M.URGENCIA_DIAS         = p["urgencia"]
-    _M.STOCK_SEMILLA         = p["stock_semilla"]
-    _M.RESERVA_ANIMAL        = p["reserva_animal"]
-    _M.HORA_CONTRATA         = p["hora_contrata"]
-    _M.DIAS_PEON             = p["dias_peon"]
-    _E.SUBE_COSTE            = p["sube_coste"]
-    _E.BAJA_COSTE            = p["baja_coste"]
-    _T.FERT_VIAJE            = p["fert_viaje"]
-    global ACCIONES_ANIMAL
-    ACCIONES_ANIMAL = p["acciones_animal"]
-    _T.UMBRAL_EXTRA          = p["umbral_extra"]
-    global FACTOR_RIEGO
-    FACTOR_RIEGO = p["factor_riego"]
+    _T.FERTILIZER_HORIZON  = int(spec.FERTILIZER_DAYS)
+    _T.RESIDUAL_CAP          = p["residual_cap"]
+    _M.MANURE_CREDIT           = p["manure_credit"]
+    _M.FEED_CASH_FRACTION           = p["feed_cash"]
+    _M.LABOUR_FLOOR            = p["labour_floor"]
+    _M.LIQUIDATION_DAYS         = p["liquidation"]
+    _M.SEED_STOCK_PER_UNIT         = p["seed_stock"]
+    _M.ANIMAL_CASH_RESERVE        = p["animal_reserve"]
+    _M.LAST_HIRE_HOUR         = p["last_hire_hour"]
+    _M.MIN_HAND_DAYS             = p["min_hand_days"]
+    _E.COST_RISE            = p["cost_rise"]
+    _E.COST_DECAY            = p["cost_decay"]
+    _T.FERT_PER_TRIP            = p["fert_per_trip"]
+    global ACTIONS_PER_ANIMAL
+    ACTIONS_PER_ANIMAL = p["actions_per_animal"]
+    _T.EXTRA_TILE_THRESHOLD          = p["extra_threshold"]
+    global WATERING_FACTOR
+    WATERING_FACTOR = p["watering"]
 
 
 def target_hands(obs, macro: Macro) -> int:
@@ -378,7 +384,7 @@ def target_hands(obs, macro: Macro) -> int:
     # extremos alcanzan cualquier plantilla, que es lo que hace falta para que
     # el modelo sirva en ligas con otra caja y otro horizonte.
     n = max(0, int(round(7.5 * math.exp(_logit(macro.hands)))))
-    return n if TOPE_PEONES is None else min(n, TOPE_PEONES)
+    return n if HAND_CAP is None else min(n, HAND_CAP)
 
 
 def target_tiles(obs, macro: Macro) -> int:
@@ -415,7 +421,7 @@ def target_tiles(obs, macro: Macro) -> int:
     # f = 1/3 reproduce el valor de antes (exp(logit(1/3)) = 0.5), f = 0.5 pide
     # el techo de riego entero, y los extremos alcanzan cualquier granja que el
     # motor permita. El unico recorte que queda es el del motor.
-    techo_riego = n_units * spec.TURNS_PER_DAY * FACTOR_RIEGO
+    techo_riego = n_units * spec.TURNS_PER_DAY * WATERING_FACTOR
     deseadas = techo_riego * math.exp(_logit(macro.tiles))
     return max(0, int(min(cultivables, deseadas)))
 
@@ -436,7 +442,7 @@ def target_animals(obs, macro: Macro) -> int:
     capacity = n_units * spec.TURNS_PER_DAY
     planted = sum(1 for row in farm["tiles"] for t in row
                     if isinstance(t, dict) and t.get("kind") == "PLANT")
-    room = max(0.0, capacity - planted) / max(1e-6, ACCIONES_ANIMAL)
+    room = max(0.0, capacity - planted) / max(1e-6, ACTIONS_PER_ANIMAL)
     return max(0, int(macro.animals * room))
 
 
@@ -494,7 +500,7 @@ def assignment_stickiness(macro: Macro) -> float:
     return 2.0 * float(macro.adherencia)
 
 
-def prioridades(macro: Macro) -> dict:
+def priorities(macro: Macro) -> dict:
     """Reparto de la caja entre categorias. Softmax sobre las 6 componentes.
 
     Devuelve fracciones que suman 1. La temperatura 3.0 hace que la politica
@@ -503,21 +509,21 @@ def prioridades(macro: Macro) -> dict:
     punto raro: con todas iguales, cada una recibe 1/6.
     """
     import math
-    vals = [getattr(macro, "p_" + c) for c in CATEGORIAS]
+    vals = [getattr(macro, "p_" + c) for c in CATEGORIES]
     e = [math.exp(3.0 * v) for v in vals]
     total = sum(e) or 1.0
-    return {c: x / total for c, x in zip(CATEGORIAS, e)}
+    return {c: x / total for c, x in zip(CATEGORIES, e)}
 
 
-def orden_categorias(macro: Macro) -> list:
+def category_order(macro: Macro) -> list:
     """Categorias ordenadas de mas a menos prioritaria.
 
     Decide tanto el reparto de caja como la POSICION en la lista de ordenes,
     que importa porque el motor solo acepta `maxMarketOrdersPerTurn` y el resto
     se cae en silencio.
     """
-    p = prioridades(macro)
-    return sorted(CATEGORIAS, key=lambda c: -p[c])
+    p = priorities(macro)
+    return sorted(CATEGORIES, key=lambda c: -p[c])
 
 
 def peso_fertilizar(macro: Macro) -> float:

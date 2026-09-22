@@ -93,16 +93,16 @@ def desde_salida(api, ref, dst):
     return None
 
 
-def valida(nombre, segundos=300):
+def valida(name_, segundos=300):
     """Carga el modulo y juega una partida entera. (ok, dinero, nota)."""
-    prueba = f'''
+    probe = f'''
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from kagsym import spec
 from kagsym.entorno import carga_publico
 from kagsym.fastenv import FastEnv
 spec.set_turns_per_day(24); spec.set_episode_steps(24*30)
-ag = carga_publico({nombre!r})
+ag = carga_publico({name_!r})
 env = FastEnv(configuration={{"episodeSteps":24*30,"turnsPerDay":24,
                              "startingMoney":3000}}, seed=4242)
 o = env.reset()
@@ -115,7 +115,7 @@ while not env.done:
 print("OK", int(env.rewards()[0]))
 '''
     try:
-        p = subprocess.run([sys.executable, "-c", prueba],
+        p = subprocess.run([sys.executable, "-c", probe],
                            cwd=R if "R" in dir() else None, capture_output=True,
                            text=True, timeout=segundos)
     except subprocess.TimeoutExpired:

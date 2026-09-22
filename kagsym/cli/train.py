@@ -32,11 +32,11 @@ import numpy as np
 import torch
 
 from kagsym import obs as O
-from kagsym.environment import ESCALERA
-from kagsym.parallel_env import EntornoParalelo
+from kagsym.environment import LADDER
+from kagsym.parallel_env import ParallelEnv
 from kagsym.macro import N_MACRO
 from kagsym.version import fingerprint, model_fingerprint
-from kagsym.nets.world import AgenteE2E, MundoConfig, N_HIST
+from kagsym.nets.world import E2EAgent, WorldConfig, N_HIST
 
 
 # Dinero que hace cada peldano de la ESCALERA contra un rival PASIVO, medido
@@ -49,7 +49,7 @@ _BASE_RIVAL = [0.0, 0.0, 179514.0, 171878.0, 171392.0]
 # puede calcular con horizontes mezclados: dividir por la marca de 30 dias hace
 # que una partida de 15 parezca una paliza nuestra cuando solo es corta.
 # Medido el 2026-09-21, 2 semillas. nivel: 1=tope3 2=tope5 3=tope8 4=entero.
-BASE_POR_HORIZONTE = {
+BASE_PER_HORIZON = {
     15: {1:  2918, 2:  7727, 3: 14837, 4:  17078},
     20: {1:  6106, 2: 24157, 3: 34184, 4:  61028},
     30: {1: 16049, 2: 43094, 3: 80932, 4: 176422},
@@ -156,26 +156,26 @@ def main():
     ap.add_argument("--updates", type=int, default=200)
     ap.add_argument("--envs", type=int, default=48)
     ap.add_argument("--procs", type=int, default=10)
-    ap.add_argument("--dias", type=int, default=30)
+    ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--steps", type=int, default=720)
-    ap.add_argument("--epocas", type=int, default=4)
-    ap.add_argument("--minilotes", type=int, default=1,
+    ap.add_argument("--epochs", type=int, default=4)
+    ap.add_argument("--minibatches", type=int, default=1,
                     help="trozos por epoca. 1 = lote completo (como hasta ahora). "
                          "Mismo computo, N veces mas pasos de optimizador.")
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--gamma", type=float, default=0.995)
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--sigma", type=float, default=0.15, help="sigma del canal de VALOR")
-    ap.add_argument("--sigma-ops", type=float, default=0.03,
+    ap.add_argument("--sigma-verb", type=float, default=0.03,
                     help="sigma de los canales de VERBO (logits)")
-    ap.add_argument("--nivel", type=int, default=2, help="peldano de ESCALERA")
-    ap.add_argument("--cuota-autojuego", type=int, default=2,
+    ap.add_argument("--level", type=int, default=2, help="peldano de ESCALERA")
+    ap.add_argument("--selfplay-quota", type=int, default=2,
                     help="trabajadores SIEMPRE en autojuego, fuera del reparto "
                          "por informacion")
-    ap.add_argument("--cuota-objetivo", type=int, default=3,
+    ap.add_argument("--target-quota", type=int, default=3,
                     help="trabajadores SIEMPRE en los peldanos sin tope (el "
                          "rival de competicion)")
-    ap.add_argument("--curriculo-auto", action="store_true",
+    ap.add_argument("--auto-curriculum", action="store_true",
                     help="reparte los trabajadores entre los peldanos en "
                          "proporcion a la INFORMACION que da cada uno, p*(1-p) "
                          "de su tasa de victoria: maxima en el empate, CERO en "
@@ -190,7 +190,7 @@ def main():
                          "congeladas en la misma escalera. Sin esto, el banco "
                          "sembrado solo entra por la via de --autojuego y con "
                          "--rejilla se queda sin usar: sembrado y mudo.")
-    ap.add_argument("--desliza", type=float, default=0.0,
+    ap.add_argument("--slide", type=float, default=0.0,
                     help="tasa de victoria a partir de la cual un peldano se "
                          "considera EXPRIMIDO y la escalera se desliza hacia "
                          "arriba, quitandolo del muestreo. 0 = desactivado. "
@@ -198,39 +198,39 @@ def main():
                          "ganamos siempre, y ahi el termino de victoria esta "
                          "clavado en +1 y no da gradiente -el mismo problema de "
                          "saturacion, pero autoinfligido-.")
-    ap.add_argument("--niveles", default=None,
+    ap.add_argument("--levels", default=None,
                     help="peldanos de ESCALERA por TRABAJADOR, separados por "
                          "coma: '2,4,5,2'. Mezcla ESTILOS de rival, no solo "
                          "dificultad. Los publicos no se parecen -medido: v48 "
                          "puntua mas (153.720) pero v16-rc5 es el que menos nos "
                          "deja (36.139)-, asi que entrenar contra uno solo "
                          "arriesga aprender a batir a ESE en vez de a jugar.")
-    ap.add_argument("--forzar-macro", action="store_true",
+    ap.add_argument("--force-macro", action="store_true",
                     help="re-aplica --init DESPUES de --resume. Sin esto el "
                          "checkpoint machaca el macro pedido, en silencio.")
     ap.add_argument("--rival-macro", default=None,
                     help="ruta .npy: el rival es NUESTRO ejecutor con ese macro")
-    ap.add_argument("--rival-propio", action="store_true",
+    ap.add_argument("--own-rival", action="store_true",
                     help="en los peldanos reducidos el rival es NUESTRO ejecutor "
                          "con el macro calibrado de esa escala "
                          "(runs/ligas/macro_{h}h{d}d.npy). Necesario porque los "
                          "agentes publicos son cintas de 719 pasos a 24h/dia y "
                          "hacen ~0 $ en cualquier otra escala.")
-    ap.add_argument("--rejilla", default=None,
+    ap.add_argument("--grid", default=None,
                     help="rejilla MEZCLADA de escalas: 'h,d,tope;h,d,tope;...'. "
                          "Cada trabajador juega una. Excluye --mezcla y --ligas.")
-    ap.add_argument("--mezcla", default=None,
+    ap.add_argument("--mix", default=None,
                     help="horizontes MEZCLADOS en el mismo lote, en dias: '15,20,30'. "
                          "Cada trabajador juega uno. Excluye --ligas.")
-    ap.add_argument("--ligas", action="store_true",
+    ap.add_argument("--leagues", action="store_true",
                     help="currículo: asciende ganando, desciende perdiendo")
-    ap.add_argument("--liga0", type=int, default=0, help="liga inicial")
-    ap.add_argument("--tope-peones", type=int, default=None,
+    ap.add_argument("--league0", type=int, default=0, help="liga inicial")
+    ap.add_argument("--hand-cap", type=int, default=None,
                     help="limita NUESTROS peones (curriculo); None = sin tope")
     ap.add_argument("--init", default="runs/macro_vs_v48.npy")
     ap.add_argument("--init-net", default=None,
                     help="checkpoint preentrenado del micro (modo directo)")
-    ap.add_argument("--promociona-rival", type=float, default=0.0,
+    ap.add_argument("--promote-rival", type=float, default=0.0,
                     help="tasa de victoria a partir de la cual el rival se "
                          "sustituye por una copia congelada de la politica "
                          "actual. 0 = desactivado. Ataca un fallo medido: al "
@@ -242,7 +242,7 @@ def main():
                          "la politica: no lo aprende el modelo porque no es una "
                          "decision del juego. 0,9 deja la varianza de la senal "
                          "binaria en 0,09 de su maximo 0,25.")
-    ap.add_argument("--cabeza-ops", action="store_true",
+    ap.add_argument("--verb-head", action="store_true",
                     help="da a la red la cabeza de VERBOS aunque el modo no sea "
                          "'ops'. Es lo que permite el hibrido: la heuristica "
                          "sigue proponiendo sus casillas (modo residuo) y la red "
@@ -251,17 +251,17 @@ def main():
                          "frente a 8,94 ofrecidas-. Sin esta cabeza esas "
                          "casillas son invisibles al aprendizaje y se pasa turno "
                          "el 52,8 %% de las veces, contra el 5,3 %% de v48.")
-    ap.add_argument("--modo", default="residuo", choices=("residuo", "directo", "ops"))
+    ap.add_argument("--mode", default="residuo", choices=("residuo", "directo", "ops"))
     ap.add_argument("--resume", default=None,
                     help="continuar desde un checkpoint de RL en vez de reempezar")
-    ap.add_argument("--epocas-valor", type=int, default=0,
+    ap.add_argument("--value-epochs", type=int, default=0,
                     help="epocas extra SOLO para el critico (0 = como antes)")
-    ap.add_argument("--peso-valor", type=float, default=0.5)
+    ap.add_argument("--value-weight", type=float, default=0.5)
     ap.add_argument("--lr", type=float, default=None,
                     help="lr del TRONCO; si se omite, el del checkpoint (o 3e-4)")
-    ap.add_argument("--lr-cabezas", type=float, default=None,
+    ap.add_argument("--lr-heads", type=float, default=None,
                     help="lr de las cabezas; por defecto = --lr")
-    ap.add_argument("--kl-objetivo", type=float, default=0.0,
+    ap.add_argument("--kl-target", type=float, default=0.0,
                     help="si >0, el lr se ajusta solo para mantener este kl/dim")
     # 1,8e-4 era el umbral de cuando el KL se media SIN normalizar por
     # dimension. Al normalizarlo, el KL sano de este problema vive en 1e-2 a
@@ -280,19 +280,19 @@ def main():
     # que la epoca 1 ya mide kl/dim ~0,05 -hay un desfase entre la log-prob del
     # rollout y la recalculada-, asi que un umbral de 2x el objetivo corta antes
     # de dar el primer paso util.
-    ap.add_argument("--calienta-jepa", type=int, default=0,
+    ap.add_argument("--jepa-warmup", type=int, default=0,
                     help="updates iniciales en los que SOLO se entrena la "
                          "representacion (JEPA + critico), con la politica "
                          "quieta. El codificador es el 82 %% de los parametros "
                          "y hoy se forma unicamente con el gradiente de "
                          "politica, que es escaso y ruidoso. Se alimenta de los "
                          "mismos rollouts, asi que no cuesta interaccion extra.")
-    ap.add_argument("--congela-tronco", type=int, default=0,
+    ap.add_argument("--freeze-trunk", type=int, default=0,
                     help="updates tras el calentamiento en los que el TRONCO "
                          "queda congelado y solo se mueven las cabezas, para "
                          "que aprendan sobre una representacion estable en vez "
                          "de sobre un objetivo movil.")
-    ap.add_argument("--peso-jepa", type=float, default=0.0,
+    ap.add_argument("--jepa-weight", type=float, default=0.0,
                     help="peso de la perdida JEPA: predecir el EMBEDDING futuro "
                          "del propio codificador a 1,2,3,5,8,13 dias, con el "
                          "objetivo detenido. A diferencia de --peso-aux, que "
@@ -305,7 +305,7 @@ def main():
                     choices=("1x1", "3x3", "3x3x2", "5x5", "attn"),
                     help="forma del contexto espacial de la cabeza micro. Aqui "
                          "vino el salto medido: 1x1 -> 3x3 dio 1.397 -> 1.949 $.")
-    ap.add_argument("--peso-aux", type=float, default=0.0,
+    ap.add_argument("--aux-weight", type=float, default=0.0,
                     help="peso de la perdida AUXILIAR: predecir la oferta del "
                          "rival de MANANA desde el estado de HOY. 0 = apagada. "
                          "Obliga al codificador a modelar como crece su granja, "
@@ -313,26 +313,26 @@ def main():
                          "liquidacion aporta el 99,1 %% de la varianza diaria-. "
                          "El config traia `peso_aux: 0.1` para una perdida que "
                          "nunca se cableo.")
-    ap.add_argument("--flujo-rival", action="store_true",
+    ap.add_argument("--rival-flow", action="store_true",
                     help="alimenta la entrada `hist` con la OFERTA INMINENTE "
                          "del rival por producto en 4 horizontes, en vez de "
                          "ceros. Esa entrada existia (N_HIST = 4 x productos) y "
                          "nunca se conecto. Es predecible desde su tablero, que "
                          "se observa entero, y es lo causalmente anterior a "
                          "nuestro ingreso en un mercado compartido.")
-    ap.add_argument("--cociente-factorizado", action="store_true",
+    ap.add_argument("--factored-ratio", action="store_true",
                     help="un cociente de importancia POR CABEZA (macro y micro) "
                          "en vez de uno solo sobre la suma de las 1.632 "
                          "dimensiones. Evita que el ruido de exploracion del "
                          "macro -cuyo condicionamiento aporta +1 $ de 953- "
                          "recorte el gradiente del micro, que aporta el resto.")
-    ap.add_argument("--sigma-suelo-micro", type=float, default=0.0,
+    ap.add_argument("--sigma-floor-micro", type=float, default=0.0,
                     help="suelo del sigma APRENDIDO de la cabeza micro. 0 = sin "
                          "suelo. Se deja apagado a proposito: el suelo del macro "
                          "existe porque se midio que estrechar perjudica alli; "
                          "para el micro no hay esa medida todavia, y meter el "
                          "numero antes de tenerla seria inventarse una constante.")
-    ap.add_argument("--sigma-suelo", type=float, default=0.12,
+    ap.add_argument("--sigma-floor", type=float, default=0.12,
                     help="suelo de log_sigma del MACRO. Medido el 2026-09-21: "
                          "estrechar la busqueda cuesta 26 puntos de tasa de "
                          "acierto (3,3 ee) y el gradiente se extingue solo en "
@@ -340,11 +340,11 @@ def main():
     ap.add_argument("--kl-max", type=float, default=0.12,
                     help="si la politica se aleja mas que esto (kl/dim), se "
                          "abortan las epocas. Medido: 6x --kl-objetivo.")
-    ap.add_argument("--autojuego", action="store_true",
+    ap.add_argument("--selfplay", action="store_true",
                     help="rival = instantanea congelada de uno mismo")
-    ap.add_argument("--refresco", type=int, default=25,
+    ap.add_argument("--refresh", type=int, default=25,
                     help="cada cuantos updates se congela una version nueva")
-    ap.add_argument("--banco-semilla", type=str, default=None,
+    ap.add_argument("--bank-seed", type=str, default=None,
                     help="rutas .npy separadas por coma con las que SEMBRAR el "
                          "banco de rivales. Sin esto el banco solo guarda fotos "
                          "de uno mismo, que son el mismo linaje: si la politica "
@@ -352,29 +352,29 @@ def main():
                          "Sembrarlo con vectores que produjeron optimizadores "
                          "DISTINTOS (CEM, coordenadas, calibraciones de otra "
                          "escala) da rivales que fallan de formas distintas.")
-    ap.add_argument("--banco", type=int, default=4,
+    ap.add_argument("--bank", type=int, default=4,
                     help="cuantas versiones antiguas se guardan como rivales")
     ap.add_argument("--out", default="runs/e2e.pt")
     ap.add_argument("--run-name", default="e2e-control")
     a = ap.parse_args()
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    cfg = MundoConfig(device=dev, sigma_micro=a.sigma, con_ops=(a.mode == "ops" or a.cabeza_ops),
-                      sigma_ops=a.sigma_ops, ctx_micro=a.ctx_micro)
-    net = AgenteE2E(cfg).to(dev)
+    cfg = WorldConfig(device=dev, sigma_micro=a.sigma, con_ops=(a.mode == "ops" or a.verb_head),
+                      sigma_ops=a.sigma_verb, ctx_micro=a.ctx_micro)
+    net = E2EAgent(cfg).to(dev)
     vec0 = list(np.load(a.init))
     net.inicializa_macro_en(vec0)
     from kagsym.symbolic import tasks as _T
-    _T.MODO_MICRO = a.mode
-    if a.kl_objetivo > 0 and a.kl_max < a.kl_objetivo:
+    _T.MICRO_MODE = a.mode
+    if a.kl_target > 0 and a.kl_max < a.kl_target:
         raise SystemExit(f"--kl-max {a.kl_max:g} es MENOR que --kl-objetivo "
-                         f"{a.kl_objetivo:g}: el controlador subiria el KL "
+                         f"{a.kl_target:g}: el controlador subiria el KL "
                          f"hasta el objetivo y el aborto lo cortaria en cada "
                          f"epoca. Usa --kl-max >= 2x --kl-objetivo.")
-    if a.tope_peones is not None:
+    if a.hand_cap is not None:
         from kagsym import macro as _M
-        _M.TOPE_PEONES = a.tope_peones
-        print(f"tope de NUESTROS peones: {a.tope_peones}", flush=True)
+        _M.HAND_CAP = a.hand_cap
+        print(f"tope de NUESTROS peones: {a.hand_cap}", flush=True)
     # ESCALA DEL OBJETIVO DE VALOR. `fret` va en unidades crudas (media ~20,
     # sd ~8) y la perdida era smooth_l1 con beta=1.0: TODO error mayor de 1
     # unidad caia en regimen L1 puro, con gradiente +-1 que no lleva el tamano
@@ -410,7 +410,7 @@ def main():
         # nueva, y se informa de cuanto se reutiliza para que no pase inadvertido.
         d0 = torch.load(a.init_net, map_location="cpu", weights_only=False)
         from kagsym.migrate_ckpt import load_tolerant
-        actual = net.state_dict()
+        current = net.state_dict()
         _nok, _ntot, _ = load_tolerant(net, d0["sd"], a.init_net)
         net.inicializa_macro_en(vec0)        # la cabeza de macro, desde el vector
         net.to(dev)
@@ -458,7 +458,7 @@ def main():
     _pool, _pool_p, _asig = [], [], []
     _niveles = ([int(x) for x in a.levels.split(',')] if a.levels else None)
     if _niveles:
-        from kagsym.environment import ESCALERA as _ESC
+        from kagsym.environment import LADDER as _ESC
         print('rivales por trabajador: ' + ', '.join(
             str(_ESC[min(n, len(_ESC)-1)]) for n in _niveles), flush=True)
     if a.lr is None:
@@ -466,14 +466,14 @@ def main():
         _lr_explicito = False
     else:
         _lr_explicito = True
-    _lrc = a.lr_cabezas if a.lr_cabezas is not None else a.lr
+    _lrc = a.lr_heads if a.lr_heads is not None else a.lr
     # `--lr-cabezas` A SOLAS tambien manda. Sin esto, `_lr_explicito` solo se
     # activaba con `--lr`, asi que al reanudar se restauraban los dos lr del
     # checkpoint y el cambio pedido se perdia EN SILENCIO -misma clase de fallo
     # que `--init` machacado por `--resume`, que costo `--forzar-macro`-. Y aqui
     # lo que importa es el RATIO cabezas/tronco: el controlador de KL reescala
     # los dos grupos a la vez, asi que el ratio es lo unico que sobrevive.
-    if a.lr_cabezas is not None:
+    if a.lr_heads is not None:
         _lr_explicito = True
     # 0 tronco | 1 macro | 2 micro | 3 critico+auxiliares
     opt = torch.optim.Adam([{"params": _tronco, "lr": a.lr},
@@ -562,13 +562,13 @@ def main():
         print("  sesgo de valor repuesto a 1.0 (rescate de la inaccion)",
               flush=True)
     print(f"huella del codigo: {fingerprint()}", flush=True)
-    print(f"dispositivo: {dev} | rival: {ESCALERA[a.level]} | init: {a.init}", flush=True)
+    print(f"dispositivo: {dev} | rival: {LADDER[a.level]} | init: {a.init}", flush=True)
 
     from kagsym import spec
     from kagsym.macro import Macro
     # Rollouts repartidos: medido 632 pasos/s en serie contra 10 069 en paralelo
     # con 48 entornos y 10 procesos (15.9x). El arranque son 1-3 s, una vez.
-    if a.forzar_macro:
+    if a.force_macro:
         # DESPUES del resume a proposito: `inicializa_macro_en` corre antes y el
         # checkpoint lo pisa. Medido: pedi el macro del CEM de 5 dias
         # ([0.121, 0.754, 0.057, ...]) y la red emitia el de backbone6
@@ -577,19 +577,19 @@ def main():
         net.inicializa_macro_en(vec0)
         print(f"macro FORZADO a {a.init}", flush=True)
     _pasos = a.steps
-    if a.mezcla:
+    if a.mix:
         # MEZCLADO, no secuencial. En secuencia la politica entrena solo a un
         # horizonte y olvida el anterior -medido dos veces: margen real de
         # -82,7 % a -98,3 %-. Se evitan los horizontes muy cortos a proposito:
         # a 5 dias no-hacer-nada da 3.000 $ y nuestra heuristica 2.920, o sea
         # que actuar DESTRUYE valor y la leccion que se aprende ahi es "no
         # hagas nada".
-        _dias = [int(x) for x in a.mezcla.split(",")]
+        _dias = [int(x) for x in a.mix.split(",")]
         _pasos = [d * 24 for d in _dias]
         a.days = max(_dias)
         print(f"MEZCLA de horizontes: {_dias} dias -> {_pasos} pasos", flush=True)
     _horas = None
-    if a.rejilla:
+    if a.grid:
         # REJILLA FIBONACCI MEZCLADA. Los tres ejes a la vez, un peldano por
         # trabajador, todos en el mismo lote. Lo que lo hace posible: `spec` y
         # `TOPE_PEONES` son globales POR PROCESO, y la observacion lleva dos
@@ -606,7 +606,7 @@ def main():
         # (mezcla 15/20/30 dio 1,22x a 10 dias y 2,66x a 13, no vistos, y
         # ademas gano a 30 dias: 12,78x contra 10,65x del entrenado solo ahi).
         _rej = []
-        for t in a.rejilla.split(";"):
+        for t in a.grid.split(";"):
             h, d, tp = (int(x) for x in t.split(","))
             _rej.append((h, d, tp))
         _pasos = [h * d for h, d, _ in _rej]
@@ -622,14 +622,14 @@ def main():
         print(f"REJILLA mezclada, {len(_rej)} peldanos:", flush=True)
         for h, d, tp in _rej:
             print(f"   {h:>3}h x {d:>3}d = {h*d:>4} turnos, tope {tp}", flush=True)
-    env = EntornoParalelo(a.envs, n_procs=a.procs, steps=_pasos,
+    env = ParallelEnv(a.envs, n_procs=a.procs, steps=_pasos,
                           macro=Macro.from_vector(vec0),
                           level=(_niveles if _niveles else a.level),
-                          mode=a.mode, tope_peones=a.tope_peones, hours=_horas)
-    if a.rejilla:
+                          mode=a.mode, tope_peones=a.hand_cap, hours=_horas)
+    if a.grid:
         env.set_rival_cap(_rivtope)
         print(f"tope del RIVAL por peldano: {_rivtope}", flush=True)
-        if a.rival_propio:
+        if a.own_rival:
             # Un rival de verdad en cada peldano. Medido: v48 hace 60.426 $ a
             # 24h x 30d y 0-30 $ a cualquier otra escala, porque su cinta esta
             # indexada por paso para 719 pasos a 24h/dia. Sin esto, en diez de
@@ -660,7 +660,7 @@ def main():
     # cada peldano de la rejilla. `EntornoParalelo` reparte los entornos en
     # orden, `por_proc[k]` seguidos por trabajador.
     _GRUPOS = None
-    if a.rejilla and len(set(env.pasos_proc)) > 1:
+    if a.grid and len(set(env.pasos_proc)) > 1:
         _GRUPOS, _o = [], 0
         for _m in env.por_proc:
             _GRUPOS.append((_o, _o + _m))
@@ -688,7 +688,7 @@ def main():
     elif a.rival_macro:
         env.set_rival_macro(list(np.load(a.rival_macro)))
         print(f"rival = nuestro ejecutor con {a.rival_macro}", flush=True)
-    _liga = a.liga0
+    _liga = a.league0
     _en_liga = 0
     _RIV_ULT = [0.0]
 
@@ -703,9 +703,9 @@ def main():
         steps = days * hours
         spec.set_episode_steps(steps)
         a.steps, a.days = steps, days
-        e = EntornoParalelo(a.envs, n_procs=a.procs, steps=steps,
+        e = ParallelEnv(a.envs, n_procs=a.procs, steps=steps,
                             macro=Macro.from_vector(vec0), level=4,
-                            mode=a.mode, tope_peones=a.tope_peones,
+                            mode=a.mode, tope_peones=a.hand_cap,
                             hours=hours)
         e.set_rival_cap(cap)
         print(f"LIGA {idx}/{len(LIGAS)-1}: {hours}h x {days}d, rival v48 "
@@ -713,7 +713,7 @@ def main():
               f"({steps} pasos)", flush=True)
         return e
 
-    if a.ligas:
+    if a.leagues:
         env.cerrar()
         env = _monta_liga(_liga)
 
@@ -763,7 +763,7 @@ def main():
     ret_ep = []          # retornos de EPISODIOS CERRADOS, no sumas por update
     acum = np.zeros(a.envs, dtype=np.float64)
 
-    if a.autojuego:
+    if a.selfplay:
         # Contra v48 perdemos el 100 %: el terminal vale -1 SIEMPRE y no aporta
         # un solo bit sobre lo unico que puntua. Contra uno mismo la tasa ronda
         # el 0.59 con los dos haciendo el mismo dinero (36 385 vs 36 295), que
@@ -774,8 +774,8 @@ def main():
     import copy
     bank = []
     # Semillas del banco: rivales DIVERSOS, no del propio linaje.
-    _semillas = []
-    for _p in [x.strip() for x in (a.banco_semilla or "").split(",") if x.strip()]:
+    _seed_vectors = []
+    for _p in [x.strip() for x in (a.bank_seed or "").split(",") if x.strip()]:
         try:
             _v = np.load(_p)
             if _v.ndim != 1 or _v.shape[0] > N_MACRO:
@@ -795,12 +795,12 @@ def main():
                 print(f"  semilla {os.path.basename(_p)}: {_v.shape[0]} dims "
                       f"-> {N_MACRO}, rellenada con los defectos", flush=True)
                 _v = _d
-            _semillas.append((os.path.basename(_p)[:-4], [float(x) for x in _v]))
+            _seed_vectors.append((os.path.basename(_p)[:-4], [float(x) for x in _v]))
         except Exception as _e:
             print(f"  semilla ignorada {_p}: {_e}", flush=True)
-    if _semillas:
-        print(f"banco sembrado con {len(_semillas)} rivales diversos: "
-              f"{', '.join(n for n, _ in _semillas)}", flush=True)
+    if _seed_vectors:
+        print(f"banco sembrado con {len(_seed_vectors)} rivales diversos: "
+              f"{', '.join(n for n, _ in _seed_vectors)}", flush=True)
 
     t0 = time.time()
     # CONTINUIDAD DEL EJE. Al reanudar, el contador volvia a 1 y MLflow pintaba
@@ -811,7 +811,7 @@ def main():
     if _upd0:
         print(f"el eje de pasos continua desde {_upd0}", flush=True)
     for upd in range(1, a.updates + 1):
-        if a.autojuego and upd % a.refresco == 0:
+        if a.selfplay and upd % a.refresh == 0:
             # Banco de versiones antiguas: sin el, la politica puede olvidar
             # como batir a lo que ya sabia batir y ciclar. Se alterna entre la
             # version mas reciente y una del banco elegida por turno.
@@ -822,18 +822,18 @@ def main():
             # Las semillas ocupan UN solo puesto porque se lanzan todas a la
             # vez -una por trabajador-. Con un puesto por semilla la rotacion
             # gastaba turnos identicos.
-            _pool = (([("macro", "diversos", None)] if _semillas else [])
+            _pool = (([("macro", "diversos", None)] if _seed_vectors else [])
                      + [("foto", f"auto{i}", sd) for i, sd in enumerate(bank)])
-            _tipo, _nom, _obj = _pool[(upd // a.refresco) % len(_pool)]
+            _tipo, _nom, _obj = _pool[(upd // a.refresh) % len(_pool)]
             if _tipo == "macro":
                 # Todos los rivales diversos A LA VEZ, uno por trabajador:
                 # `pon_rival_macro` lo admite de forma nativa. Rotar de uno en
                 # uno hace que el gradiente los vea en serie, que es como se
                 # olvida de batir a lo que ya sabia batir.
-                env.set_rival_macro([v for _, v in _semillas])
-                _nom = f"{len(_semillas)} diversos a la vez"
+                env.set_rival_macro([v for _, v in _seed_vectors])
+                _nom = f"{len(_seed_vectors)} diversos a la vez"
             else:
-                rival = AgenteE2E(cfg)
+                rival = E2EAgent(cfg)
                 rival.load_state_dict(_obj)
                 env.set_selfplay(rival)
             print(f"  [upd {upd}] rival -> {_nom} ({_tipo}), poblacion de "
@@ -863,7 +863,7 @@ def main():
                     s["micro"], SIG()).log_prob(au)
                 lp = lp_m + _lpu.flatten(1).sum(-1)   # provisional; se corrige abajo
                 _lp_mi = _lpu.flatten(1).sum(-1)
-                if a.peso_jepa > 0:
+                if a.jepa_weight > 0:
                     JZ.append(s["jepa_z"].detach())
             rec, fin = env.step_day(mapas=au.cpu().numpy(), macros=am.cpu().numpy())
             # La mascara solo se conoce DESPUES de jugar el dia: dice que
@@ -951,21 +951,21 @@ def main():
         # las epocas, el objetivo se moveria con el predictor, que es una via
         # directa al colapso.
         _fjz = None
-        if a.peso_jepa > 0 and JZ:
-            from kagsym.obs import HORIZONTES_AUX as _HZ
+        if a.jepa_weight > 0 and JZ:
+            from kagsym.obs import AUX_HORIZONS as _HZ
             _njz = len(JZ)
             _fjz = torch.cat([
                 torch.stack([JZ[min(t + k, _njz - 1)] for k in _HZ], dim=1)
                 for t in range(_njz)])
         _fhf = None
         if HF:
-            from kagsym.obs import HORIZONTES_AUX, VENTANAS_RIVAL
+            from kagsym.obs import AUX_HORIZONS, VENTANAS_RIVAL
             _nd = len(HF)
             # de (dias, envs, 4*P) a la primera ventana: lo LISTO hoy
             _listo = [x.reshape(x.shape[0], len(VENTANAS_RIVAL), -1)[:, 0, :]
                       for x in HF]
             _fhf = torch.cat([
-                torch.cat([_listo[min(t + k, _nd - 1)] for k in HORIZONTES_AUX],
+                torch.cat([_listo[min(t + k, _nd - 1)] for k in AUX_HORIZONS],
                           dim=-1)
                 for t in range(_nd)])
         fms = torch.cat(MS) if MS else None
@@ -994,7 +994,7 @@ def main():
         # (medido) y el controlador tendria que deshacerlo recortando el lr.
         # `--minilotes` afecta SOLO al critico, mas abajo.
         _nm, _tam = 1, _N
-        for _ep in range(a.epocas):
+        for _ep in range(a.epochs):
             _orden = torch.randperm(_N, device=dev) if _nm > 1 else None
             for _j in range(_nm):
                 if _nm > 1:
@@ -1020,7 +1020,7 @@ def main():
                 _lpma = net.macro_logprob(s, _fam)
                 _lpmi = _lp2.flatten(1).sum(-1)
                 lp = _lpma + _lpmi
-                if a.cociente_factorizado:
+                if a.factored_ratio:
                     # UN COCIENTE POR CABEZA. PPO suma la log-prob sobre TODAS
                     # las dimensiones -32 del macro mas 1.600 del micro- en un
                     # unico cociente, asi que el ruido de exploracion del macro
@@ -1051,21 +1051,21 @@ def main():
                 l_v = torch.nn.functional.smooth_l1_loss(
                     s["valor"], (_fret - _vmu) / _vsd)
                 l_aux = torch.zeros((), device=dev)
-                if a.peso_aux > 0 and _fhf is not None:
+                if a.aux_weight > 0 and _fhf is not None:
                     # symlog: la oferta va de 0 a >100 unidades y un error de
                     # 80 no puede pesar 80 veces mas que uno de 1.
                     _t = _fhf[_sel] if _nm > 1 else _fhf
                     l_aux = torch.nn.functional.smooth_l1_loss(
                         s["rival"], torch.sign(_t) * torch.log1p(_t.abs()))
                 l_jepa = torch.zeros((), device=dev)
-                if a.peso_jepa > 0 and _fjz is not None:
+                if a.jepa_weight > 0 and _fjz is not None:
                     _tj = _fjz[_sel] if _nm > 1 else _fjz
                     # coseno: solo interesa la DIRECCION del embedding; la
                     # norma la puede inflar el codificador sin aprender nada.
                     _p = torch.nn.functional.normalize(s["jepa_p"], dim=-1)
                     _q = torch.nn.functional.normalize(_tj, dim=-1)
                     l_jepa = (1.0 - (_p * _q).sum(-1)).mean()
-                if upd <= a.calienta_jepa:
+                if upd <= a.jepa_warmup:
                     # CALENTAMIENTO: solo representacion. La politica no se
                     # mueve, asi que el codificador se forma con un gradiente
                     # DENSO y de baja varianza antes de que nadie dependa de
@@ -1076,12 +1076,12 @@ def main():
                     #
                     # El valor SI se entrena: es lo que la politica necesitara
                     # el primer dia y no cuesta nada tenerlo listo.
-                    perdida = a.peso_valor * l_v + a.peso_jepa * l_jepa
+                    perdida = a.value_weight * l_v + a.jepa_weight * l_jepa
                 else:
-                    perdida = (l_pi + a.peso_valor * l_v + a.peso_aux * l_aux
-                               + a.peso_jepa * l_jepa)
+                    perdida = (l_pi + a.value_weight * l_v + a.aux_weight * l_aux
+                               + a.jepa_weight * l_jepa)
                 opt.zero_grad(); perdida.backward()
-                if a.calienta_jepa < upd <= a.calienta_jepa + a.congela_tronco:
+                if a.jepa_warmup < upd <= a.jepa_warmup + a.freeze_trunk:
                     # OJO al intervalo: se congela DESPUES del calentamiento,
                     # no durante. Durante el calentamiento el tronco es
                     # justamente lo que tiene que aprender; congelarlo alli
@@ -1102,12 +1102,12 @@ def main():
                 _gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 0.5)
                 _grad_normas.append(float(_gn))
                 opt.step()
-                if a.sigma_suelo > 0:
+                if a.sigma_floor > 0:
                     with torch.no_grad():
-                        net.log_sigma.clamp_(min=float(np.log(a.sigma_suelo)))
-                        if a.sigma_suelo_micro > 0:
+                        net.log_sigma.clamp_(min=float(np.log(a.sigma_floor)))
+                        if a.sigma_floor_micro > 0:
                             net.log_sigma_micro.clamp_(
-                                min=float(np.log(a.sigma_suelo_micro)))
+                                min=float(np.log(a.sigma_floor_micro)))
 
             # PARADA POR DIVERGENCIA KL. El recorte de gradiente limita la
             # MAGNITUD del paso, no cuanto se mueve la POLITICA. Medido: 80
@@ -1168,11 +1168,11 @@ def main():
         # updates -el dinero hacia pico en el 15 y caia- y a 3e-3 saltaba a
         # 3.23 con 98 % de saturacion en el primer update. El KL ya esta
         # medido cada epoca, asi que el lazo lo cierra el, no yo.
-        if a.kl_objetivo > 0:
+        if a.kl_target > 0:
             def _factor(_k):
-                if _k > 2.0 * a.kl_objetivo:
+                if _k > 2.0 * a.kl_target:
                     return 0.7
-                if _k < 0.5 * a.kl_objetivo:
+                if _k < 0.5 * a.kl_target:
                     return 1.1
                 return 1.0
             _fma, _fmi = _factor(kl_ma), _factor(kl_mi)
@@ -1225,7 +1225,7 @@ def main():
                 print(f"    [lr] tronco {opt.param_groups[0]['lr']:.2e}  "
                       f"macro {opt.param_groups[1]['lr']:.2e} (kl {kl_ma:.3f})  "
                       f"micro {opt.param_groups[2]['lr']:.2e} (kl {kl_mi:.3f})  "
-                      f"kl/dim {kl:.3f} -> objetivo {a.kl_objetivo}", flush=True)
+                      f"kl/dim {kl:.3f} -> objetivo {a.kl_target}", flush=True)
 
         # Epocas EXTRA solo para el critico. Medido: su techo con datos
         # suficientes es R2 = 0.900 y en vuelo va por 0.675; el hueco es de
@@ -1237,9 +1237,9 @@ def main():
         # se quedaria igual-. El critico no tiene ese problema: es una regresion
         # y no entra en el cociente de importancia, asi que mas pasos pequenos
         # solo le hacen bien. Su R2 va por 0,80 con techo medido en 0,900.
-        _nmv = max(1, int(a.minilotes))
+        _nmv = max(1, int(a.minibatches))
         _tamv = max(1, _N // _nmv)
-        for _ in range(a.epocas_valor):
+        for _ in range(a.value_epochs):
           _ordv = torch.randperm(_N, device=dev) if _nmv > 1 else None
           for _jv in range(_nmv):
             if _nmv > 1:
@@ -1281,14 +1281,14 @@ def main():
         # 73 % del computo gastado en rivales que por el propio criterio del
         # curriculo no ensenan nada.
         _wpp_ref = None
-        if upd % max(1, a.refresco) == 0:
+        if upd % max(1, a.refresh) == 0:
             _wpp_ref = env.win_rate_per_rung()
-        if _rm_actual and upd % max(1, a.refresco) == 0:
+        if _rm_actual and upd % max(1, a.refresh) == 0:
             try:
                 _wpp3 = list(_wpp_ref)
                 _mios = [i for i, v in enumerate(_rm_actual) if v is not None]
                 # UMBRAL 0,5, y no es una constante a ojo: es la definicion de
-                # "somos mejores que esa version". Antes usaba `a.desliza`, que
+                # "somos mejores que esa version". Antes usaba `a.slide`, que
                 # por defecto vale 0, asi que `0 % >= 0` era cierto y relevaba
                 # precisamente las versiones que nos estaban GANANDO al 100 %.
                 _dominados = [i for i in _mios
@@ -1310,7 +1310,7 @@ def main():
                     # vector -+116 %, 5 de 5-. Por eso el relevo lo sustituia
                     # 105 veces en una noche sin que dejase de perder: no podia
                     # ganar, le faltaba la mitad del agente.
-                    _red_congelada = AgenteE2E(cfg)
+                    _red_congelada = E2EAgent(cfg)
                     _red_congelada.load_state_dict(
                         {k: v.detach().cpu().clone()
                          for k, v in net.state_dict().items()})
@@ -1328,7 +1328,7 @@ def main():
                 print(f"  aviso: no se pudo relevar el autojuego ({_e})",
                       flush=True)
         # ------- CURRICULO AUTOMATICO -------
-        if a.curriculo_auto and upd % max(1, a.refresco) == 0 and _niveles:
+        if a.auto_curriculum and upd % max(1, a.refresh) == 0 and _niveles:
             try:
                 # la medida de ANTES del relevo; ver `_wpp_ref` arriba.
                 _w4 = list(_wpp_ref) if _wpp_ref is not None else env.win_rate_per_rung()
@@ -1361,8 +1361,8 @@ def main():
                 _es_auto = [j for j in range(len(_pool)) if _pool[j][2] is not None]
                 _es_obj = [j for j in range(len(_pool))
                            if _pool[j][1] is None and _pool[j][2] is None]
-                _qa = min(max(0, a.cuota_autojuego), len(_es_auto), _n)
-                _qo = min(max(0, a.cuota_objetivo), len(_es_obj), _n - _qa)
+                _qa = min(max(0, a.selfplay_quota), len(_es_auto), _n)
+                _qo = min(max(0, a.target_quota), len(_es_obj), _n - _qa)
                 _fijos = ([_es_auto[i % len(_es_auto)] for i in range(_qa)]
                           + [_es_obj[i % len(_es_obj)] for i in range(_qo)])
                 _libres = _n - len(_fijos)
@@ -1408,11 +1408,11 @@ def main():
                               flush=True)
             except Exception as _e:
                 print(f"  aviso: curriculo automatico ({_e})", flush=True)
-        if a.desliza > 0 and upd % 25 == 0 and _niveles:
+        if a.slide > 0 and upd % 25 == 0 and _niveles:
             try:
                 _wpp = env.win_rate_per_rung()
                 # el peldano mas facil es el primero de la lista
-                if _wpp and _wpp[0] == _wpp[0] and _wpp[0] >= a.desliza:
+                if _wpp and _wpp[0] == _wpp[0] and _wpp[0] >= a.slide:
                     # Al anadir por arriba se ROTA EL ESTILO en vez de
                     # duplicar el ultimo: si no, a fuerza de deslizar los once
                     # peldanos acabarian siendo el mismo rival y perderiamos la
@@ -1430,20 +1430,20 @@ def main():
                           f"topes ahora {_rivtope}", flush=True)
             except Exception as _e:
                 print(f"  aviso: no se pudo deslizar la escalera ({_e})", flush=True)
-        if (a.promociona_rival > 0 and upd % 5 == 0
-                and upd - _ultima_promo >= a.refresco):
+        if (a.promote_rival > 0 and upd % 5 == 0
+                and upd - _ultima_promo >= a.refresh):
             # La separacion minima es `--refresco`. Sin ella promociona en
             # cascada: vaciar el historial no basta porque cinco updates
             # despues la ventana nueva tiene poquisimos episodios y, ganando,
             # vuelve a dar ~1,0. Medido: 9 promociones en 45 updates.
             _wr = env.win_rate()
-            if _wr == _wr and _wr >= a.promociona_rival:
+            if _wr == _wr and _wr >= a.promote_rival:
                 # El rival se ha quedado pequeno: se sustituye por una copia
                 # CONGELADA de la politica de ahora. La copia no aprende, asi
                 # que el siguiente tramo se juega contra un adversario que ya
                 # sabe lo que nosotros sabiamos, y la senal binaria vuelve a
                 # tener varianza.
-                _nuevo = AgenteE2E(cfg)
+                _nuevo = E2EAgent(cfg)
                 _nuevo.load_state_dict({k: v.detach().cpu().clone()
                                         for k, v in net.state_dict().items()})
                 env.set_selfplay(_nuevo)
@@ -1452,7 +1452,7 @@ def main():
                 env.forget_results()
                 _ultima_promo = upd
                 print(f"  [upd {upd}] RIVAL PROMOCIONADO (win={_wr:.3f} >= "
-                      f"{a.promociona_rival}): pasa a ser una copia de la "
+                      f"{a.promote_rival}): pasa a ser una copia de la "
                       f"politica actual", flush=True)
         if upd % 5 == 0 or upd == 1:
             wr = env.win_rate()
@@ -1464,7 +1464,7 @@ def main():
                   f"cult={rv['cultivos']:4.1f}r  uds={rv['unidades']:4.1f}r  "
                   f"macro={[round(float(x),2) for x in fam.mean(0)]}  "
                   f"{time.time()-t0:.0f}s", flush=True)
-            _ph = getattr(env, "dinero_por_horizonte", lambda: {})()
+            _ph = getattr(env, "money_by_horizon", lambda: {})()
             if len(_ph) > 1:
                 print("        x_inaccion por peldano: " + "  ".join(
                     f"{k} {v/3000.0:.2f}" for k, v in sorted(
@@ -1473,7 +1473,7 @@ def main():
             # es lo que impide que la politica olvide las ligas ya ganadas.
             # `PERMANENCIA` evita el trasiego: una liga se juzga con al menos
             # ese numero de updates dentro.
-            if a.ligas:
+            if a.leagues:
                 _en_liga += 1
                 if _en_liga >= PERMANENCIA:
                     # DESCENSO POR INACCION, no por victoria. La victoria no
@@ -1551,9 +1551,9 @@ def main():
                     # constante y sobra, y el dinero promediado entre 15/20/30
                     # dias no significa nada: se desglosa.
                     _extra = {}
-                    if a.ligas:
+                    if a.leagues:
                         _extra["liga"] = float(_liga)
-                    _porh = getattr(env, "dinero_por_horizonte", lambda: {})()
+                    _porh = getattr(env, "money_by_horizon", lambda: {})()
                     if len(_porh) > 1:
                         # POR PELDANO, y en multiplos de la inaccion ademas de
                         # en dolares. La inaccion son 3.000 $ a CUALQUIER
@@ -1606,7 +1606,7 @@ def main():
                         "2_salud/critico_r2": float(_r2),
                         "2_salud/kl_por_dim": float(kl),
                         "2_salud/saturacion": float(_sat),
-                        "2_salud/epocas_corridas": float(a.epocas - kl_cortes),
+                        "2_salud/epocas_corridas": float(a.epochs - kl_cortes),
                         # 3_CONTEXTO: contra que se esta midiendo.
                         "3_contexto/dinero_rival": _RIV,
                         # 4_DIAG: solo se miran cuando algo falla.
@@ -1616,7 +1616,7 @@ def main():
                         "4_diag/sd_logratio": float(_sd),
                         "4_diag/recompensa": float(R.sum(0).mean()),
                     }
-                    if not a.mezcla:
+                    if not a.mix:
                         _m["1_resultado/dinero"] = _din
                     # MERMA POR HORIZONTE: cuanto le quitamos al rival
                     # respecto a lo que hace contra un PASIVO en ESE MISMO
@@ -1624,13 +1624,13 @@ def main():
                     # mientras perdemos todas las partidas. Con la base de 30
                     # dias aplicada a partidas de 15 mentia: leia "paliza"
                     # cuando solo era que la partida era corta.
-                    _rporh = getattr(env, "rival_por_horizonte", lambda: {})()
+                    _rporh = getattr(env, "rival_by_horizon", lambda: {})()
                     for _d, _rv_d in _rporh.items():
-                        _b = BASE_POR_HORIZONTE.get(_d, {}).get(a.level, 0.0)
+                        _b = BASE_PER_HORIZON.get(_d, {}).get(a.level, 0.0)
                         if _b > 0:
                             _m[f"3_contexto/merma_{_d}d_pct"] = 100.0 * (1.0 - _rv_d / _b)
                     # Escenario: siempre presentes, para poder seguir el curso.
-                    _m["3_contexto/liga"] = float(_liga) if a.ligas else -1.0
+                    _m["3_contexto/liga"] = float(_liga) if a.leagues else -1.0
                     _m["3_contexto/nivel_rival"] = float(a.level)
                     for _k, _v in _extra.items():
                         _m[("1_resultado/" if _k.startswith("dinero")
@@ -1652,7 +1652,7 @@ def main():
                             _m["2_salud/grad_norma"] = float(np.mean(_gg))
                             _m["2_salud/grad_cero_pct"] = 100.0 * float(
                                 np.mean([g < 1e-9 for g in _gg]))
-                        if a.peso_jepa > 0 and JZ:
+                        if a.jepa_weight > 0 and JZ:
                             # VIGILANTE DE COLAPSO. Si el codificador emite
                             # siempre el mismo vector, predecirlo es trivial y
                             # no se aprende nada. Esto cae a cero si pasa.
@@ -1698,7 +1698,7 @@ def main():
                         _m["2_salud/sigma_micro_valor"] = float(_sm[0].mean())
                         if _sm.shape[0] > 1:
                             _m["2_salud/sigma_micro_verbo"] = float(_sm[1:].mean())
-                        _m["2_salud/sigma_suelo"] = float(a.sigma_suelo)
+                        _m["2_salud/sigma_suelo"] = float(a.sigma_floor)
                         # x_inaccion: 1.0 = la politica esta INERTE. Cuatro
                         # colapsos distintos se habrian visto de un vistazo.
                         _m["1_resultado/x_inaccion"] = float(_din) / 3000.0

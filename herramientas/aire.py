@@ -31,7 +31,7 @@ import kagsym.macro as _M
 BASE = np.load("runs/ligas/init32_l0.npy")
 RATIO = 400.0 / (12 * 5 * 4)           # $/unidad-turno de la celda ancla
 POB, ELITE, ITERS = 24, 6, 8
-SEM_BUSCA, SEM_VAL = list(range(101, 107)), list(range(301, 313))
+SEARCH_SEEDS, SEM_VAL = list(range(101, 107)), list(range(301, 313))
 
 #            H   D  tope  caja (None = por unidad-turno)
 CELDAS = [( 12,  5,  3, None),
@@ -64,13 +64,13 @@ if __name__ == "__main__":
         ut = H * D * (1 + TOPE)
         CAJA = int(caja if caja else max(100, round(ut * RATIO / 50) * 50))
         spec.set_turns_per_day(H); spec.set_episode_steps(H*D)
-        _M.TOPE_PEONES = TOPE; T.MODO_MICRO = "residuo"
+        _M.HAND_CAP = TOPE; T.MICRO_MODE = "residuo"
         inc = play(BASE, BASE, SEM_VAL, H, D, CAJA)
         mu, sg = BASE.astype(float).copy(), np.full(N_MACRO, 0.25)
         best, pts_max = None, -1e9
         for _ in range(ITERS):
             pob = np.clip(mu + sg*np.random.randn(POB, N_MACRO), 0.0, 1.0)
-            pts = np.array([play(v, BASE, SEM_BUSCA, H, D, CAJA) for v in pob])
+            pts = np.array([play(v, BASE, SEARCH_SEEDS, H, D, CAJA) for v in pob])
             idx = np.argsort(pts)[-ELITE:]
             mu, sg = pob[idx].mean(0), pob[idx].std(0) + 0.02
             if pts.max() > pts_max:

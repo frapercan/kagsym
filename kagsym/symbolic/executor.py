@@ -24,16 +24,16 @@ from . import market_ops, tasks
 # y por tanto empuja a vender antes".
 USA_FLUJO_RIVAL = bool(int(__import__("os").environ.get("KAG_FLUJO_MERCADO", "0")))
 
-TURNOS_CASILLA_INI = 3.0    # a ojo, nunca buscado
-TURNOS_CASILLA_MIN = 2.0    # idem
-# Como se ADAPTA el coste por casilla. Aprendidos (`f_sube_coste`,
-# `f_baja_coste`): el 0.5 topaba la subida y el 0.93 la bajada, y ninguno de
+TURNS_PER_TILE_INIT = 3.0    # a ojo, nunca buscado
+TURNS_PER_TILE_MIN = 2.0    # idem
+# Como se ADAPTA el coste por casilla. Aprendidos (`f_cost_rise`,
+# `f_cost_decay`): el 0.5 topaba la subida y el 0.93 la bajada, y ninguno de
 # los dos habia entrado nunca en una busqueda.
-SUBE_COSTE = 0.5
-BAJA_COSTE = 0.93
+COST_RISE = 0.5
+COST_DECAY = 0.93
 
 
-def sustainable_tiles(obs, n_units: int, turnos_por_casilla: float) -> int:
+def sustainable_tiles(obs, n_units: int, turns_per_tile: float) -> int:
     """Cuantas casillas puede mantener vivas esta plantilla.
 
     `turnos_por_casilla` NO es una constante: el agente la mide durante la
@@ -42,7 +42,7 @@ def sustainable_tiles(obs, n_units: int, turnos_por_casilla: float) -> int:
     dos dias sin regar y la planta se convierte en hierba, perdiendo semilla,
     casilla y el trabajo invertido.
     """
-    return max(1, int(n_units * spec.TURNS_PER_DAY / max(1.0, turnos_por_casilla)))
+    return max(1, int(n_units * spec.TURNS_PER_DAY / max(1.0, turns_per_tile)))
 
 
 class Agent:
@@ -68,11 +68,11 @@ class Agent:
         # Turnos de unidad que cuesta mantener una casilla. Se recalibra sola:
         # sube si hay plantas sin regar (nos hemos pasado), baja si no las hay y
         # la granja esta llena (podemos abarcar mas).
-        self.turnos_por_casilla = TURNOS_CASILLA_INI
+        self.turns_per_tile = TURNS_PER_TILE_INIT
         self._ultimo_dia = -1
 
     # -- prediccion del rival (punto de inyeccion, fase 4) ------------------
-    def _opponent_flow(self, obs, accion_provisional):
+    def _opponent_flow(self, obs, provisional_action):
         """Vertido esperado del rival, o None si no hay modelo enchufado.
 
         `rival` es un objeto opcional con `flujo(obs, accion) -> np.ndarray` y
@@ -109,7 +109,7 @@ class Agent:
             except Exception:
                 return None
         try:
-            return self.rival.flow(obs, accion_provisional)
+            return self.rival.flow(obs, provisional_action)
         except Exception:
             return None
 
@@ -138,15 +138,15 @@ class Agent:
             return
         if dry > 0:
             # Nos hemos pasado: cada casilla cuesta mas de lo que creiamos.
-            self.turnos_por_casilla *= 1.0 + min(SUBE_COSTE, dry / planted)
+            self.turns_per_tile *= 1.0 + min(COST_RISE, dry / planted)
         else:
-            self.turnos_por_casilla = max(TURNOS_CASILLA_MIN,
-                                          self.turnos_por_casilla * BAJA_COSTE)
+            self.turns_per_tile = max(TURNS_PER_TILE_MIN,
+                                          self.turns_per_tile * COST_DECAY)
 
     # -- turno ---------------------------------------------------------------
     def __call__(self, obs) -> dict:
         t0 = time.perf_counter()
-        self._ultima_accion = None
+        self._last_action = None
         me = int(obs["player"])
         mi = obs["farms"][me]
 
@@ -171,7 +171,7 @@ class Agent:
         if self.macro is not None:
             from ..macro import target_hands
             n_units = max(n_units, 1 + target_hands(obs, self.macro))
-        sustainable = sustainable_tiles(obs, n_units, self.turnos_por_casilla)
+        sustainable = sustainable_tiles(obs, n_units, self.turns_per_tile)
         planted = sum(1 for row in mi["tiles"] for t in row
                         if isinstance(t, dict) and t.get("kind") == "PLANT")
         free = max(0, sustainable - planted)
@@ -219,24 +219,27 @@ class Agent:
         # la caja impide comprar tierra en el 31 % de los turnos, pienso en el
         # 19 % y animales en el 15 %, asi que quien va primero decide quien se
         # queda sin. Con prioridades uniformes se recupera el orden anterior.
-        from ..macro import orden_categorias
-        cajas = {
-            "tierra": lambda: market_ops.land_orders(obs, macro=mac),
-            "pienso": lambda: market_ops.feed_orders(obs),
+        from ..macro import category_order
+        by_category = {
+            "land": lambda: market_ops.land_orders(obs, macro=mac),
+            "feed": lambda: market_ops.feed_orders(obs),
             "animal": lambda: market_ops.animal_orders(obs, macro=mac),
-            "venta": lambda: market_ops.sell_orders(obs, opp_flow=flow,
-                                                 horizon=self.horizon, macro=mac),
-            "semilla": lambda: market_ops.seed_orders(obs, tile_target=min(free, 12),
+            "sell": lambda: market_ops.sell_orders(obs, opp_flow=flow,
+                                                   horizon=self.horizon, macro=mac),
+            "seed": lambda: market_ops.seed_orders(obs, tile_target=min(free, 12),
                                                    macro=mac),
-            "peon": lambda: market_ops.hire_orders(obs, macro=mac),
+            "hand": lambda: market_ops.hire_orders(obs, macro=mac),
         }
-        cats = orden_categorias(mac) if mac is not None else list(cajas)
+        # The keys MUST match `macro.CATEGORIES`; a mismatch is a KeyError, not
+        # a silent fallback, which is what we want after the `turn_weights`
+        # lesson.
+        cats = category_order(mac) if mac is not None else list(by_category)
         for c in cats:
-            orders += cajas[c]()
+            orders += by_category[c]()
         orders = orders[: spec.DEFAULT_CONFIG["maxMarketOrdersPerTurn"]]
 
         action = dict(provisional, market=orders)
-        self._ultima_accion = action
+        self._last_action = action
         # La copia solo la consume `_update_gate`, que se rinde de inmediato si
         # no hay modelo de rival. Copiar la observacion ENTERA -dos granjas de
         # 100 casillas, mercado, pueblo, inventarios- cada turno cuando nadie

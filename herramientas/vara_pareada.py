@@ -35,7 +35,7 @@ def _una(args):
     from kagsym.macro import Macro, N_MACRO
     from kagsym.migrate_ckpt import load_strict
     from kagsym.nets import world as M
-    from kagsym.nets.world import AgenteE2E, MundoConfig
+    from kagsym.nets.world import E2EAgent, WorldConfig
     import kagsym.macro as _M
     global _CACHE
     try:
@@ -43,15 +43,15 @@ def _una(args):
     except Exception:
         d = torch.load(ckpt, map_location="cpu", weights_only=False)
         ops = bool((d.get("cfg") or {}).get("con_ops", False))
-        T.MODO_MICRO = "ops" if ops else "residuo"
-        net = AgenteE2E(MundoConfig(device="cpu", con_ops=ops))
+        T.MICRO_MODE = "ops" if ops else "residuo"
+        net = E2EAgent(WorldConfig(device="cpu", con_ops=ops))
         load_strict(net, d["sd"], ckpt); net.eval()
         try:
             _CACHE[ckpt] = (net, ops)
         except NameError:
             _CACHE = {ckpt: (net, ops)}
-    T.MODO_MICRO = "ops" if ops else "residuo"
-    spec.set_turns_per_day(H); spec.set_episode_steps(H * D); _M.TOPE_PEONES = None
+    T.MICRO_MODE = "ops" if ops else "residuo"
+    spec.set_turns_per_day(H); spec.set_episode_steps(H * D); _M.HAND_CAP = None
     HIST = torch.zeros(1, M.N_HIST)
     env = FastEnv(configuration={"episodeSteps": H * D, "turnsPerDay": H,
                                  "startingMoney": CAJA}, seed=s)

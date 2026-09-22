@@ -1,86 +1,86 @@
-"""Recompensa densa: vender producto PROPIO, no acumular patrimonio.
+"""Dense reward: selling OWN produce, not accumulating net worth.
 
-Por que no patrimonio neto, que es lo que habia. Medido el 2026-09-19: PPO con
-recompensa de patrimonio convergia a 2794 $, por debajo de los 3000 $ que da no
-hacer nada. La razon es estructural, no un fallo de ajuste: quieto se conserva
-el capital inicial, asi que la pasividad es un optimo local con recompensa
-positiva. Cualquier accion cuesta antes de rendir, y el gradiente la castiga.
+Why not net worth, which is what it used to be. Measured: PPO with a net-worth
+reward converged to $2,794, below the $3,000 you get by doing nothing. The
+reason is structural, not a tuning failure: standing still preserves the
+starting capital, so passivity is a local optimum with positive reward. Any
+action costs before it pays, and the gradient punishes it.
 
-Con "ingresos por venta de produccion propia" la pasividad vale exactamente 0 y
-deja de ser un refugio.
+With "income from selling own produce", passivity is worth exactly 0 and stops
+being a refuge.
 
-Por que *propia* y no cualquier venta: el motor cotiza `BUY_PRODUCT` a
-`inventory - 1` justo para que un round-trip de compra y venta en el mismo turno
-rinda 0 (verificado: 3000 $ -> 3000 $). Premiar ventas a secas invitaria a jugar
-con el mercado consigo mismo, que no produce nada. Se atribuye por procedencia:
-solo cuentan las unidades que salieron de una cosecha.
+Why *own* and not any sale: the engine quotes `BUY_PRODUCT` at `inventory - 1`
+precisely so that a buy-and-sell round trip within the same turn yields 0
+(verified: $3,000 -> $3,000). Rewarding sales outright would invite the agent
+to trade with the market against itself, which produces nothing. Attribution is
+by provenance: only units that came out of a harvest count.
 
-Y el bonus por primer producto vendido ataca el otro optimo local conocido, el
-monocultivo -la "granja de melon" que describen varios competidores-: sin el, la
-politica encuentra un solo producto rentable y nunca prueba los demas.
+The bonus for each first product sold attacks the other known local optimum,
+monoculture -the "melon farm" several competitors describe-: without it the
+policy finds a single profitable product and never tries the others.
 """
 from __future__ import annotations
 
 from . import spec
 from .symbolic.market_ops import marginal_prices
 
-# LOS DOS NUMEROS DE LA CONFORMACION. El resto del diseno esta razonado y
-# medido (ver el docstring); estos dos estan puestos a ojo.
+# THE TWO SHAPING NUMBERS. The rest of the design is reasoned and measured (see
+# the module docstring); these two are set by hand.
 #
-# Se leen del ENTORNO al importar porque `EntornoParalelo` lanza procesos hijos
-# y pasarlos por tres capas de firmas seria mas invasivo que esto. Un bucle
-# exterior los fija con os.environ antes de lanzar cada entrenamiento.
+# They are read from the ENVIRONMENT at import because the parallel env spawns
+# child processes, and threading them through three layers of signatures would
+# be more invasive than this. An outer loop sets them via os.environ before
+# launching each training run.
 #
-# Y no los aprende la politica: eso seria dejar que el agente elija su examen.
-# Los mueve un nivel EXTERIOR que se evalua con el objetivo VERDADERO -dinero y
-# victoria- sobre semillas que el interior no ha visto.
+# The policy does NOT learn them: that would let the agent choose its own exam.
+# They are moved by an OUTER level evaluated against the TRUE objective -money
+# and wins- on seeds the inner loop has never seen.
 import os
 
-BONUS_PRIMER_PRODUCTO = float(os.environ.get("KAG_BONUS", "0.2"))
-ESCALA = float(os.environ.get("KAG_ESCALA", "2000.0"))
+FIRST_PRODUCT_BONUS = float(os.environ.get("KAG_BONUS", "0.2"))
+SCALE = float(os.environ.get("KAG_ESCALA", "2000.0"))
 
-# TERMINO COMPETITIVO, continuo en el MARGEN.
+# COMPETITIVE TERM, continuous in the MARGIN.
 #
-# Correccion de lo que dije antes de mirar el codigo: la recompensa SI tenia
-# un termino sobre el rival -el +-1 terminal de victoria/derrota-. Lo que no
-# tenia es GRADUACION: es un signo, asi que ganar por 1 $ puntua igual que
-# ganar por 50.000 y no dice en que direccion apretar.
+# The reward already HAD an opponent term -the terminal +-1 for win/loss-. What
+# it lacked is GRADATION: a sign scores a $1 win the same as a $50,000 win and
+# says nothing about which direction to push.
 #
-# Lo que lo motiva, medido el 2026-09-21: entrenando contra una copia exacta
-# de nosotros mismos, nuestro dinero sube un 9 % y el suyo un 17 % -siendo un
-# vector FIJO que no aprende-. Toda su mejora viene de que nosotros cambiamos:
-# al dejar de disputarle productos, sus precios marginales se quedan altos. El
-# win rate cae de 0,59 a 0,22 mientras mejoramos en absoluto.
+# What motivates it, measured: training against an exact copy of ourselves, our
+# money rises 9% and theirs 17% -while being a FIXED vector that does not
+# learn-. All of their improvement comes from us changing: as we stop competing
+# for products, their marginal prices stay high. Win rate falls from 0.59 to
+# 0.22 while we improve in absolute terms.
 #
-# DONDE VA, y no es indiferente: en el objetivo terminal, NO denso por dia.
-# El denso ya se probo y se retiro con numeros -ver potencial.phi-: la
-# liquidacion del rival aportaba el 99,1 % de la varianza de la recompensa
-# diaria y el critico caia a R2 = -2,535, peor que predecir la media. El
-# shaping solo puede llevar lo que el estado predice, y los saltos de su caja
-# no lo son.
+# WHERE IT GOES, and it is not indifferent: in the terminal objective, NOT
+# dense per day. The dense version was tried and withdrawn with numbers -see
+# potential.phi-: the opponent's liquidation accounted for 99.1% of the daily
+# reward variance and the critic fell to R2 = -2.535, worse than predicting the
+# mean. Shaping can only carry what the state predicts, and jumps in their cash
+# are not that.
 #
-# PESO_RIVAL = 0 recupera exactamente el diseno anterior. Con 1 el objetivo es
-# el margen puro; entre medias, interpola entre dinero propio y marcador.
+# RIVAL_WEIGHT = 0 recovers the previous design exactly. At 1 the objective is
+# the pure margin; in between it interpolates between own money and scoreboard.
 #
-# Riesgo a VIGILAR, no a suponer: premiar que el otro pierda puede degenerar en
-# destruir valor -hundir precios hace menos dano a quien menos vende-. Puede
-# ser jugada correcta o autolesion. Se mide.
-PESO_RIVAL = float(os.environ.get("KAG_PESO_RIVAL", "0.0"))
+# A risk to WATCH, not to assume: rewarding the other side's losses can
+# degenerate into destroying value -crashing prices hurts whoever sells less-.
+# It may be correct play or self-harm. It gets measured.
+RIVAL_WEIGHT = float(os.environ.get("KAG_PESO_RIVAL", "0.0"))
 
 
-class ContadorProduccion:
-    """Lleva la procedencia de cada unidad. Una instancia por partida."""
+class ProductionLedger:
+    """Tracks the provenance of every unit. One instance per episode."""
 
     def __init__(self):
         self.available = {p: 0 for p in spec.PRODUCTS}
-        self.vendidos = set()
+        self.sold_kinds = set()
 
     def harvested(self, obs, action, me: int) -> int:
-        """Unidades cosechadas ESTE turno, leidas del estado previo al paso.
+        """Units harvested THIS turn, read from the pre-step state.
 
-        No se estima: para cada HARVEST se mira el `yield_units` real de la
-        casilla sobre la que esta la unidad, que es exactamente lo que el motor
-        va a mover al inventario.
+        Nothing is estimated: for each HARVEST it reads the actual
+        `yield_units` of the tile the unit stands on, which is exactly what the
+        engine is about to move into the inventory.
         """
         farm = obs["farms"][me]
         pos = [tuple(farm["farmer"])] + [tuple(p) for p in farm["hands"]]
@@ -109,11 +109,11 @@ class ContadorProduccion:
         return total
 
     def sold(self, obs, action) -> tuple[float, float]:
-        """(ingreso de produccion propia, bonus de exploracion) de este turno.
+        """(income from own produce, exploration bonus) for this turn.
 
-        El ingreso se valora con el precio MARGINAL del motor sobre el
-        inventario previo: vender n unidades no cobra n veces el precio de
-        portada, porque cada una baja la siguiente.
+        Income is valued at the engine's MARGINAL price over the previous
+        inventory: selling n units does not pay n times the headline price,
+        because each one lowers the next.
         """
         income = 0.0
         bonus = 0.0
@@ -130,59 +130,53 @@ class ContadorProduccion:
                 continue
             income += float(sum(marginal_prices(obs, p, n)))
             self.available[p] -= n
-            if p not in self.vendidos:
-                self.vendidos.add(p)
-                bonus += BONUS_PRIMER_PRODUCTO
+            if p not in self.sold_kinds:
+                self.sold_kinds.add(p)
+                bonus += FIRST_PRODUCT_BONUS
         return income, bonus
 
 
-def reward(obs, action, contador: ContadorProduccion, me: int, scale: float):
-    """Densa por turno. La pasividad da exactamente 0.0."""
-    contador.harvested(obs, action, me)
-    income, bonus = contador.sold(obs, action)
+def reward(obs, action, ledger: ProductionLedger, me: int, scale: float):
+    """Dense, per turn. Passivity yields exactly 0.0."""
+    ledger.harvested(obs, action, me)
+    income, bonus = ledger.sold(obs, action)
     return income / scale + bonus
 
 
-# TURNO REGALADO: acciones que el motor IGNORA en silencio.
+# WASTED TURN: actions the engine silently IGNORES.
 #
-# El motor no castiga lo imposible, lo convierte en no-op. Asi que "intentar
-# algo que no puedo" y "pasar turno a proposito" son INDISTINGUIBLES en el
-# retorno, y con 719 turnos y once unidades un turno tirado no se ve en la caja
-# final. No es que cueste poco: es que no se puede atribuir.
+# The engine does not punish the impossible, it turns it into a no-op. So
+# "trying something I cannot do" and "passing on purpose" are
+# INDISTINGUISHABLE in the return, and with 719 turns and eleven units a wasted
+# turn does not show up in the final cash. It is not that it costs little: it
+# is that it cannot be attributed.
 #
-# Por que penalizar y no enmascarar. Enmascarar es mejor en general -quitar la
-# masa de probabilidad bate a castigarla- y de hecho `tile_options` solo
-# propone jugadas legales. Pero el filtro por INVENTARIO se midio y salio mal
-# por un motivo concreto: la casilla que pide FEED DESAPARECE cuando nadie
-# lleva trigo, y entonces nadie va a por trigo. Con filtro 3,8 tareas/turno y
-# 4.484 $; sin filtro 10,7 tareas/turno y 6.727 $ pero 66,9 % de tareas
-# inejecutables y 86 % de PASS. Penalizar deja la tarea VISIBLE -prepararse
-# sigue siendo aprendible- y cobra el turno perdido.
+# Why penalise and not mask. Masking is better in general -removing probability
+# mass beats punishing it- and indeed `tile_options` only proposes legal plays.
+# But the INVENTORY filter was measured and came out badly for a concrete
+# reason: the tile asking for FEED DISAPPEARS when nobody carries wheat, and
+# then nobody goes to fetch wheat. With the filter, 3.8 tasks/turn and $4,484;
+# without it, 10.7 tasks/turn and $6,727 but 66.9% unexecutable tasks and 86%
+# PASS. Penalising keeps the task VISIBLE -preparing stays learnable- and
+# charges for the lost turn.
 #
-# Va en el bucle EXTERIOR, nunca en el vector macro: es un termino del
-# objetivo. Si la politica pudiera mover su propia penalizacion, lo primero
-# que aprenderia es a ponerla a cero.
+# It lives in the OUTER loop, never in the macro vector: it is a term of the
+# objective. If the policy could move its own penalty, the first thing it would
+# learn is to set it to zero.
 #
-# CUANDO MUERDE, y hay que saberlo antes de ajustarlo. Medido el 2026-09-21 en
-# campeonato con la via heuristica Y con la hibrida: CERO acciones regaladas en
-# toda la partida, porque `assign_units` recibe los inventarios y descarta el
-# par unidad-tarea cuando `_puede` falla, asi que lo ilegal no llega al motor.
-# Tampoco hay no-ops por destino caducado -regar lo ya regado, cosechar sin
-# fruto, plantar en ocupada-: 0 de 1.563 acciones. En esos modos este peso NO
-# PUEDE tener efecto por mucho que se suba.
+# WHEN IT BITES, and this must be known before tuning it. Measured at
+# championship scale: ZERO wasted actions in a whole episode, because
+# `assign_units` receives the inventories and discards the unit-task pair when
+# `_can_do` fails, so the illegal never reaches the engine. Nor are there
+# no-ops from a stale destination -watering what is already watered, harvesting
+# with no fruit, planting on an occupied tile-: 0 of 1,563 actions. In those
+# modes this weight CANNOT have any effect however high it is set.
 #
-# Solo muerde en `ops` sin el filtro de inventario, que es donde se midio el
-# 66,9 % de tareas inejecutables y el 86 % de PASS.
+# In dollars per wasted action; 0 recovers the previous design exactly.
 #
-# Y el corolario importante: nuestro tiempo muerto NO es ruido de acciones
-# imposibles, es PASS deliberado -52,8 %- por falta de tarea que asignar. La
-# senal no esta contaminada, esta ausente; se arregla generando tareas, no
-# castigando.
-#
-# En dolares por accion regalada; 0 recupera exactamente el diseno anterior.
-#
-# COBERTURA, y conviene no exagerarla: se detecta la clase de INVENTARIO -FEED
-# sin trigo, FERTILIZE sin fertilizante, PLACE sin el animal, DROP sin nada-,
-# que es la dominante en lo medido. Otras acciones tambien caen en no-op
-# -regar lo ya regado, cosechar sin fruto- y esas NO se cuentan todavia.
-PESO_ILEGAL = float(os.environ.get("KAG_PESO_ILEGAL", "0.0"))
+# COVERAGE, and it should not be overstated: the INVENTORY class is detected
+# -FEED without wheat, FERTILIZE without fertiliser, PLACE without the animal,
+# DROP with nothing- which is the dominant one in what was measured. Other
+# actions also fall into no-ops -watering the watered, harvesting with no
+# fruit- and those are NOT counted yet.
+ILLEGAL_WEIGHT = float(os.environ.get("KAG_PESO_ILEGAL", "0.0"))

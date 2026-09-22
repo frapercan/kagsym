@@ -17,12 +17,12 @@ import json, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def firma(nombre, sem, hours=24, days=30):
+def firma(name_, sem, hours=24, days=30):
     from kagsym import spec
     from kagsym.environment import load_public
     from kagsym.fastenv import FastEnv
     spec.set_turns_per_day(hours); spec.set_episode_steps(hours * days)
-    ag = load_public(nombre)
+    ag = load_public(name_)
     env = FastEnv(configuration={"episodeSteps": hours * days,
                                  "turnsPerDay": hours, "startingMoney": 3000},
                   seed=sem)
@@ -36,12 +36,12 @@ def firma(nombre, sem, hours=24, days=30):
     return acts, float(env.rewards()[0])
 
 
-def analiza(nombre):
-    a1, d1 = firma(nombre, 4242)
-    a2, d2 = firma(nombre, 9999)
+def analiza(name_):
+    a1, d1 = firma(name_, 4242)
+    a2, d2 = firma(name_, 9999)
     n = min(len(a1), len(a2))
     igual = sum(1 for i in range(n) if a1[i] == a2[i]) / max(1, n)
-    _, d12 = firma(nombre, 4242, hours=12, days=30)
+    _, d12 = firma(name_, 4242, hours=12, days=30)
     return igual, (d1 + d2) / 2, d12
 
 

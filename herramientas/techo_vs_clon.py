@@ -30,12 +30,12 @@ import kagsym.macro as _M
 
 H, D, TOPE, CAJA = 12, 5, 3, 400
 INIT = "runs/ligas/init32_l0.npy"
-SEM_BUSCA = list(range(101, 107))      # las que ve la busqueda
+SEARCH_SEEDS = list(range(101, 107))      # las que ve la busqueda
 SEM_VAL   = list(range(301, 313))      # frescas, las mismas que juzgan la rejilla
 POB, ELITE, ITERS = 24, 6, 8
 
-spec.set_turns_per_day(H); spec.set_episode_steps(H*D); _M.TOPE_PEONES = TOPE
-T.MODO_MICRO = "residuo"
+spec.set_turns_per_day(H); spec.set_episode_steps(H*D); _M.HAND_CAP = TOPE
+T.MICRO_MODE = "residuo"
 RIV = list(np.load(INIT))
 
 def play(vec, seeds):
@@ -57,13 +57,13 @@ if __name__ == "__main__":
           f"caja {CAJA} tope {TOPE}")
     b0, r0 = play(RIV, SEM_VAL)
     print(f"  referencias   inaccion {CAJA}   el rival (=nuestro init) {b0:.0f}")
-    print(f"  CEM {POB}x{ITERS} sobre {N_MACRO} dims, {len(SEM_BUSCA)} semillas por sorteo\n")
+    print(f"  CEM {POB}x{ITERS} sobre {N_MACRO} dims, {len(SEARCH_SEEDS)} semillas por sorteo\n")
     mu, sg = np.array(RIV, float), np.full(N_MACRO, 0.25)
     mejor_v, mejor_s = None, -1e9
     for it in range(ITERS):
         t1 = time.time()
         pob = np.clip(mu + sg * np.random.randn(POB, N_MACRO), 0.0, 1.0)
-        pts = np.array([play(v, SEM_BUSCA)[0] for v in pob])
+        pts = np.array([play(v, SEARCH_SEEDS)[0] for v in pob])
         idx = np.argsort(pts)[-ELITE:]
         mu, sg = pob[idx].mean(0), pob[idx].std(0) + 0.02
         if pts.max() > mejor_s:

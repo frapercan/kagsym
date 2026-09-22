@@ -18,9 +18,9 @@ from . import spec
 from .symbolic.executor import Agent
 from .fastenv import FastEnv
 from .macro import Macro
-from .reward import ContadorProduccion
-from .reward import PESO_RIVAL as _PESO_RIVAL
-from .reward import PESO_ILEGAL as _PESO_ILEGAL
+from .reward import ProductionLedger
+from .reward import RIVAL_WEIGHT as _RIVAL_W
+from .reward import ILLEGAL_WEIGHT as _ILLEGAL_W
 
 # spec.TURNS_PER_DAY se lee en tiempo de llamada (ver spec.set_turns_per_day):
 # como alias de modulo se congelaba al importar y no seguia a
@@ -47,9 +47,9 @@ MOV = {"NORTH", "SOUTH", "EAST", "WEST"}
 #   tope  3 ->  16.746 $      tope  8 ->  79.908 $
 #   tope  5 ->  42.867 $      tope 15 -> 179.514 $
 # Por debajo de 3 se derrumba (tope 2 -> 1 $): no puede ni arrancar la granja.
-TOPES = [None, 3, 5, 8, None]
+LADDER_CAPS = [None, 3, 5, 8, None]
 
-ESCALERA = [
+LADDER = [
     None,                                              # pasivo
     "v48-fast-routes",
     "v48-fast-routes",
@@ -87,7 +87,7 @@ ESCALERA = [
     "your-market-list-is-an-order-book",                #  188274 $, score 2671
 ]
 
-def public_with_cap(nombre, max_hands: int):
+def public_with_cap(name_, max_hands: int):
     """Un agente publico al que se le limita cuantos peones puede contratar.
 
     ATENUAR NO SIRVE: medido, dejar pasar turno al azar al 20 % de las acciones
@@ -99,7 +99,7 @@ def public_with_cap(nombre, max_hands: int):
     Limitar los peones si conserva la coherencia del plan: su propia logica se
     dimensiona sola al numero de unidades que tiene.
     """
-    base = load_public(nombre)
+    base = load_public(name_)
 
     def jugar(obs):
         a = base(obs)
@@ -119,7 +119,7 @@ def public_with_cap(nombre, max_hands: int):
     return jugar
 
 
-def publico_atenuado(nombre, p: float, seed: int = 0):
+def publico_atenuado(name_, p: float, seed: int = 0):
     """Un agente publico que solo ACTUA con probabilidad `p`; si no, pasa turno.
 
     Por que existe. La ESCALERA no era una escalera: medido el 2026-09-20 contra
@@ -135,7 +135,7 @@ def publico_atenuado(nombre, p: float, seed: int = 0):
     agente sigue comprando tierra y peones que luego no usa.
     """
     import random as _rnd
-    base = load_public(nombre)
+    base = load_public(name_)
     rng = _rnd.Random(seed)
 
     def jugar(obs):
@@ -151,7 +151,7 @@ def publico_atenuado(nombre, p: float, seed: int = 0):
 _PUBLICOS = {}
 
 
-def load_public(nombre):
+def load_public(name_):
     """Carga un agente publico de `agents_pub/` como funcion obs -> accion.
 
     CON CACHE. Sin ella, `spec_from_file_location` + `exec_module` recompilaban
@@ -160,17 +160,17 @@ def load_public(nombre):
     la red solo 57). Como se llama una vez por partida, una iteracion del CEM
     con 40 candidatos x 3 semillas hacia 120 recompilaciones.
     """
-    ag = _PUBLICOS.get(nombre)
+    ag = _PUBLICOS.get(name_)
     if ag is None:
         import importlib.util
         import os
-        path_ = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents_pub", nombre + ".py")
+        path_ = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents_pub", name_ + ".py")
         spec_ = importlib.util.spec_from_file_location(
-            "pub_" + nombre.replace("-", "_"), path_)
+            "pub_" + name_.replace("-", "_"), path_)
         mod = importlib.util.module_from_spec(spec_)
         spec_.loader.exec_module(mod)
         ag = mod.agent
-        _PUBLICOS[nombre] = ag
+        _PUBLICOS[name_] = ag
     return ag
 
 
@@ -186,11 +186,11 @@ def _parte_micro(m):
     return (m[0], m[1:]) if m.ndim == 3 else m
 
 
-class EntornoDia:
+class DayEnv:
     def __init__(self, n, steps=720, seed0=1, scale=None, macro=None,
                  idx0=0, n_total=None,
                  rival_fn=None, level=0, potential=True, gamma=0.995):
-        from .reward import ESCALA as _ESC
+        from .reward import SCALE as _ESC
         self.n, self.steps, self.seed0 = n, steps, seed0
         self.scale = float(_ESC if scale is None else scale)
         self.idx0 = int(idx0)
@@ -226,7 +226,7 @@ class EntornoDia:
         # Mascara de dimensiones que de verdad decidieron, un dia por env.
         # La usa PPO para que el cociente de importancia ignore las ~1 570
         # dimensiones gaussianas que no pueden cambiar ninguna accion.
-        self._masc = [None] * n
+        self._masks = [None] * n
         self.potential = potential
         self.gamma = gamma
         self._phi = [0.0] * n
@@ -252,12 +252,12 @@ class EntornoDia:
         mac = self.macro_fijo if self.macro_fijo is not None else Macro.default()
         self.agents[i] = Agent(episode_steps=self.steps, macro=mac,
                                 micro=lambda ob, k=i: _parte_micro(self._micro[k]))
-        self.counter[i] = ContadorProduccion()
+        self.counter[i] = ProductionLedger()
         self._micro[i] = None
         self._rival[i] = self._nuevo_rival()
-        self._phi[i] = self._calcula_phi(i) if self.potential else 0.0
+        self._phi[i] = self._compute_phi(i) if self.potential else 0.0
 
-    def _calcula_phi(self, i):
+    def _compute_phi(self, i):
         from .potential import phi as _phi_fn
         try:
             ob = self.obs[i][0]
@@ -265,7 +265,7 @@ class EntornoDia:
         except Exception:
             return 0.0
 
-    def set_rival_policy(self, fabrica):
+    def set_rival_policy(self, factory):
         """Rival = una POLITICA nuestra (auto-juego).
 
         Por que hace falta. Entrenando contra v48 perdemos el 100 % de las
@@ -280,9 +280,9 @@ class EntornoDia:
         donde la senal victoria/derrota tiene maxima varianza y por tanto maxima
         informacion.
         """
-        self._fabrica_rival = fabrica
+        self._rival_factory = factory
         for i in range(self.n):
-            self._rival[i] = fabrica()
+            self._rival[i] = factory()
 
     def set_rival_macro(self, vector):
         """Rival = NUESTRO ejecutor exacto con un macro dado.
@@ -293,7 +293,7 @@ class EntornoDia:
         -win=1,000 no tiene mas gradiente que win=0,000-. Un vector macro
         optimizado por CEM PARA ESE HORIZONTE si sabe jugar esos dias.
         """
-        self._macro_rival = None if vector is None else list(vector)
+        self._rival_macro = None if vector is None else list(vector)
         self.resultados.clear()
         # REASIGNAR YA. `_reset` corrio en el constructor y los rivales de los
         # episodios en curso son los antiguos: cambiar solo el atributo no
@@ -303,35 +303,35 @@ class EntornoDia:
             self._rival[i] = self._nuevo_rival()
 
     def _nuevo_rival(self):
-        if getattr(self, "_macro_rival", None) is not None:
+        if getattr(self, "_rival_macro", None) is not None:
             from .symbolic.executor import Agent as _Ag
             from .macro import Macro as _Mac
             # Agente NUEVO por episodio: guarda estado entre turnos
             # (`_destinos`, `turnos_por_casilla`) y reutilizarlo contamina.
             # `episode_steps=None` a proposito: no tocar el global, que ya lo
             # fijo nuestro propio agente con los pasos de esta liga.
-            return _Ag(macro=_Mac.from_vector(self._macro_rival))
-        if getattr(self, "_fabrica_rival", None) is not None:
-            return self._fabrica_rival()
+            return _Ag(macro=_Mac.from_vector(self._rival_macro))
+        if getattr(self, "_rival_factory", None) is not None:
+            return self._rival_factory()
         if self.rival_fn is not None:
             return self.rival_fn
-        nombre = ESCALERA[min(self.level, len(ESCALERA) - 1)]
-        if nombre is None:
+        name_ = LADDER[min(self.level, len(LADDER) - 1)]
+        if name_ is None:
             from kaggle_environments.envs.kaggriculture import kaggriculture as E
             return E.pass_agent
         try:
-            cap = TOPES[min(self.level, len(TOPES) - 1)]
+            cap = LADDER_CAPS[min(self.level, len(LADDER_CAPS) - 1)]
             if cap is not None:
-                return public_with_cap(nombre, cap)
-            return load_public(nombre)
+                return public_with_cap(name_, cap)
+            return load_public(name_)
         except Exception:
             from kaggle_environments.envs.kaggriculture import kaggriculture as E
             return E.pass_agent
 
     def raise_level(self):
-        self.level = min(self.level + 1, len(ESCALERA) - 1)
+        self.level = min(self.level + 1, len(LADDER) - 1)
         self.resultados.clear()
-        return ESCALERA[self.level]
+        return LADDER[self.level]
 
     def win_rate(self, ultimos=60):
         r = self.resultados[-ultimos:]
@@ -365,7 +365,7 @@ class EntornoDia:
                 self.agents[i].macro = Macro.from_vector(macros[i])
             env, counter = self.envs[i], self.counter[i]
             from .symbolic import tasks as _Tm
-            if _Tm.MODO_MICRO == "ops":
+            if _Tm.MICRO_MODE == "ops":
                 _Tm.enable_mask()
             util = total = 0
             for _ in range(spec.TURNS_PER_DAY):
@@ -374,17 +374,17 @@ class EntornoDia:
                 ob = self.obs[i][0]
                 acc = self.agents[i](ob)
                 _invs = (ob.get("private", {}).get("inventories") or []
-                         if _PESO_ILEGAL else [])
+                         if _ILLEGAL_W else [])
                 for _j, l in enumerate([acc.get("farmer")]
                                        + list(acc.get("hands") or [])):
                     if l:
                         total += 1
                         util += 1 if (l[0] not in MOV and l[0] != "PASS") else 0
-                        if _PESO_ILEGAL and l[0] not in MOV and l[0] != "PASS":
+                        if _ILLEGAL_W and l[0] not in MOV and l[0] != "PASS":
                             _iv = (_invs[_j] if _j < len(_invs)
                                    and isinstance(_invs[_j], dict) else {})
-                            if not _Tm._puede(_iv, l):
-                                rec[i] -= _PESO_ILEGAL / self.scale
+                            if not _Tm._can_do(_iv, l):
+                                rec[i] -= _ILLEGAL_W / self.scale
                 counter.harvested(ob, acc, 0)
                 income, bonus = counter.sold(ob, acc)
                 rec[i] += income / self.scale + bonus
@@ -407,12 +407,12 @@ class EntornoDia:
                     pass
                 if d or env.done:
                     break
-            if _Tm.MODO_MICRO == "ops":
-                self._masc[i] = _Tm.recoge_mascara()
+            if _Tm.MICRO_MODE == "ops":
+                self._masks[i] = _Tm.collect_mask()
             if total:
                 self.utiles.append(util / total)
             if self.potential and not env.done:
-                nuevo = self._calcula_phi(i)
+                nuevo = self._compute_phi(i)
                 rec[i] += self.gamma * nuevo - self._phi[i]
                 self._phi[i] = nuevo
             if env.done:
@@ -433,8 +433,8 @@ class EntornoDia:
                 # R2 -2,535-. El shaping solo puede llevar lo que el estado
                 # predice; los saltos de su caja no lo son. Al cierre es un
                 # escalar por episodio, la misma forma que el +-1 de siempre.
-                if _PESO_RIVAL:
-                    rec[i] -= _PESO_RIVAL * float(r[1]) / self.scale
+                if _RIVAL_W:
+                    rec[i] -= _RIVAL_W * float(r[1]) / self.scale
                 res = 1.0 if r[0] > r[1] else (0.5 if r[0] == r[1] else 0.0)
                 rec[i] += 2.0 * res - 1.0
                 self.resultados.append(res)
@@ -463,10 +463,10 @@ class EntornoDia:
         Fuera del modo "ops" no hay nada que enmascarar y se devuelve None.
         """
         from .symbolic import tasks as _Tm
-        if _Tm.MODO_MICRO != "ops":
+        if _Tm.MICRO_MODE != "ops":
             return None
         z = np.zeros((1 + _Tm.N_OPS, spec.BOARD, spec.BOARD), dtype=np.float32)
-        return np.stack([m if m is not None else z for m in self._masc])
+        return np.stack([m if m is not None else z for m in self._masks])
 
     def mean_money(self, ultimos=50):
         return float(np.mean(self.finales[-ultimos:])) if self.finales else float("nan")

@@ -21,7 +21,7 @@ import multiprocessing as mp
 import numpy as np
 
 
-def _trabajador(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
+def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
                 tope_peones=None, hours=None, idx0=0, n_total=None):
     import os
     import sys
@@ -41,16 +41,16 @@ def _trabajador(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
         # Igual que TOPE_PEONES: global por proceso, no llega desde el padre.
         from . import spec as _S
         _S.set_turns_per_day(hours)
-    _T.MODO_MICRO = mode
+    _T.MICRO_MODE = mode
     # El tope vive en un global de modulo y los trabajadores son PROCESOS
     # aparte: ponerlo en el padre no llega aqui. Hay que pasarlo explicito.
     if tope_peones is not None:
         from . import macro as _M
-        _M.TOPE_PEONES = tope_peones
-    from kagsym.environment import EntornoDia
+        _M.HAND_CAP = tope_peones
+    from kagsym.environment import DayEnv
     from kagsym.macro import Macro
 
-    env = EntornoDia(n_envs, steps=steps, seed0=seed0,
+    env = DayEnv(n_envs, steps=steps, seed0=seed0,
                      macro=Macro.from_vector(macro_vec), level=level,
                      idx0=idx0, n_total=n_total)
     while True:
@@ -71,15 +71,15 @@ def _trabajador(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
             import torch
             from kagsym.symbolic.executor import Agent as _Ag
             from kagsym.macro import Macro as _Mac, N_MACRO
-            from kagsym.nets.world import AgenteE2E, MundoConfig
+            from kagsym.nets.world import E2EAgent, WorldConfig
             from kagsym import obs as _O
             sd, cfgd = datos
-            _net = AgenteE2E(MundoConfig(**{k: v for k, v in cfgd.items()
-                                            if k in MundoConfig.__dataclass_fields__}))
+            _net = E2EAgent(WorldConfig(**{k: v for k, v in cfgd.items()
+                                            if k in WorldConfig.__dataclass_fields__}))
             _net.load_state_dict(sd)
             _net.eval()
 
-            def fabrica():
+            def factory():
                 # Decide UNA VEZ AL DIA, igual que nosotros. Llamar a la red
                 # cada turno es 24x mas caro y ademas ASIMETRICO: el rival
                 # jugaria con otra frecuencia de decision y no seria auto-juego.
@@ -132,7 +132,7 @@ def _trabajador(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
                     return ag(ob)
                 return jugar
 
-            env.set_rival_policy(fabrica)
+            env.set_rival_policy(factory)
             conn.send(True)
         elif cmd == "rival_tope":
             from .environment import public_with_cap as _pct, load_public as _cp
@@ -159,7 +159,7 @@ def _trabajador(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
             return
 
 
-class EntornoParalelo:
+class ParallelEnv:
     """Misma interfaz que `EntornoDia`, repartida entre procesos."""
 
     def __init__(self, n_envs, n_procs=8, steps=720, seed0=1, macro=None, level=2,
@@ -182,14 +182,14 @@ class EntornoParalelo:
         # rejilla entera -horas, dias y tope a la vez-, que es lo que las dos
         # dimensiones absolutas de la observacion (EPISODE_STEPS/720 y
         # tope/HANDS_REF) permiten condicionar en vez de promediar.
-        def _reparte(v):
+        def _split_envs(v):
             if isinstance(v, (list, tuple)):
                 return [v[i % len(v)] for i in range(self.n_procs)]
             return [v] * self.n_procs
 
-        self.pasos_proc = [int(x) for x in _reparte(steps)]
-        self.horas_proc = _reparte(hours)
-        self.tope_proc = _reparte(tope_peones)
+        self.pasos_proc = [int(x) for x in _split_envs(steps)]
+        self.horas_proc = _split_envs(hours)
+        self.tope_proc = _split_envs(tope_peones)
 
         # REPARTO POR COSTE, no por cabeza. Con una rejilla heterogenea un
         # peldano de 720 turnos cuesta 30 veces uno de 24, y repartir los
@@ -221,12 +221,12 @@ class EntornoParalelo:
         ctx = mp.get_context("fork")
         self.conns, self.procs = [], []
         off = 0
-        vec = list(macro.to_vector()) if hasattr(macro, "a_vector") else list(macro)
+        vec = list(macro.to_vector()) if hasattr(macro, "to_vector") else list(macro)
         for k, m in enumerate(self.por_proc):
             padre, hijo = ctx.Pipe()
             # Semillas DISJUNTAS por trabajador: si se solapan, varios procesos
             # juegan la misma partida y el lote deja de ser independiente.
-            p = ctx.Process(target=_trabajador,
+            p = ctx.Process(target=_worker,
                             args=(hijo, m, self.pasos_proc[k], seed0, vec,
                                   (level[k % len(level)]
                                    if isinstance(level, (list, tuple)) else level),
@@ -257,15 +257,15 @@ class EntornoParalelo:
             c.send(("paso", (None if mapas is None else mapas[off:off + m],
                              None if macros is None else macros[off:off + m])))
             off += m
-        rec, fin, masc = [], [], []
+        rec, fin, masks_ = [], [], []
         for k, c in enumerate(self.conns):
             r, f, wr, din, util, riv, sinliq, ms = c.recv()
             rec.append(r); fin.append(f)
             if ms is not None:
-                masc.append(ms)
+                masks_.append(ms)
             self._wr[k], self._din[k], self._util[k] = wr, din, util
             self._riv[k], self._sinliq[k] = riv, sinliq
-        self._masc = np.concatenate(masc) if masc else None
+        self._masks = np.concatenate(masks_) if masks_ else None
         return np.concatenate(rec), np.concatenate(fin)
 
     def _etiqueta(self, k):
@@ -279,7 +279,7 @@ class EntornoParalelo:
         h = self.horas_proc[k] or 24
         return f"{h}h x {self.pasos_proc[k] // h}d"
 
-    def dinero_por_horizonte(self):
+    def money_by_horizon(self):
         """{dias: dinero medio} en vez de un solo promedio.
 
         Promediar dinero sobre horizontes distintos NO significa nada: una
@@ -295,7 +295,7 @@ class EntornoParalelo:
             out.setdefault(self._etiqueta(k), []).append(float(d))
         return {k: sum(v) / len(v) for k, v in out.items() if v}
 
-    def rival_por_horizonte(self):
+    def rival_by_horizon(self):
         """{dias: dinero medio del RIVAL} desglosado, no promediado."""
         out = {}
         for k, steps in enumerate(self.pasos_proc):
@@ -309,7 +309,7 @@ class EntornoParalelo:
         return {k: sum(v) / len(v) for k, v in out.items() if v}
 
     def masks(self):
-        return getattr(self, "_masc", None)
+        return getattr(self, "_masks", None)
 
     def set_selfplay(self, net):
         """Congela la politica actual como rival en todos los trabajadores."""

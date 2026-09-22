@@ -29,31 +29,31 @@ from .. import spec
 # Fraccion de la caja que puede irse en mano de obra en un dia. Es el unico
 # tope: la mano de obra multiplica todo lo demas, pero el coste fibonacci se
 # dispara (15 peones = 1596 $/dia) y sin freno quiebra la granja en dos dias.
-PRESUPUESTO_MANO_OBRA = 0.15
+LABOUR_BUDGET_FRACTION = 0.15
 # CONSTANTES A OJO QUE LA POLITICA NO PODIA TOCAR. El docstring de `macro.py`
 # dice que existe porque "la capa guionizada acumulo once constantes puestas a
 # ojo... eso viola el principio del proyecto (nada adivinado)". Movio catorce y
 # dejo estas. Nunca han entrado en ninguna busqueda.
-FRACCION_SEMILLA = 0.5      # tope del gasto en semilla como fraccion de la caja
-MARGEN_PEON = 3.0           # cuanto debe rendir un peon sobre su coste
-DIAS_STOCK_PIENSO = 3.0     # reserva de comida, en dias
-SAT_ALTA, SAT_BAJA = 0.85, 0.60   # umbrales de saturacion del mercado al vender
-LAND_RETORNO, LAND_CAJA = 2.0, 1.5  # condicion de compra de cuadrante
+SEED_BUDGET_FRACTION = 0.5      # tope del gasto en semilla como fraccion de la caja
+HAND_MARGIN = 3.0           # cuanto debe rendir un peon sobre su coste
+FEED_STOCK_DAYS = 3.0     # reserva de comida, en dias
+SAT_HIGH, SAT_LOW = 0.85, 0.60   # umbrales de saturacion del mercado al vender
+LAND_RETURN, LAND_CASH = 2.0, 1.5  # condicion de compra de cuadrante
 # NO es un limite del motor -ese es maxMarketOrdersPerTurn = 10-, es una
 # decision de ritmo escrita a mano. Por tanto, aprendible.
-MAX_ANIMAL_TURNO = 2
+MAX_ANIMALS_PER_TURN = 2
 # LAS QUE SEGUIAN INLINE, dentro del cuerpo de las funciones. Medidas vivas en
 # ops (4 semillas, 24h x 30d): anular el credito de estiercol cuesta -22.5 % y
 # estrangular la caja de pienso -21.6 %. Ahora las tres son `f_*` del vector.
-FERT_ANIMAL = 0.5     # credito de estiercol al valorar un animal
-CAJA_PIENSO = 0.25    # fraccion de caja que puede irse en pienso de golpe
-SUELO_OBRA = 60.0     # suelo en dolares del presupuesto de mano de obra
-URGENCIA_DIAS = 2.0   # dias de liquidacion al cerrar la temporada
+MANURE_CREDIT = 0.5     # credito de estiercol al valorar un animal
+FEED_CASH_FRACTION = 0.25    # fraccion de caja que puede irse en pienso de golpe
+LABOUR_FLOOR = 60.0     # suelo en dolares del presupuesto de mano de obra
+LIQUIDATION_DAYS = 2.0   # dias de liquidacion al cerrar la temporada
 # TERCERA HORNADA (auditoria estructural del 2026-09-22). Ver `Macro`.
-STOCK_SEMILLA = 2.0   # semillas por unidad antes de dejar de comprar
-RESERVA_ANIMAL = 300.0  # caja reservada antes de comprar un animal
-HORA_CONTRATA = 3.0   # ultima hora del dia en que se contrata
-DIAS_PEON = 2.0       # dias minimos para amortizar un peon
+SEED_STOCK_PER_UNIT = 2.0   # semillas por unidad antes de dejar de comprar
+ANIMAL_CASH_RESERVE = 300.0  # caja reservada antes de comprar un animal
+LAST_HIRE_HOUR = 3.0   # ultima hora del dia en que se contrata
+MIN_HAND_DAYS = 2.0       # dias minimos para amortizar un peon
 SHOP_INT = spec.DEFAULT_CONFIG["townShopSellInterval"]
 CENTER_INT = spec.DEFAULT_CONFIG["townCenterSellInterval"]
 
@@ -113,7 +113,7 @@ def sell_orders(obs, opp_flow=None, horizon: int = 12, urgencia_final: int = Non
         from ..macro import sell_horizon
         horizon = sell_horizon(obs, macro)
     if urgencia_final is None:
-        urgencia_final = int(round(URGENCIA_DIAS * spec.TURNS_PER_DAY))
+        urgencia_final = int(round(LIQUIDATION_DAYS * spec.TURNS_PER_DAY))
     shed = obs["private"].get("shed", {})
     remaining = turns_left(obs)
     cap = spec.DEFAULT_CONFIG["shedCapacity"]
@@ -173,9 +173,9 @@ def sell_orders(obs, opp_flow=None, horizon: int = 12, urgencia_final: int = Non
         _pnow = obs["market"]["prices"]
         _val_shed = sum(float(_pnow.get(_q, 0)) * int(_c) for _q, _c in shed.items())
         _dinero = float(obs["farms"][me]["money"])
-        _z0 = (_w["cobertizo"] * (used / max(1, cap) - 0.5)
-               + _w["estacion"] * ((1.0 - remaining / max(1, spec.EPISODE_STEPS)) - 0.5)
-               + _w["caja"] * (_val_shed / max(1e-6, _val_shed + _dinero) - 0.5))
+        _z0 = (_w["shed"] * (used / max(1, cap) - 0.5)
+               + _w["season"] * ((1.0 - remaining / max(1, spec.EPISODE_STEPS)) - 0.5)
+               + _w["cash"] * (_val_shed / max(1e-6, _val_shed + _dinero) - 0.5))
 
     def _factor(prod, z=0.0):
         """Nivel del producto por la reaccion del turno. Sin pesos -> el nivel."""
@@ -213,7 +213,7 @@ def sell_orders(obs, opp_flow=None, horizon: int = 12, urgencia_final: int = Non
             _xp = max(-2.0, min(2.0, math.log(max(1e-6, unit_value(obs, p))
                                               / max(1e-6, target))))
             _xr = flow / max(1e-6, flow + drain_rate(obs, p)) - 0.5
-            _z = _w["precio"] * _xp + _w["rival"] * _xr
+            _z = _w["price"] * _xp + _w["rival"] * _xr
         _fp = _factor(p, _z)
         # Coste de oportunidad del capital: si el dinero liberado se reinvierte
         # y compone, retener producto tiene que batir tambien a ese crecimiento.
@@ -224,8 +224,8 @@ def sell_orders(obs, opp_flow=None, horizon: int = 12, urgencia_final: int = Non
         k = sum(1 for pr in prices_ if pr >= target)
 
         # El cobertizo desborda a 100 y lo que sobra se TIRA al final del dia.
-        if used > cap * SAT_ALTA:
-            k = max(k, n - int(cap * SAT_BAJA))
+        if used > cap * SAT_HIGH:
+            k = max(k, n - int(cap * SAT_LOW))
         if k > 0:
             orders.append((prices_[0] * _fp, ["SELL", p, k]))
 
@@ -276,18 +276,18 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
     antes de contratarlo, porque el valor por accion es una estimacion optimista
     (las unidades gastan turnos moviendose).
     """
-    margin = MARGEN_PEON if margin is None else margin
+    margin = HAND_MARGIN if margin is None else margin
     farm = obs["farms"][int(obs["player"])]
-    if obs["hour"] > HORA_CONTRATA:
+    if obs["hour"] > LAST_HIRE_HOUR:
         return []
     ya = int(farm["hires_today"])
     money = float(farm["money"])
     days = max(1, (turns_left(obs) + 1) // spec.TURNS_PER_DAY)
-    if days < DIAS_PEON:
+    if days < MIN_HAND_DAYS:
         return []                      # no da tiempo a amortizarlo
 
     from kaggle_environments.envs.kaggriculture import kaggriculture as E
-    valor_accion = _valor_por_accion(obs)
+    valor_accion = _value_per_action(obs)
 
     # Contratar SEGUN LA DEMANDA DE TRABAJO, no segun lo que el bolsillo aguante.
     # Sin este tope, el coste fibonacci hace que 15 peones cuesten 1596 $/dia y
@@ -334,7 +334,7 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
         ARRANQUE = 2
         por_unidad = max(1, spec.TURNS_PER_DAY // 3)
         n_max = min(n_max, max(ARRANQUE, -(-max(tasks, 1) // por_unidad)))
-    budget = max(SUELO_OBRA, money * PRESUPUESTO_MANO_OBRA)
+    budget = max(LABOUR_FLOOR, money * LABOUR_BUDGET_FRACTION)
 
     orders = []
     for n in range(ya, n_max):
@@ -353,7 +353,7 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
     return orders
 
 
-def _valor_por_accion(obs) -> float:
+def _value_per_action(obs) -> float:
     """Cuanto vale un turno de unidad, medido por el mejor cultivo disponible."""
     from .tasks import cycle_days, cycle_profit, cycle_yield, plantable
     best = 0.0
@@ -420,7 +420,7 @@ def land_orders(obs, macro=None) -> list:
     if per_tile <= 0:
         return []
     ret = 25 * per_tile
-    if ret > cost * LAND_RETORNO and money > cost * LAND_CAJA:
+    if ret > cost * LAND_RETURN and money > cost * LAND_CASH:
         return [["BUY_LAND"]]
     return []
 
@@ -474,7 +474,7 @@ def seed_orders(obs, tile_target: int, macro=None) -> list:
     # APRENDIDO. Este `return []` ABORTA la compra de semilla entera, y con
     # 8,4 unidades el umbral salia 16,8 mientras llevabamos 25,1 semillas de
     # media: buena parte de la partida no se compraba nada.
-    if sin_usar >= max(2.0, STOCK_SEMILLA * n_units):
+    if sin_usar >= max(2.0, SEED_STOCK_PER_UNIT * n_units):
         return []
     # CARTERA, no monocultivo. Antes se compraba semilla de UN cultivo -el que
     # dijera `cultivo_objetivo`-, asi que dar libertad a la red para plantar lo
@@ -490,7 +490,7 @@ def seed_orders(obs, tile_target: int, macro=None) -> list:
     # semilla que no se planta gastaba 980 $ en vano.
     from .tasks import plantable
     money = float(farm["money"])
-    budget = money * FRACCION_SEMILLA
+    budget = money * SEED_BUDGET_FRACTION
     viable = [k for k in spec.CROP_LIST if plantable(obs, k)]
     if not viable:
         return []
@@ -561,7 +561,7 @@ def animal_net_value(obs, animal: str) -> float:
     # comprabamos animales a 14 dias y el resultado caia de 4310 $ a 345 $.
     income = sum(marginal_prices(obs, d["product"], uds))
     comida = days * float(prices_.get("WHEAT", 0))
-    fert = dias_prod * float(prices_.get("FERTILIZER", 0)) * FERT_ANIMAL
+    fert = dias_prod * float(prices_.get("FERTILIZER", 0)) * MANURE_CREDIT
     return income + fert - d["cost"] - comida
 
 
@@ -574,7 +574,7 @@ def animal_orders(obs, max_per_turn: int = None, macro=None) -> list:
     peones -nuestras unidades pasan el 22.3% de los turnos en PASS por falta de
     tareas, frente al 7.1% del experto-.
     """
-    max_per_turn = (MAX_ANIMAL_TURNO if max_per_turn is None
+    max_per_turn = (MAX_ANIMALS_PER_TURN if max_per_turn is None
                      else max_per_turn)
     farm = obs["farms"][int(obs["player"])]
     priv = obs["private"]
@@ -641,7 +641,7 @@ def animal_orders(obs, max_per_turn: int = None, macro=None) -> list:
             continue
         # Reservar caja: quedarse sin dinero para semilla y comida arruina la
         # inversion, porque un animal sin comer dos dias se escapa.
-        if money - d["cost"] < RESERVA_ANIMAL:
+        if money - d["cost"] < ANIMAL_CASH_RESERVE:
             continue
         orders.append(["BUY_ANIMAL", a, 1])
         money -= d["cost"]
@@ -672,7 +672,7 @@ def feed_orders(obs, stock_days: int = None) -> list:
     # int(): el parametro es un real aprendible pero aguas abajo alimenta
     # cantidades que llegan a `range()`. Sin esto, TypeError solo cuando hay
     # ganaderia -a 5 dias no la hay, asi que no saltaba en la celda pequena-.
-    stock_days = int(round(DIAS_STOCK_PIENSO if stock_days is None
+    stock_days = int(round(FEED_STOCK_DAYS if stock_days is None
                            else stock_days))
     me = int(obs["player"])
     farm = obs["farms"][me]
@@ -701,7 +701,7 @@ def feed_orders(obs, stock_days: int = None) -> list:
     # granja sin caja tampoco produce.
     cost = sum(marginal_prices(obs, "WHEAT", n))
     money = float(farm["money"])
-    while n > 1 and cost > money * CAJA_PIENSO:
+    while n > 1 and cost > money * FEED_CASH_FRACTION:
         n -= 1
         cost = sum(marginal_prices(obs, "WHEAT", n))
     return [["BUY_PRODUCT", "WHEAT", n]] if n > 0 and cost <= money else []

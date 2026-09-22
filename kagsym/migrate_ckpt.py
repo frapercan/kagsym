@@ -84,65 +84,65 @@ def migrate_macro_head(sd: dict) -> list:
     import math
     from dataclasses import fields as _campos
     from .macro import Macro, N_MACRO
-    tocadas = []
-    porde = [float(f.default) for f in _campos(Macro)]
+    touched = []
+    defaults = [float(f.default) for f in _campos(Macro)]
     lg = lambda x: math.log(max(1e-6, min(1 - 1e-6, x)) /
                             (1 - max(1e-6, min(1 - 1e-6, x))))
     for k, v in list(sd.items()):
         if k.endswith("macro_mu.weight") and v.shape[0] < N_MACRO:
             w = v.new_zeros(N_MACRO, v.shape[1]); w[: v.shape[0]] = v
-            sd[k] = w; tocadas.append(f"{k}: {v.shape[0]} -> {N_MACRO} (a cero)")
+            sd[k] = w; touched.append(f"{k}: {v.shape[0]} -> {N_MACRO} (a cero)")
         elif k.endswith("macro_mu.bias") and v.shape[0] < N_MACRO:
             b_ = v.new_empty(N_MACRO); b_[: v.shape[0]] = v
             for i in range(v.shape[0], N_MACRO):
-                b_[i] = lg(porde[i])
-            sd[k] = b_; tocadas.append(f"{k}: {v.shape[0]} -> {N_MACRO} (defecto del campo)")
+                b_[i] = lg(defaults[i])
+            sd[k] = b_; touched.append(f"{k}: {v.shape[0]} -> {N_MACRO} (defecto del campo)")
         elif k.endswith("log_sigma") and v.shape[0] < N_MACRO:
             t = v.new_full((N_MACRO,), float(v.median()))
             t[: v.shape[0]] = v
-            sd[k] = t; tocadas.append(f"{k}: {v.shape[0]} -> {N_MACRO} (mediana)")
-    return tocadas
+            sd[k] = t; touched.append(f"{k}: {v.shape[0]} -> {N_MACRO} (mediana)")
+    return touched
 
 
 # Atributos renombrados al pasar el codigo a ingles. Las claves de un
 # `state_dict` son rutas de ATRIBUTO, asi que renombrar un submodulo invalida
 # todos los checkpoints anteriores. Se traducen al cargar, que es lo mismo que
 # ya se hace con las cabezas que crecen.
-RENOMBRES = {"mundo.": "world."}
+RENAMES = {"mundo.": "world."}
 
 
 def migrate_keys(sd: dict) -> list[str]:
     """Traduce las claves de checkpoints anteriores al renombrado ES->EN."""
-    tocadas = []
-    for viejo, nuevo in RENOMBRES.items():
+    touched = []
+    for viejo, nuevo in RENAMES.items():
         claves = [k for k in sd if k.startswith(viejo)]
         for k in claves:
             sd[nuevo + k[len(viejo):]] = sd.pop(k)
         if claves:
-            tocadas.append(f"{viejo}* -> {nuevo}* ({len(claves)} tensores)")
-    return tocadas
+            touched.append(f"{viejo}* -> {nuevo}* ({len(claves)} tensores)")
+    return touched
 
 
 def migrate_sd(sd: dict) -> tuple[dict, list[str]]:
     """Devuelve (state_dict migrado, lista de claves tocadas)."""
-    out, tocadas = dict(sd), []
-    tocadas += migrate_keys(out)        # antes que nada: los nombres viejos
-    tocadas += migrate_macro_head(out)
+    out, touched = dict(sd), []
+    touched += migrate_keys(out)        # antes que nada: los nombres viejos
+    touched += migrate_macro_head(out)
     for k in ("world.glob_enc.0.weight", "world.resumen.0.weight"):
         if k in out and out[k].shape[1] != NUEVO:
             out[k] = migrate_input(out[k])
-            tocadas.append(k)
-    return out, tocadas
+            touched.append(k)
+    return out, touched
 
 
-def load_strict(net, sd, nombre="checkpoint"):
+def load_strict(net, sd, name_="checkpoint"):
     """Carga migrando, y REVIENTA si queda algo sin cargar.
 
     Deliberadamente ruidoso: el fallo original fue silencioso. Si un tensor no
     encaja, mejor una excepcion que una politica con partes al azar que parece
     funcionar y da numeros sin sentido.
     """
-    sd, tocadas = migrate_sd(sd)
+    sd, touched = migrate_sd(sd)
     act = net.state_dict()
     # SIGMA DE LA CABEZA MICRO. Antes era constante del config; desde el
     # 2026-09-22 es un `nn.Parameter` que aprende PPO, como el del macro. Un
@@ -160,19 +160,19 @@ def load_strict(net, sd, nombre="checkpoint"):
         t[:] = math.log(s_ops)
         t[0] = math.log(s_val)
         sd = {**sd, "log_sigma_micro": t}
-        tocadas = list(tocadas) + ["log_sigma_micro (reconstruido del cfg)"]
-    mal = [(k, tuple(act[k].shape), tuple(sd[k].shape))
+        touched = list(touched) + ["log_sigma_micro (reconstruido del cfg)"]
+    bad = [(k, tuple(act[k].shape), tuple(sd[k].shape))
            for k in act if k in sd and act[k].shape != sd[k].shape]
-    falta = [k for k in act if k not in sd]
-    if mal or falta:
+    missing = [k for k in act if k not in sd]
+    if bad or missing:
         raise RuntimeError(
-            f"{nombre}: no encaja y se quedaria AL AZAR -> "
-            f"formas distintas {mal}, ausentes {falta}")
+            f"{name_}: no encaja y se quedaria AL AZAR -> "
+            f"formas distintas {bad}, ausentes {missing}")
     net.load_state_dict({**act, **sd})
-    return tocadas
+    return touched
 
 
-def load_tolerant(net, sd, nombre="checkpoint", verbose=True):
+def load_tolerant(net, sd, name_="checkpoint", verbose=True):
     """Migra, carga lo que encaje, y DICE EN VOZ ALTA lo que queda al azar.
 
     La tolerancia es deliberada en algunos sitios (`--init-net` arranca de un
@@ -180,7 +180,7 @@ def load_tolerant(net, sd, nombre="checkpoint", verbose=True):
     mensaje decia "56/58 tensores" sin nombrarlos, y los dos ausentes eran el
     codificador global y el resumen. Aqui se nombran, siempre.
     """
-    sd, tocadas = migrate_sd(sd)
+    sd, touched = migrate_sd(sd)
     act = net.state_dict()
     # SIGMA DE LA CABEZA MICRO. Antes era constante del config; desde el
     # 2026-09-22 es un `nn.Parameter` que aprende PPO, como el del macro. Un
@@ -198,18 +198,18 @@ def load_tolerant(net, sd, nombre="checkpoint", verbose=True):
         t[:] = math.log(s_ops)
         t[0] = math.log(s_val)
         sd = {**sd, "log_sigma_micro": t}
-        tocadas = list(tocadas) + ["log_sigma_micro (reconstruido del cfg)"]
+        touched = list(touched) + ["log_sigma_micro (reconstruido del cfg)"]
     ok = {k: v for k, v in sd.items() if k in act and act[k].shape == v.shape}
     azar = [k for k in act if k not in ok]
     net.load_state_dict({**act, **ok})
     if verbose:
-        if tocadas:
-            print(f"{nombre}: migrados a {NUEVO} entradas -> {', '.join(tocadas)}",
+        if touched:
+            print(f"{name_}: migrados a {NUEVO} entradas -> {', '.join(touched)}",
                   flush=True)
         if azar:
-            print(f"AVISO {nombre}: {len(azar)} tensores NO cargados, quedan AL "
+            print(f"AVISO {name_}: {len(azar)} tensores NO cargados, quedan AL "
                   f"AZAR -> {', '.join(azar)}", flush=True)
         else:
-            print(f"{nombre}: {len(ok)}/{len(act)} tensores, carga COMPLETA",
+            print(f"{name_}: {len(ok)}/{len(act)} tensores, carga COMPLETA",
                   flush=True)
     return len(ok), len(act), azar

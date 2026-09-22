@@ -49,7 +49,7 @@ N_HIST = 4 * N_PRODUCTOS      # flujo del rival en 4 ventanas hacia atras
 
 
 @dataclass
-class MundoConfig:
+class WorldConfig:
     width: int = 128
     blocks: int = 6
     hidden: int = 256
@@ -91,7 +91,7 @@ class MundoConfig:
 class CodificadorMundo(nn.Module):
     """(grid, glob, hist) -> embedding espacial h y resumen global g."""
 
-    def __init__(self, cfg: MundoConfig):
+    def __init__(self, cfg: WorldConfig):
         super().__init__()
         self.cfg = cfg
         w = cfg.width
@@ -121,7 +121,7 @@ class CodificadorMundo(nn.Module):
         return self.blocks(h), self.resumen(g)
 
 
-class _AtencionCasillas(nn.Module):
+class _TileAttention(nn.Module):
     """Auto-atencion sobre las 100 casillas del tablero."""
 
     def __init__(self, w: int, cabezas: int = 4):
@@ -140,10 +140,10 @@ class _AtencionCasillas(nn.Module):
         return x.transpose(1, 2).reshape(b, c, H, W)
 
 
-class AgenteE2E(nn.Module):
+class E2EAgent(nn.Module):
     """Todo conectado: un tronco, dos politicas, un critico y una cabeza auxiliar."""
 
-    def __init__(self, cfg: MundoConfig):
+    def __init__(self, cfg: WorldConfig):
         super().__init__()
         self.cfg = cfg
         w, hid = cfg.width, cfg.hidden
@@ -206,7 +206,7 @@ class AgenteE2E(nn.Module):
             # casillas interactuan -una unidad solo hace una tarea, e ir a una
             # es no ir a otra-. El 1x1 no ve vecinas, el 3x3 ve ocho, esto ve
             # las cien.
-            self.micro_ctx = _AtencionCasillas(w)
+            self.micro_ctx = _TileAttention(w)
         elif _c == "5x5":
             self.micro_ctx = nn.Sequential(nn.Conv2d(w, w, 5, padding=2), nn.SiLU())
         else:
@@ -266,7 +266,7 @@ class AgenteE2E(nn.Module):
         # proyecciones, que se registra como `2_salud/jepa_sd`.
         self.d_jepa = 64
         self.jepa_proy = nn.Linear(hid, self.d_jepa)
-        from ..obs import HORIZONTES_AUX as _HZ
+        from ..obs import AUX_HORIZONS as _HZ
         self.n_hz = len(_HZ)
         self.jepa_pred = nn.Sequential(
             nn.Linear(hid, hid), nn.SiLU(),
@@ -338,7 +338,7 @@ class AgenteE2E(nn.Module):
         return (torch.distributions.Normal(mu, sigma).log_prob(pre)
                 - (torch.log(a) + torch.log1p(-a))).sum(-1)
 
-    def inicializa_macro_en(self, vector, concentracion: float = 6.0) -> None:
+    def inicializa_macro_en(self, vector, concentration: float = 6.0) -> None:
         """Centra la Beta inicial en un vector conocido (el que encontro el CEM)."""
         with torch.no_grad():
             nn.init.zeros_(self.macro_mu.weight)
