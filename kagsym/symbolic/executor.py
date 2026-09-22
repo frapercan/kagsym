@@ -24,6 +24,9 @@ from . import market_ops, tasks
 # which the code itself describes as "conservative: it underestimates the
 # future drop and therefore pushes towards selling earlier".
 USE_RIVAL_FLOW = bool(int(os.environ.get("KAG_FLUJO_MERCADO", "0")))
+# How much the priority fractions bind the order slots. 0 = pure ordering,
+# which is what the code did before this existed. Learned (`f_priority_split`).
+PRIORITY_SPLIT = 0.0
 
 TURNS_PER_TILE_INIT = 3.0   # learned (`f_turns_init`)
 TURNS_PER_TILE_MIN = 2.0    # learned (`f_turns_min`)
@@ -243,9 +246,32 @@ class Agent:
         # a silent fallback, which is what we want after the `turn_weights`
         # lesson.
         cats = category_order(mac) if mac is not None else list(by_category)
-        for c in cats:
-            orders += by_category[c]()
-        orders = orders[: spec.DEFAULT_CONFIG["maxMarketOrdersPerTurn"]]
+        _max = spec.DEFAULT_CONFIG["maxMarketOrdersPerTurn"]
+        if mac is None or PRIORITY_SPLIT <= 0.0:
+            for c in cats:
+                orders += by_category[c]()
+        else:
+            # THE FRACTIONS BIND THE SLOTS. Taking every category in order
+            # until the cap is reached means the first one can swallow all ten
+            # and the sixth never places an order, whatever its priority says.
+            # Each category gets a quota interpolating between the full cap
+            # -today's behaviour- and its share of the slots, and whatever is
+            # left over is filled in priority order so no slot is wasted.
+            from ..macro import priorities as _pri
+            _p = _pri(mac)
+            _q = {c: int(round((1.0 - PRIORITY_SPLIT) * _max
+                               + PRIORITY_SPLIT * _p[c] * _max)) for c in cats}
+            _pend = {}
+            for c in cats:
+                _o = by_category[c]()
+                orders += _o[: _q[c]]
+                if len(_o) > _q[c]:
+                    _pend[c] = _o[_q[c]:]
+            for c in cats:
+                if len(orders) >= _max:
+                    break
+                orders += _pend.get(c, [])[: _max - len(orders)]
+        orders = orders[: _max]
 
         action = dict(provisional, market=orders)
         self._last_action = action

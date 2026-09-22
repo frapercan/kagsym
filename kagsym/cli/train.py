@@ -1151,6 +1151,28 @@ def main():
                 _d = (lp - flp)
                 _sat = float((_d.abs() > 10).float().mean())
                 _sd = float(_d.std())
+                # HOW MUCH THE VERB IS ACTUALLY EXPLORED. The sigmas are
+                # learned parameters and they barely move -2.0% and 0.3% of
+                # travel in 830 updates- so "is exploration adequate" cannot
+                # be read off them. What can be read is behaviour: among the
+                # tiles where the mask says there WAS a comparison, how often
+                # the sampled map picks a different verb from the mean one.
+                #
+                # Measured offline at sigma_verb 0.03 this is ~4.5%, against
+                # ~24% at 0.15. It is logged and not controlled: a sweep of
+                # 0.03 / 0.06 / 0.12 from scratch gave more head travel and
+                # LESS money as it widened, so there is no measured case for
+                # pushing it.
+                _explore = float("nan")
+                if fms is not None and getattr(net, "n_ops", 0):
+                    _vm = fms[:, 1:1 + net.n_ops]
+                    _cmp = (_vm.sum(1) >= 2)
+                    if bool(_cmp.any()):
+                        _neg = torch.finfo(_s["micro"].dtype).min
+                        _a = _s["micro"][:, 1:1 + net.n_ops].masked_fill(_vm == 0, _neg)
+                        _b2 = fau[:, 1:1 + net.n_ops].masked_fill(_vm == 0, _neg)
+                        _explore = float(((_a.argmax(1) != _b2.argmax(1)) & _cmp)
+                                         .float().sum() / _cmp.float().sum())
             if upd % 5 == 0 or upd == 1:
                 print(f"    [diag] kl/dim={kl:.2e}  sd(lp-flp)={_sd:.2f}  "
                       f"ratio saturation={_sat:.1%}  dims={_nd}", flush=True)
@@ -1770,6 +1792,8 @@ def main():
                             _z = torch.cat(JZ)
                             _m["2_health/jepa_sd"] = float(_z.std(0).mean())
                         try:
+                            if _explore == _explore:
+                                _m["2_health/verb_explore_pct"] = 100.0 * _explore
                             _m["2_health/kl_macro"] = float(kl_ma)
                             _m["2_health/kl_micro"] = float(kl_mi)
                             _m["4_diag/lr_macro"] = float(opt.param_groups[1]["lr"])
