@@ -27,7 +27,7 @@ from . import spec
 N_LEVELS = 8         # how much of each thing
 CATEGORIES = ["land", "feed", "animal", "sell", "seed", "hand"]
 N_PRIORITIES = len(CATEGORIES)
-N_EXPOSED = 30       # the hand-set ones; see the block in `Macro`
+N_EXPOSED = 32       # the hand-set ones; see the block in `Macro`
 N_MARKET = 9         # one learned value multiplier per product
 N_TURN = 5           # coefficients of the PER-TURN selling rule
 N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
@@ -49,7 +49,8 @@ class Macro:
     venta: float = 0.25        # -> agresividad: 0 vender ya, 1 acumular al maximo
     crop: float = 0.0       # -> sesgo hacia cultivo caro (1) o barato y rapido (0)
     expandir: float = 0.25     # -> saturacion exigida antes de comprar tierra
-    adherencia: float = 0.25   # -> cuanto se premia conservar el destino de ayer
+    adherencia: float = 0.3333 # -> stickiness scale, borderless
+                               #    (exp(logit(1/3)) = 0.5, the previous value)
     fertilizar: float = 0.0    # -> cuanto vale fertilizar frente a las demas tareas
     # PRIORITIES. The seven above say HOW MUCH of each thing; these say WHAT
     # GETS SACRIFICED when there is not enough for everything, which is 31% of
@@ -169,6 +170,21 @@ class Macro:
     w_season: float = 0.5    # reaccion al avance de la temporada
     w_cash: float = 0.5        # reaccion a cuanta riqueza esta inmovilizada
     # ------------------------------------------------------------------
+    # FOURTH PASS, from the AST audit. Two scales that were still fixed:
+    #
+    #   `f_priority_temp`  the softmax temperature over the six priorities.
+    #                      A temperature decides how MUCH the ordering is
+    #                      honoured -flat means the order barely matters, sharp
+    #                      means the first category takes everything- and that
+    #                      is policy, not mechanics. Measured dead at the
+    #                      current operating point (the emitted priorities are
+    #                      nearly uniform) but it gates how much the priority
+    #                      vector can ever do.
+    #   `f_seed_floor`     the hard floor of 2 seeds in the "stop buying seed"
+    #                      rule. Measured LIVE: raising it to 40 costs -7%.
+    f_priority_temp: float = 0.5   # 3.0  softmax temperature over priorities
+    f_seed_floor: float = 0.5      # 2.0  minimum seeds before the stock rule bites
+    # ------------------------------------------------------------------
     # TERCERA HORNADA, 2026-09-22. Auditoria ESTRUCTURAL: las dos anteriores
     # buscaban constantes de modulo y literales; esta recorre cada punto de
     # decision del arbol (`runs/ligas/auditoria_cascada.py`) y clasifica. De
@@ -214,6 +230,8 @@ HAND_CAP = None
 WATERING_FACTOR = 0.5
 # Acciones al dia que cuesta sostener un animal. Aprendido (`f_actions_per_animal`).
 ACTIONS_PER_ANIMAL = 3.0
+# Softmax temperature over the six priorities. Learned (`f_priority_temp`).
+PRIORITY_TEMP = 3.0
 
 
 # (nombre, minimo, rango). Los rangos salen de la busqueda que encontro 1.258 $.
@@ -276,6 +294,8 @@ PARAM_TABLE = [
     ("cost_rise",     0.50,  "fraction"),
     ("cost_decay",     0.93,  "fraction"),
     ("fert_per_trip",     4.00,  "positive"),
+    ("priority_temp",     3.00,  "positive"),
+    ("seed_floor",        2.00,  "positive"),
 ]
 
 # Coeficientes de la regla de venta por turno. NO estan en RANGOS_F porque su
@@ -500,7 +520,11 @@ def assignment_stickiness(macro: Macro) -> float:
     Un mapa de valor 10x10 no puede expresarlo -las unidades no solo difieren en
     posicion e inventario, tambien en su compromiso previo-.
     """
-    return 2.0 * float(macro.adherencia)
+    # BORDERLESS. It used to be `2.0 * macro.adherencia`, linear in [0,1]
+    # and therefore capped at 2.0 -a ceiling nobody searched-. Now it is
+    # the same borderless form as every other parameter: f = 0.5 gives
+    # 1.0, the old midpoint, and the extremes reach any value.
+    return math.exp(_logit(macro.adherencia))
 
 
 def priorities(macro: Macro) -> dict:
@@ -513,7 +537,7 @@ def priorities(macro: Macro) -> dict:
     """
     import math
     vals = [getattr(macro, "p_" + c) for c in CATEGORIES]
-    e = [math.exp(3.0 * v) for v in vals]
+    e = [math.exp(PRIORITY_TEMP * v) for v in vals]
     total = sum(e) or 1.0
     return {c: x / total for c, x in zip(CATEGORIES, e)}
 

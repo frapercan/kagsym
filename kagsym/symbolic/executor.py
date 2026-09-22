@@ -227,7 +227,11 @@ class Agent:
             "animal": lambda: market_ops.animal_orders(obs, macro=mac),
             "sell": lambda: market_ops.sell_orders(obs, opp_flow=flow,
                                                    horizon=self.horizon, macro=mac),
-            "seed": lambda: market_ops.seed_orders(obs, tile_target=min(free, 12),
+            # `tile_target` is overridden by `target_tiles(obs, macro)` inside
+            # `seed_orders` whenever a macro is present, which is always in
+            # training and in play. The value passed here is the fallback
+            # for a macro-less agent.
+            "seed": lambda: market_ops.seed_orders(obs, tile_target=free,
                                                    macro=mac),
             "hand": lambda: market_ops.hire_orders(obs, macro=mac),
         }

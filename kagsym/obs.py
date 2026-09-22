@@ -233,7 +233,7 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     urgencia = max(0.0, 1.0 - dias_q / 2.0)
     # PHASE OF THE DAY, also in decision terms. The hour has hard structure in
     # the engine: at hour 0 the hands are cleared and the fibonacci hiring cost
-    # resets, the hiring window closes at hour 3, and at the CLOSE of the day
+    # resets, and at the CLOSE of the day
     # inventories are flushed (whatever does not fit is discarded) and every
     # unwatered plant dies.
     #
@@ -241,7 +241,13 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     # unit-actions remain today than there are unwatered plants, some will die
     # tonight and there is a choice to make. It is exactly computable.
     horas_q = (spec.TURNS_PER_DAY - hour) / spec.TURNS_PER_DAY
-    puede_contratar = 1.0 if hour <= 3 else 0.0
+    # NOT an engine rule. `_do_hire` has no hour restriction: verified in the
+    # installed engine. This is just an "early in the day" indicator, and the
+    # actual hiring window is the learned `LAST_HIRE_HOUR`. It is kept because
+    # it is a cheap, monotone feature and removing it would change the
+    # observation layout and invalidate every checkpoint for no gain -the same
+    # information is already carried by `hour`, `sin h` and `cos h`-.
+    temprano = 1.0 if hour <= 3 else 0.0
     n_unid = 1 + len(farms[me]["hands"])
     action_q = n_unid * (spec.TURNS_PER_DAY - hour)
     sin_regar = sum(1 for row in farms[me]["tiles"] for t in row
@@ -257,7 +263,7 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
         step / spec.EPISODE_STEPS,
         dias_q / spec.N_DAYS,
     ] + viables_cultivo + viables_animal
-        + [urgencia, horas_q, puede_contratar, holgura,
+        + [urgencia, horas_q, temprano, holgura,
            # ABSOLUTE, with 30 days and 15 hands as the fixed reference.
            # EPISODE_STEPS, not N_DAYS: `set_episode_steps` only updates the
            # former and N_DAYS stays pinned at 30 forever.

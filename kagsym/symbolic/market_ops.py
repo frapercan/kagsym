@@ -50,7 +50,8 @@ FEED_CASH_FRACTION = 0.25    # fraccion de caja que puede irse en pienso de golp
 LABOUR_FLOOR = 60.0     # suelo en dolares del presupuesto de mano de obra
 LIQUIDATION_DAYS = 2.0   # dias de liquidacion al cerrar la temporada
 # TERCERA HORNADA (auditoria estructural del 2026-09-22). Ver `Macro`.
-SEED_STOCK_PER_UNIT = 2.0   # semillas por unidad antes de dejar de comprar
+SEED_STOCK_PER_UNIT = 2.0
+SEED_FLOOR = 2.0      # minimo de semillas antes de que la regla de stock actue   # semillas por unidad antes de dejar de comprar
 ANIMAL_CASH_RESERVE = 300.0  # caja reservada antes de comprar un animal
 LAST_HIRE_HOUR = 3.0   # ultima hora del dia en que se contrata
 MIN_HAND_DAYS = 2.0       # dias minimos para amortizar un peon
@@ -474,7 +475,7 @@ def seed_orders(obs, tile_target: int, macro=None) -> list:
     # APRENDIDO. Este `return []` ABORTA la compra de semilla entera, y con
     # 8,4 unidades el umbral salia 16,8 mientras llevabamos 25,1 semillas de
     # media: buena parte de la partida no se compraba nada.
-    if sin_usar >= max(2.0, SEED_STOCK_PER_UNIT * n_units):
+    if sin_usar >= max(SEED_FLOOR, SEED_STOCK_PER_UNIT * n_units):
         return []
     # CARTERA, no monocultivo. Antes se compraba semilla de UN cultivo -el que
     # dijera `cultivo_objetivo`-, asi que dar libertad a la red para plantar lo
