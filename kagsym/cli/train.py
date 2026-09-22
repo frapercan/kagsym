@@ -660,7 +660,7 @@ def main():
     # cada peldano de la rejilla. `EntornoParalelo` reparte los entornos en
     # orden, `por_proc[k]` seguidos por trabajador.
     _GRUPOS = None
-    if a.grid and len(set(env.pasos_proc)) > 1:
+    if a.grid and len(set(env.steps_proc)) > 1:
         _GRUPOS, _o = [], 0
         for _m in env.por_proc:
             _GRUPOS.append((_o, _o + _m))
@@ -959,10 +959,10 @@ def main():
                 for t in range(_njz)])
         _fhf = None
         if HF:
-            from kagsym.obs import AUX_HORIZONS, VENTANAS_RIVAL
+            from kagsym.obs import AUX_HORIZONS, RIVAL_WINDOWS
             _nd = len(HF)
             # de (dias, envs, 4*P) a la primera ventana: lo LISTO hoy
-            _listo = [x.reshape(x.shape[0], len(VENTANAS_RIVAL), -1)[:, 0, :]
+            _listo = [x.reshape(x.shape[0], len(RIVAL_WINDOWS), -1)[:, 0, :]
                       for x in HF]
             _fhf = torch.cat([
                 torch.cat([_listo[min(t + k, _nd - 1)] for k in AUX_HORIZONS],
