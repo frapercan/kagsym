@@ -219,14 +219,15 @@ def _shed_task(obs, farm, ctx=None, macro=None):
                             and t.get("fertilized_until_day", -1) < obs["day"])
         if fertilizable > 0:
             n = min(fert, fertilizable, int(FERT_PER_TRIP))
-            return (2.0 * unit_price(obs, "FERTILIZER"), ["PICKUP", "FERTILIZER", n])
+            return (FERT_TRIP_VALUE * unit_price(obs, "FERTILIZER"),
+                    ["PICKUP", "FERTILIZER", n])
 
     # 3) wheat to feed the animals that have not eaten yet
     hungry = sum(1 for row in farm["tiles"] for t in row
                       if isinstance(t, dict) and t.get("animal") and not t.get("fed_today"))
     if hungry > 0 and int(shed.get("WHEAT", 0)) > 0:
         n = min(hungry, int(shed["WHEAT"]))
-        return (2.0 * unit_price(obs, "WHEAT"), ["PICKUP", "WHEAT", n])
+        return (WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), ["PICKUP", "WHEAT", n])
     return None
 
 
@@ -410,7 +411,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
             else:
                 if age >= cd["first_yield_day"] - 1:
                     return (price, ["WATER"])
-            return (0.4 * price, ["WATER"])
+            return (WATER_IDLE_VALUE * price, ["WATER"])
 
         # FERTILISE: only where the NETWORK provides the value.
         #
@@ -475,13 +476,13 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         prod = spec.ANIMALS[animal]["product"]
         price = unit_price(obs, prod)
         if not tile.get("fed_today"):
-            return (2 * price, ["FEED"])          # sin comer dos dias, escapa
+            return (FEED_VALUE * price, ["FEED"])   # two days unfed and it escapes
         if tile.get("yield_units", 0) > 0:
             return (tile["yield_units"] * price, ["HARVEST"])
         if tile.get("fertilizer_available"):
             return (unit_price(obs, "FERTILIZER"), ["COLLECT_FERTILIZER"])
         if not tile.get("cared_today"):
-            return (0.5 * price, ["CARE"])
+            return (CARE_VALUE * price, ["CARE"])
     return None
 
 
@@ -499,6 +500,18 @@ MAP_GAIN = 1.0              # how much the network's emission weighs
 MAP_CAP = 20.0      # corte en `ops`/`directo`, dentro de expm1
 FERTILIZER_HORIZON = 3      # days counted towards the fertiliser bonus
 FERT_PER_TRIP = 4.0         # fertiliser picked up in one trip. Learned.
+# WHAT EACH OPERATION IS WORTH, where the engine does not say it. A trip to the
+# shed for wheat or fertiliser, a watering outside the yield window, feeding an
+# animal and caring for it were five multipliers over the item price written
+# straight into `tile_task`, which is why the constant audits that swept module
+# globals never saw them. They are preferences -how much a feeding is worth
+# against a harvest- so they are learned like the rest; the defaults below
+# reproduce the numbers they had.
+FERT_TRIP_VALUE = 2.0       # a fertiliser pickup, as a multiple of its price
+WHEAT_TRIP_VALUE = 2.0      # a wheat pickup, likewise
+WATER_IDLE_VALUE = 0.4      # watering with no yield in sight
+FEED_VALUE = 2.0            # feeding: two days unfed and the animal escapes
+CARE_VALUE = 0.5            # caring for an animal
 
 
 # ---------------------------------------------------------------------------
@@ -544,11 +557,10 @@ N_OPS = len(OPS_VOCAB)
 MASK_ACC = None
 FILTER_BY_INVENTORY = False
 
-# MUESTREO DEL VERBO. Por defecto apagado: el ejecutor UMBRALIZA con argmax,
-# which is correct for deterministic evaluation. Turning it on samples the
-# verb from a softmax over the logits of the LEGAL options, which is what gives
-# gradient to a categorical head. `_VERB_RNG` is seeded per episode from
-# outside so comparisons stay paired.
+# The verb is thresholded with argmax over the logits of the LEGAL options.
+# Exploration does not come from sampling here: the micro map arrives already
+# perturbed by the policy's Gaussian, so the argmax of a perturbed map is
+# already a stochastic decision with a log-probability PPO can use.
 import numpy as np
 
 # UMBRAL de las casillas EXTRA. Lo fija `macro.aplica_parametros` una vez por
@@ -573,28 +585,6 @@ import numpy as np
 # There is no hand-written preference order or value: that would put a
 # heuristic back exactly where one is being removed.
 EXTRA_TILE_THRESHOLD = 2500.0
-SAMPLE_VERB = False
-VERB_TEMP = 1.0
-_VERB_RNG = np.random.default_rng(0)
-
-
-GRAD_ACC = None
-
-
-def seed_verb(seed: int) -> None:
-    global _VERB_RNG
-    _VERB_RNG = np.random.default_rng(seed)
-
-
-def enable_grad(n_ops: int) -> None:
-    global GRAD_ACC
-    GRAD_ACC = np.zeros(n_ops, dtype=np.float64)
-
-
-def collect_grad():
-    global GRAD_ACC
-    g, GRAD_ACC = GRAD_ACC, None
-    return g
 
 
 def enable_mask():
@@ -783,35 +773,11 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                 if not options:
                     continue
                 if verb_map is not None:
-                    if SAMPLE_VERB:
-                        # MUESTREAR en vez de UMBRALIZAR. El argmax hace que
-                        # moving a logit changes NOTHING until it crosses another
-                        # verbo: derivada cero en casi todo punto, por
-                        # construccion. Medido en 12h x 5d: la subida local en
-                        # el espacio de verbos acepta 0,1 mejoras en 250
-                        # evaluaciones -es plano- y acaba POR DEBAJO de la
-                        # inaccion. Con softmax, subir un logit baja a los demas
-                        # SIEMPRE, asi que el retorno esperado si depende de
-                        # all of them and there is gradient to follow.
-                        _lg = np.array([float(verb_map[o[0]][y][x])
-                                        for o in options], dtype=np.float64)
-                        _lg -= _lg.max()
-                        _pr = np.exp(_lg / max(1e-6, VERB_TEMP))
-                        _pr /= _pr.sum()
-                        _sel = int(_VERB_RNG.choice(len(options), p=_pr))
-                        k, op = options[_sel]
-                        if GRAD_ACC is not None:
-                            # d/dlogit_j de log p(elegido) = [j==elegido] - p_j,
-                            # only over this tile's LEGAL options. Summed over
-                            # every decision of the episode it gives the
-                            # score-function gradient REINFORCE uses.
-                            for _i, (_k, _) in enumerate(options):
-                                GRAD_ACC[_k] += (1.0 if _i == _sel else 0.0) - _pr[_i]
-                    else:
-                        k, op = max(options,
-                                    key=lambda o: float(verb_map[o[0]][y][x]))
-                    # Solo el APRENDIZ trae mapa_ops; el rival no, asi que esto
-                    # tells who accumulates without passing flags down the pipe.
+                    k, op = max(options,
+                                key=lambda o: float(verb_map[o[0]][y][x]))
+                    # Only the LEARNER brings a verb map; the opponent does not,
+                    # so this says who accumulates without passing flags down
+                    # the pipe.
                     if MASK_ACC is not None:
                         MASK_ACC[0, y, x] = 1.0        # el valor decidio aqui
                         if len(options) > 1:
@@ -872,18 +838,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
         import math
         _lg = np.array([float(verb_map[o[0]][_y][_x]) for o in _ex],
                        dtype=np.float64)
-        _lg -= _lg.max()
-        _pr = np.exp(_lg / max(1e-6, VERB_TEMP))
-        _pr /= _pr.sum()
-        if SAMPLE_VERB:
-            _sel = int(_VERB_RNG.choice(len(_ex), p=_pr))
-            if GRAD_ACC is not None:
-                # score-function, as in the main sweep: without sampling, argmax
-                # deja derivada cero en casi todo punto.
-                for _i, (_k2, _) in enumerate(_ex):
-                    GRAD_ACC[_k2] += (1.0 if _i == _sel else 0.0) - _pr[_i]
-        else:
-            _sel = int(np.argmax(_lg))
+        _sel = int(np.argmax(_lg))
         _k2, _o2 = _ex[_sel]
         _r2 = float(value_map[_y][_x])
         _v2 = math.copysign(

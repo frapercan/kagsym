@@ -27,7 +27,7 @@ from . import spec
 N_LEVELS = 8         # how much of each thing
 CATEGORIES = ["land", "feed", "animal", "sell", "seed", "hand"]
 N_PRIORITIES = len(CATEGORIES)
-N_EXPOSED = 31       # the hand-set ones; see the block in `Macro`
+N_EXPOSED = 36       # the hand-set ones; see the block in `Macro`
 N_MARKET = 9         # one learned value multiplier per product
 N_TURN = 5           # coefficients of the PER-TURN selling rule
 N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
@@ -202,6 +202,17 @@ class Macro:
     f_cost_rise: float = 0.5       # 0.5   how much cost/tile rises when plants dry
     f_cost_decay: float = 0.5      # 0.93  how much it falls when nothing dries
     f_fert_per_trip: float = 0.5   # 4.0   fertiliser picked up in one trip
+    # ------------------------------------------------------------------
+    # FIFTH PASS. Five multipliers over the item price written INSIDE
+    # `tile_task`, which is why neither the module-constant audits nor the
+    # structural one reported them: they are not globals and they are not
+    # thresholds, they are what an operation is WORTH. How much a feeding is
+    # worth against a harvest is preference, so it is learned.
+    f_fert_trip: float = 0.5       # 2.0   value of a fertiliser pickup
+    f_wheat_trip: float = 0.5      # 2.0   value of a wheat pickup
+    f_water_idle: float = 0.5      # 0.4   watering with no yield in sight
+    f_feed_value: float = 0.5      # 2.0   feeding an animal
+    f_care_value: float = 0.5      # 0.5   caring for an animal
 
     @staticmethod
     def default() -> "Macro":
@@ -294,6 +305,11 @@ PARAM_TABLE = [
     ("fert_per_trip",     4.00,  "positive"),
     ("priority_temp",     3.00,  "positive"),
     ("seed_floor",        2.00,  "positive"),
+    ("fert_trip",         2.00,  "positive"),
+    ("wheat_trip",        2.00,  "positive"),
+    ("water_idle",        0.40,  "positive"),
+    ("feed_value",        2.00,  "positive"),
+    ("care_value",        0.50,  "positive"),
 ]
 
 # Coefficients of the per-turn selling rule. They are NOT in PARAM_TABLE
@@ -392,6 +408,11 @@ def apply_params(macro: Macro) -> None:
     _E.COST_DECAY            = p["cost_decay"]
     _T.FERT_PER_TRIP            = p["fert_per_trip"]
     _M.SEED_FLOOR              = p["seed_floor"]
+    _T.FERT_TRIP_VALUE         = p["fert_trip"]
+    _T.WHEAT_TRIP_VALUE        = p["wheat_trip"]
+    _T.WATER_IDLE_VALUE        = p["water_idle"]
+    _T.FEED_VALUE              = p["feed_value"]
+    _T.CARE_VALUE              = p["care_value"]
     global PRIORITY_TEMP
     PRIORITY_TEMP = p["priority_temp"]
     global ACTIONS_PER_ANIMAL
