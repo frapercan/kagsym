@@ -937,6 +937,20 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
     invs = invs or [{}] * len(units)
     if PASS_ACC is not None:
         PASS_ACC["units"] += len(units)
+    # THE KEY TERM, VECTORISED. One dot product per (unit, tile) pair in pure
+    # Python is ~123,000 lookups per episode per environment, in the hottest
+    # loop of the executor -- which is 94% of the cost of a turn. Measured, it
+    # took the trainer from 7.5 to 3.0 updates a minute. One matmul per turn
+    # instead: (n_units, K) x (K, n_tiles).
+    _EZ = None
+    if key_map is not None and query_map is not None and tiles and units:
+        _ks = np.asarray(key_map, dtype=np.float64)
+        _qs = np.asarray(query_map, dtype=np.float64)
+        _tx = np.fromiter((t[0] for t in tiles), int, len(tiles))
+        _ty = np.fromiter((t[1] for t in tiles), int, len(tiles))
+        _ux = np.fromiter((p[0] for p in units), int, len(units))
+        _uy = np.fromiter((p[1] for p in units), int, len(units))
+        _EZ = np.exp(np.clip(_qs[:, _uy, _ux].T @ _ks[:, _ty, _tx], -13.8, 13.8))
     for i, pos in enumerate(units):
         row = value[i]
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
@@ -959,12 +973,8 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
             # the unit's query with the tile's key starts at exactly 0 -the
             # head is zero-initialised- and exp(0) = 1 leaves the matrix
             # identical to the one before this existed.
-            if key_map is not None and query_map is not None:
-                _z = 0.0
-                for _c in range(len(key_map)):
-                    _z += float(query_map[_c][pos[1]][pos[0]]) * \
-                        float(key_map[_c][tile[1]][tile[0]])
-                row[j] *= math.exp(max(-13.8, min(13.8, _z)))
+            if _EZ is not None:
+                row[j] *= float(_EZ[i, j])
             if stickiness and previous is not None and previous.get(i) == tile:
                 row[j] *= (1.0 + stickiness)
 
