@@ -18,21 +18,21 @@ from __future__ import annotations
 INF = float("inf")
 
 
-def asignacion_maxima(valor: list[list[float]]) -> list[int]:
+def max_assignment(value: list[list[float]]) -> list[int]:
     """Asigna a cada fila una columna DISTINTA maximizando la suma total.
 
     `valor` tiene n filas (unidades) y m columnas (tareas), con n <= m.
     Devuelve una lista de longitud n: la columna asignada a cada fila.
     """
-    n = len(valor)
+    n = len(value)
     if n == 0:
         return []
-    m = len(valor[0])
+    m = len(value[0])
     if m < n:
         raise ValueError(f"hacen falta al menos tantas columnas como filas ({n} > {m})")
 
     # El algoritmo minimiza; se niega el valor para maximizar.
-    coste = [[-x for x in fila] for fila in valor]
+    cost = [[-x for x in row] for row in value]
 
     u = [0.0] * (n + 1)          # potencial de fila
     v = [0.0] * (m + 1)          # potencial de columna
@@ -47,14 +47,14 @@ def asignacion_maxima(valor: list[list[float]]) -> list[int]:
         while True:
             usada[j0] = True
             i0 = p[j0]
-            fila = coste[i0 - 1]
+            row = cost[i0 - 1]
             ui = u[i0]
             delta = INF
             j1 = 0
             for j in range(1, m + 1):
                 if usada[j]:
                     continue
-                cur = fila[j - 1] - ui - v[j]
+                cur = row[j - 1] - ui - v[j]
                 if cur < minv[j]:
                     minv[j] = cur
                     way[j] = j0

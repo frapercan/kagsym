@@ -46,16 +46,16 @@ def cuerpo(ipynb_path):
     """Respaldo: codigo del cuaderno, si no hubo salida utilizable."""
     nb = json.load(open(ipynb_path, encoding="utf-8"))
     celdas = [c for c in nb.get("cells", []) if c.get("cell_type") == "code"]
-    escritos, resto = [], []
+    escritos, rest = [], []
     for c in celdas:
         src = "".join(c.get("source", []))
         m = re.match(r"\s*%%writefile\s+(\S+\.py)\s*\n", src)
         if m:
             escritos.append(src[m.end():])
         elif not re.match(r"\s*%%", src):
-            resto.append("\n".join(l for l in src.splitlines()
+            rest.append("\n".join(l for l in src.splitlines()
                                    if not re.match(r"\s*[%!]", l)))
-    return "\n\n".join(escritos or resto)
+    return "\n\n".join(escritos or rest)
 
 
 def desde_salida(api, ref, dst):

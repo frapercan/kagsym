@@ -22,8 +22,8 @@ import sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from kagsym import spec
-from kagsym.exacto import tareas as T
-from kagsym.exacto.ejecutor import Agent
+from kagsym.symbolic import tasks as T
+from kagsym.symbolic.executor import Agent
 from kagsym.fastenv import FastEnv
 from kagsym.macro import Macro, N_MACRO
 import kagsym.macro as _M
@@ -40,14 +40,14 @@ CELDAS = [( 12,  5,  3, None),
           ( 24, 10,  5, None),
           ( 24, 30, 11, 3000)]         # campeonato, configuracion REAL
 
-def juega(vec, riv, semillas, H, D, CAJA):
+def play(vec, riv, seeds, H, D, CAJA):
     mios = []
-    for s in semillas:
+    for s in seeds:
         env = FastEnv(configuration={"episodeSteps": H*D, "turnsPerDay": H,
                                      "startingMoney": CAJA}, seed=s)
         o = env.reset()
-        a = Agent(episode_steps=H*D, macro=Macro.desde_vector(list(vec)))
-        r = Agent(episode_steps=H*D, macro=Macro.desde_vector(list(riv)))
+        a = Agent(episode_steps=H*D, macro=Macro.from_vector(list(vec)))
+        r = Agent(episode_steps=H*D, macro=Macro.from_vector(list(riv)))
         while not env.done:
             o, _ = env.step([a(o[0]), r(o[1])])
         mios.append(float(env.rewards()[0]))
@@ -65,19 +65,19 @@ if __name__ == "__main__":
         CAJA = int(caja if caja else max(100, round(ut * RATIO / 50) * 50))
         spec.set_turns_per_day(H); spec.set_episode_steps(H*D)
         _M.TOPE_PEONES = TOPE; T.MODO_MICRO = "residuo"
-        inc = juega(BASE, BASE, SEM_VAL, H, D, CAJA)
+        inc = play(BASE, BASE, SEM_VAL, H, D, CAJA)
         mu, sg = BASE.astype(float).copy(), np.full(N_MACRO, 0.25)
-        mejor, pts_max = None, -1e9
+        best, pts_max = None, -1e9
         for _ in range(ITERS):
             pob = np.clip(mu + sg*np.random.randn(POB, N_MACRO), 0.0, 1.0)
-            pts = np.array([juega(v, BASE, SEM_BUSCA, H, D, CAJA) for v in pob])
+            pts = np.array([play(v, BASE, SEM_BUSCA, H, D, CAJA) for v in pob])
             idx = np.argsort(pts)[-ELITE:]
             mu, sg = pob[idx].mean(0), pob[idx].std(0) + 0.02
             if pts.max() > pts_max:
-                pts_max, mejor = float(pts.max()), pob[int(np.argmax(pts))].copy()
-        cem = juega(mejor, BASE, SEM_VAL, H, D, CAJA)   # semillas FRESCAS
+                pts_max, best = float(pts.max()), pob[int(np.argmax(pts))].copy()
+        cem = play(best, BASE, SEM_VAL, H, D, CAJA)   # semillas FRESCAS
         aire = 100.0 * (cem - inc) / max(inc, 1.0)
-        np.save(f"runs/ligas/aire_{H}h{D}d.npy", mejor)
+        np.save(f"runs/ligas/aire_{H}h{D}d.npy", best)
         print(f"  {f'{H}h x {D}d t{TOPE}':>16} {ut:>6} {CAJA:>6} {inc:>8.0f} "
               f"{cem:>8.0f} {aire:>+6.1f}% {time.time()-t1:>5.0f}", flush=True)
     print(f"\n  sin aire -> la celda esta agotada: cualquier ablacion mide ruido.")

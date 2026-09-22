@@ -37,7 +37,7 @@ valido; simplemente ignora una parte de su valor.
 from __future__ import annotations
 
 from . import spec
-from .exacto.mercado import marginal_prices
+from .symbolic.market_ops import marginal_prices
 
 # spec.TURNS_PER_DAY se lee en tiempo de llamada (ver spec.set_turns_per_day):
 # como alias de modulo se congelaba al importar y no seguia a
@@ -59,7 +59,7 @@ def liquidacion(obs, pid: int, privado=None) -> float:
     """Caja + todo lo que da tiempo a convertirse en caja antes del cierre."""
     farm = obs["farms"][pid]
     total = float(farm["money"])
-    dias = max(0, (spec.EPISODE_STEPS - 1 - int(obs["step"])) // spec.TURNS_PER_DAY)
+    days = max(0, (spec.EPISODE_STEPS - 1 - int(obs["step"])) // spec.TURNS_PER_DAY)
 
     if privado is not None:
         for item, n in (privado.get("shed") or {}).items():
@@ -71,26 +71,26 @@ def liquidacion(obs, pid: int, privado=None) -> float:
                     total += _valor_lote(obs, item, n)
 
     dia = int(obs["day"])
-    for fila in farm["tiles"]:
-        for t in fila:
+    for row in farm["tiles"]:
+        for t in row:
             if not isinstance(t, dict):
                 continue
             if t.get("kind") == "PLANT":
                 cd = spec.CROPS[t["crop"]]
-                edad = dia - int(t["planted_day"])
+                age = dia - int(t["planted_day"])
                 # solo cuenta si llega a dar y da tiempo a venderlo
-                if edad + dias < cd["first_yield_day"]:
+                if age + days < cd["first_yield_day"]:
                     continue
                 uds = int(t.get("yield_units", 0))
                 if cd["ongoing"]:
-                    restantes = max(0, min(cd["max_yield"] - uds,
-                                           dias // max(1, cd["interval"])))
-                    uds += restantes
+                    remaining = max(0, min(cd["max_yield"] - uds,
+                                           days // max(1, cd["interval"])))
+                    uds += remaining
                 total += _valor_lote(obs, t["crop"], uds)
             elif t.get("animal"):
                 a = spec.ANIMALS[t["animal"]]
                 uds = int(t.get("yield_units", 0))
-                por_venir = max(0, dias - a["first_yield_day"]) // max(1, a["interval"])
+                por_venir = max(0, days - a["first_yield_day"]) // max(1, a["interval"])
                 uds = min(a["max_held"] + por_venir, uds + por_venir)
                 total += _valor_lote(obs, a["product"], uds)
     return total

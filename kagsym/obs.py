@@ -220,8 +220,8 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     # antes del cierre porque el cobertizo puntua CERO. Dando solo contadores
     # crecientes, la red tendria que aprender que 720 es el final y restar,
     # cuando la viabilidad es exactamente calculable de las tablas del motor.
-    restantes = max(0, spec.EPISODE_STEPS - 1 - step)
-    dias_q = restantes / spec.TURNS_PER_DAY
+    remaining = max(0, spec.EPISODE_STEPS - 1 - step)
+    dias_q = remaining / spec.TURNS_PER_DAY
     viables_cultivo = []
     for c in spec.CROP_LIST:
         cd = spec.CROPS[c]
@@ -246,7 +246,7 @@ def encode_obs(obs: Any) -> tuple[np.ndarray, np.ndarray]:
     puede_contratar = 1.0 if hour <= 3 else 0.0
     n_unid = 1 + len(farms[me]["hands"])
     acciones_q = n_unid * (spec.TURNS_PER_DAY - hour)
-    sin_regar = sum(1 for fila in farms[me]["tiles"] for t in fila
+    sin_regar = sum(1 for row in farms[me]["tiles"] for t in row
                     if isinstance(t, dict) and t.get("kind") == "PLANT"
                     and not t.get("watered_today"))
     holgura = 0.0 if sin_regar == 0 else max(-1.0, min(1.0,
@@ -351,8 +351,8 @@ def legal_ops(obs) -> "np.ndarray":
     m = np.zeros((bc.MAX_UNITS, spec.N_UNIT_OPS), dtype=bool)
     m[:, ix["PASS"]] = True
 
-    semillas = priv.get("seeds", {}) or {}
-    hay_semilla = any(int(v) > 0 for v in semillas.values())
+    seeds = priv.get("seeds", {}) or {}
+    hay_semilla = any(int(v) > 0 for v in seeds.values())
     cobertizo = priv.get("shed", {}) or {}
     hay_en_cobertizo = any(int(v) > 0 for v in cobertizo.values())
     invs = priv.get("inventories", priv.get("inventory", [])) or []
@@ -446,14 +446,14 @@ HORIZONTES_AUX = (1, 2, 3, 5, 8, 13)
 N_AUX_RIVAL = len(HORIZONTES_AUX) * len(spec.PRODUCTS)
 
 
-def listo_rival(obs, opp: int = None) -> np.ndarray:
+def rival_ready(obs, opp: int = None) -> np.ndarray:
     """Unidades por producto que el rival tiene LISTAS hoy. Es el objetivo
     auxiliar: se le pide predecir este vector a 1, 2, 3, 5, 8 y 13 dias."""
-    f = flujo_rival(obs, opp)
+    f = rival_flow(obs, opp)
     return f.reshape(len(VENTANAS_RIVAL), -1)[0].copy()
 
 
-def flujo_rival(obs, opp: int = None) -> np.ndarray:
+def rival_flow(obs, opp: int = None) -> np.ndarray:
     """Unidades por producto que el rival tendra listas en cada ventana."""
     me = int(obs.get("player", 0))
     opp = (1 - me) if opp is None else opp
@@ -463,8 +463,8 @@ def flujo_rival(obs, opp: int = None) -> np.ndarray:
         tiles = obs["farms"][opp]["tiles"]
     except Exception:
         return out.reshape(-1)
-    for fila in tiles:
-        for t in fila:
+    for row in tiles:
+        for t in row:
             if not isinstance(t, dict):
                 continue
             listo = float(t.get("yield_units", 0) or 0)
@@ -472,9 +472,9 @@ def flujo_rival(obs, opp: int = None) -> np.ndarray:
                 cd = spec.CROPS.get(t.get("crop"))
                 if cd is None:
                     continue
-                prod, edad = t["crop"], dia - int(t.get("planted_day", dia))
+                prod, age = t["crop"], dia - int(t.get("planted_day", dia))
                 # cuantos dias faltan para que de fruto
-                falta = max(0, int(cd["first_yield_day"]) - edad)
+                falta = max(0, int(cd["first_yield_day"]) - age)
             elif "animal" in t:
                 a = spec.ANIMALS.get(t.get("animal"))
                 if a is None:

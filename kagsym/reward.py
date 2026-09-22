@@ -22,7 +22,7 @@ politica encuentra un solo producto rentable y nunca prueba los demas.
 from __future__ import annotations
 
 from . import spec
-from .exacto.mercado import marginal_prices
+from .symbolic.market_ops import marginal_prices
 
 # LOS DOS NUMEROS DE LA CONFORMACION. El resto del diseno esta razonado y
 # medido (ver el docstring); estos dos estan puestos a ojo.
@@ -72,10 +72,10 @@ class ContadorProduccion:
     """Lleva la procedencia de cada unidad. Una instancia por partida."""
 
     def __init__(self):
-        self.disponible = {p: 0 for p in spec.PRODUCTS}
+        self.available = {p: 0 for p in spec.PRODUCTS}
         self.vendidos = set()
 
-    def cosechado(self, obs, accion, me: int) -> int:
+    def harvested(self, obs, action, me: int) -> int:
         """Unidades cosechadas ESTE turno, leidas del estado previo al paso.
 
         No se estima: para cada HARVEST se mira el `yield_units` real de la
@@ -84,7 +84,7 @@ class ContadorProduccion:
         """
         farm = obs["farms"][me]
         pos = [tuple(farm["farmer"])] + [tuple(p) for p in farm["hands"]]
-        ops = [accion.get("farmer")] + list(accion.get("hands") or [])
+        ops = [action.get("farmer")] + list(action.get("hands") or [])
         total = 0
         for (x, y), op in zip(pos, ops):
             if not op or op[0] != "HARVEST":
@@ -104,43 +104,43 @@ class ContadorProduccion:
                 prod = spec.ANIMALS[t["animal"]]["product"]
             else:
                 continue
-            self.disponible[prod] = self.disponible.get(prod, 0) + n
+            self.available[prod] = self.available.get(prod, 0) + n
             total += n
         return total
 
-    def vendido(self, obs, accion) -> tuple[float, float]:
+    def sold(self, obs, action) -> tuple[float, float]:
         """(ingreso de produccion propia, bonus de exploracion) de este turno.
 
         El ingreso se valora con el precio MARGINAL del motor sobre el
         inventario previo: vender n unidades no cobra n veces el precio de
         portada, porque cada una baja la siguiente.
         """
-        ingreso = 0.0
+        income = 0.0
         bonus = 0.0
-        for orden in (accion.get("market") or []):
+        for orden in (action.get("market") or []):
             if not isinstance(orden, (list, tuple)) or len(orden) < 3:
                 continue
             if orden[0] != "SELL":
                 continue
             p = orden[1]
-            if p not in self.disponible:
+            if p not in self.available:
                 continue
-            n = min(int(orden[2]), int(self.disponible[p]))
+            n = min(int(orden[2]), int(self.available[p]))
             if n <= 0:
                 continue
-            ingreso += float(sum(marginal_prices(obs, p, n)))
-            self.disponible[p] -= n
+            income += float(sum(marginal_prices(obs, p, n)))
+            self.available[p] -= n
             if p not in self.vendidos:
                 self.vendidos.add(p)
                 bonus += BONUS_PRIMER_PRODUCTO
-        return ingreso, bonus
+        return income, bonus
 
 
-def recompensa(obs, accion, contador: ContadorProduccion, me: int, escala: float):
+def reward(obs, action, contador: ContadorProduccion, me: int, scale: float):
     """Densa por turno. La pasividad da exactamente 0.0."""
-    contador.cosechado(obs, accion, me)
-    ingreso, bonus = contador.vendido(obs, accion)
-    return ingreso / escala + bonus
+    contador.harvested(obs, action, me)
+    income, bonus = contador.sold(obs, action)
+    return income / scale + bonus
 
 
 # TURNO REGALADO: acciones que el motor IGNORA en silencio.

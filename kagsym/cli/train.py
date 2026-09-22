@@ -32,11 +32,11 @@ import numpy as np
 import torch
 
 from kagsym import obs as O
-from kagsym.entorno import ESCALERA
-from kagsym.entorno_par import EntornoParalelo
+from kagsym.environment import ESCALERA
+from kagsym.parallel_env import EntornoParalelo
 from kagsym.macro import N_MACRO
-from kagsym.version import huella, huella_modelo
-from kagsym.redes.mundo import AgenteE2E, MundoConfig, N_HIST
+from kagsym.version import fingerprint, model_fingerprint
+from kagsym.nets.world import AgenteE2E, MundoConfig, N_HIST
 
 
 # Dinero que hace cada peldano de la ESCALERA contra un rival PASIVO, medido
@@ -359,13 +359,13 @@ def main():
     a = ap.parse_args()
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    cfg = MundoConfig(device=dev, sigma_micro=a.sigma, con_ops=(a.modo == "ops" or a.cabeza_ops),
+    cfg = MundoConfig(device=dev, sigma_micro=a.sigma, con_ops=(a.mode == "ops" or a.cabeza_ops),
                       sigma_ops=a.sigma_ops, ctx_micro=a.ctx_micro)
     net = AgenteE2E(cfg).to(dev)
     vec0 = list(np.load(a.init))
     net.inicializa_macro_en(vec0)
-    from kagsym.exacto import tareas as _T
-    _T.MODO_MICRO = a.modo
+    from kagsym.symbolic import tasks as _T
+    _T.MODO_MICRO = a.mode
     if a.kl_objetivo > 0 and a.kl_max < a.kl_objetivo:
         raise SystemExit(f"--kl-max {a.kl_max:g} es MENOR que --kl-objetivo "
                          f"{a.kl_objetivo:g}: el controlador subiria el KL "
@@ -393,8 +393,8 @@ def main():
         # cambiado: hoy N_GLOBAL paso de 75 a 88 y N_MACRO de 7 a 13, y con eso
         # las formas no encajan. Se carga lo que encaje y se dice que se reusa.
         d0 = torch.load(a.resume, map_location="cpu", weights_only=False)
-        from kagsym.migrar_ckpt import carga_tolerante
-        _n_reusados, _n_total, _azar = carga_tolerante(net, d0["sd"], a.resume)
+        from kagsym.migrate_ckpt import load_tolerant
+        _n_reusados, _n_total, _azar = load_tolerant(net, d0["sd"], a.resume)
         net.to(dev)
         print(f"reanudado desde {a.resume}: {_n_reusados}/{_n_total} tensores "
               f"reusados (update {d0.get('upd','?')}, "
@@ -409,9 +409,9 @@ def main():
         # solo lo compatible evita rehacer el preentreno con cada dimension
         # nueva, y se informa de cuanto se reutiliza para que no pase inadvertido.
         d0 = torch.load(a.init_net, map_location="cpu", weights_only=False)
-        from kagsym.migrar_ckpt import carga_tolerante
+        from kagsym.migrate_ckpt import load_tolerant
         actual = net.state_dict()
-        _nok, _ntot, _ = carga_tolerante(net, d0["sd"], a.init_net)
+        _nok, _ntot, _ = load_tolerant(net, d0["sd"], a.init_net)
         net.inicializa_macro_en(vec0)        # la cabeza de macro, desde el vector
         net.to(dev)
         print(f"micro preentrenado desde {a.init_net}: "
@@ -456,9 +456,9 @@ def main():
     _pool_red = set()
     _red_congelada = None
     _pool, _pool_p, _asig = [], [], []
-    _niveles = ([int(x) for x in a.niveles.split(',')] if a.niveles else None)
+    _niveles = ([int(x) for x in a.levels.split(',')] if a.levels else None)
     if _niveles:
-        from kagsym.entorno import ESCALERA as _ESC
+        from kagsym.environment import ESCALERA as _ESC
         print('rivales por trabajador: ' + ', '.join(
             str(_ESC[min(n, len(_ESC)-1)]) for n in _niveles), flush=True)
     if a.lr is None:
@@ -561,8 +561,8 @@ def main():
             net.micro.bias[0] = 1.0
         print("  sesgo de valor repuesto a 1.0 (rescate de la inaccion)",
               flush=True)
-    print(f"huella del codigo: {huella()}", flush=True)
-    print(f"dispositivo: {dev} | rival: {ESCALERA[a.nivel]} | init: {a.init}", flush=True)
+    print(f"huella del codigo: {fingerprint()}", flush=True)
+    print(f"dispositivo: {dev} | rival: {ESCALERA[a.level]} | init: {a.init}", flush=True)
 
     from kagsym import spec
     from kagsym.macro import Macro
@@ -586,7 +586,7 @@ def main():
         # hagas nada".
         _dias = [int(x) for x in a.mezcla.split(",")]
         _pasos = [d * 24 for d in _dias]
-        a.dias = max(_dias)
+        a.days = max(_dias)
         print(f"MEZCLA de horizontes: {_dias} dias -> {_pasos} pasos", flush=True)
     _horas = None
     if a.rejilla:
@@ -618,16 +618,16 @@ def main():
         # tienen que significar lo mismo o los techos medidos no aplican.
         # 0 = sin tope (rival a plena potencia).
         _rivtope = [(tp if tp > 0 else None) for _, _, tp in _rej]
-        a.dias = max(d for _, d, _ in _rej)
+        a.days = max(d for _, d, _ in _rej)
         print(f"REJILLA mezclada, {len(_rej)} peldanos:", flush=True)
         for h, d, tp in _rej:
             print(f"   {h:>3}h x {d:>3}d = {h*d:>4} turnos, tope {tp}", flush=True)
-    env = EntornoParalelo(a.envs, n_procs=a.procs, pasos=_pasos,
-                          macro=Macro.desde_vector(vec0),
-                          nivel=(_niveles if _niveles else a.nivel),
-                          modo=a.modo, tope_peones=a.tope_peones, horas=_horas)
+    env = EntornoParalelo(a.envs, n_procs=a.procs, steps=_pasos,
+                          macro=Macro.from_vector(vec0),
+                          level=(_niveles if _niveles else a.level),
+                          mode=a.mode, tope_peones=a.tope_peones, hours=_horas)
     if a.rejilla:
-        env.pon_rival_tope(_rivtope)
+        env.set_rival_cap(_rivtope)
         print(f"tope del RIVAL por peldano: {_rivtope}", flush=True)
         if a.rival_propio:
             # Un rival de verdad en cada peldano. Medido: v48 hace 60.426 $ a
@@ -648,7 +648,7 @@ def main():
                     _riv.append(None)
                 else:
                     _riv.append(list(np.load(_f)))
-            env.pon_rival_macro(_riv)
+            env.set_rival_macro(_riv)
             _n = sum(1 for v in _riv if v is not None)
             print(f"rival = NUESTRO ejecutor calibrado en {_n}/{len(_rej)} "
                   f"peldanos; publico en los demas", flush=True)
@@ -672,7 +672,7 @@ def main():
         for _t in a.rival_macros.split(","):
             _t = _t.strip()
             _rm.append(None if _t in ("-", "") else list(np.load(_t)))
-        env.pon_rival_macro(_rm)
+        env.set_rival_macro(_rm)
         _rm_actual = list(_rm)
         # El POOL de peldanos: (nivel, tope, macro). Arranca con la asignacion
         # inicial y el curriculo automatico redistribuye los trabajadores entre
@@ -686,7 +686,7 @@ def main():
         print("rivales por trabajador (macro): " + ", ".join(
             ("publico" if x is None else "NUESTRO") for x in _rm), flush=True)
     elif a.rival_macro:
-        env.pon_rival_macro(list(np.load(a.rival_macro)))
+        env.set_rival_macro(list(np.load(a.rival_macro)))
         print(f"rival = nuestro ejecutor con {a.rival_macro}", flush=True)
     _liga = a.liga0
     _en_liga = 0
@@ -698,19 +698,19 @@ def main():
         Cambiar horas o dias obliga a recrear los trabajadores, porque
         `spec.TURNS_PER_DAY` y `spec.EPISODE_STEPS` son globales POR PROCESO.
         """
-        horas, dias, tope, _marg, _techo = LIGAS[idx]
-        spec.set_turns_per_day(horas)
-        pasos = dias * horas
-        spec.set_episode_steps(pasos)
-        a.steps, a.dias = pasos, dias
-        e = EntornoParalelo(a.envs, n_procs=a.procs, pasos=pasos,
-                            macro=Macro.desde_vector(vec0), nivel=4,
-                            modo=a.modo, tope_peones=a.tope_peones,
-                            horas=horas)
-        e.pon_rival_tope(tope)
-        print(f"LIGA {idx}/{len(LIGAS)-1}: {horas}h x {dias}d, rival v48 "
-              f"tope {tope if tope is not None else 'sin tope'} "
-              f"({pasos} pasos)", flush=True)
+        hours, days, cap, _marg, _techo = LIGAS[idx]
+        spec.set_turns_per_day(hours)
+        steps = days * hours
+        spec.set_episode_steps(steps)
+        a.steps, a.days = steps, days
+        e = EntornoParalelo(a.envs, n_procs=a.procs, steps=steps,
+                            macro=Macro.from_vector(vec0), level=4,
+                            mode=a.mode, tope_peones=a.tope_peones,
+                            hours=hours)
+        e.set_rival_cap(cap)
+        print(f"LIGA {idx}/{len(LIGAS)-1}: {hours}h x {days}d, rival v48 "
+              f"tope {cap if cap is not None else 'sin tope'} "
+              f"({steps} pasos)", flush=True)
         return e
 
     if a.ligas:
@@ -752,7 +752,7 @@ def main():
     def SIG():
         return net.log_sigma_micro.exp()
     eps_u = torch.randn(a.envs, *_FORMA_U, device=dev)
-    mejor = -1e18
+    best = -1e18
     # RED DE SEGURIDAD ante colapso. Medido esta noche: un update con kl 25,7
     # llevo la caja de 34.900 $ a 3 $ en quince updates y el controlador
     # reacciono tarde. Guarda el ultimo estado BUENO y lo restaura si el
@@ -768,11 +768,11 @@ def main():
         # un solo bit sobre lo unico que puntua. Contra uno mismo la tasa ronda
         # el 0.59 con los dos haciendo el mismo dinero (36 385 vs 36 295), que
         # es donde una senal binaria tiene maxima informacion.
-        env.pon_autojuego(net)
+        env.set_selfplay(net)
         print("rival: AUTO-JUEGO (instantanea congelada de la politica)", flush=True)
 
     import copy
-    banco = []
+    bank = []
     # Semillas del banco: rivales DIVERSOS, no del propio linaje.
     _semillas = []
     for _p in [x.strip() for x in (a.banco_semilla or "").split(",") if x.strip()]:
@@ -790,7 +790,7 @@ def main():
                 # -lo que hacia antes- vaciaba el banco en silencio y la run
                 # se quedaba en auto-juego puro sin diversidad.
                 from kagsym.macro import Macro as _Mc
-                _d = np.array(_Mc().a_vector(), dtype=np.float64)
+                _d = np.array(_Mc().to_vector(), dtype=np.float64)
                 _d[: _v.shape[0]] = _v
                 print(f"  semilla {os.path.basename(_p)}: {_v.shape[0]} dims "
                       f"-> {N_MACRO}, rellenada con los defectos", flush=True)
@@ -815,41 +815,41 @@ def main():
             # Banco de versiones antiguas: sin el, la politica puede olvidar
             # como batir a lo que ya sabia batir y ciclar. Se alterna entre la
             # version mas reciente y una del banco elegida por turno.
-            banco.append({k: v.detach().cpu().clone() for k, v in net.state_dict().items()})
-            banco[:] = banco[-a.banco:]
+            bank.append({k: v.detach().cpu().clone() for k, v in net.state_dict().items()})
+            bank[:] = bank[-a.bank:]
             # La poblacion es semillas diversas MAS fotos propias. Rotar solo
             # entre fotos propias es jugar contra el mismo linaje.
             # Las semillas ocupan UN solo puesto porque se lanzan todas a la
             # vez -una por trabajador-. Con un puesto por semilla la rotacion
             # gastaba turnos identicos.
             _pool = (([("macro", "diversos", None)] if _semillas else [])
-                     + [("foto", f"auto{i}", sd) for i, sd in enumerate(banco)])
+                     + [("foto", f"auto{i}", sd) for i, sd in enumerate(bank)])
             _tipo, _nom, _obj = _pool[(upd // a.refresco) % len(_pool)]
             if _tipo == "macro":
                 # Todos los rivales diversos A LA VEZ, uno por trabajador:
                 # `pon_rival_macro` lo admite de forma nativa. Rotar de uno en
                 # uno hace que el gradiente los vea en serie, que es como se
                 # olvida de batir a lo que ya sabia batir.
-                env.pon_rival_macro([v for _, v in _semillas])
+                env.set_rival_macro([v for _, v in _semillas])
                 _nom = f"{len(_semillas)} diversos a la vez"
             else:
                 rival = AgenteE2E(cfg)
                 rival.load_state_dict(_obj)
-                env.pon_autojuego(rival)
+                env.set_selfplay(rival)
             print(f"  [upd {upd}] rival -> {_nom} ({_tipo}), poblacion de "
                   f"{len(_pool)}", flush=True)
         G, B, H, AM, AU, LP, V, R, D, MS = [], [], [], [], [], [], [], [], [], []
         LPMA, LPMI = [], []          # log-prob por cabeza, para el cociente factorizado
         HF = []                      # oferta del rival por dia (objetivo auxiliar)
         JZ = []                      # proyecciones JEPA por dia (objetivo, detenido)
-        for _ in range(a.dias):
-            g, b, hf = env.codifica()
+        for _ in range(a.days):
+            g, b, hf = env.encode()
             # La entrada `hist` llevaba CEROS desde siempre pese a estar
             # disenada y conectada al codificador. Con --flujo-rival se le da
             # lo que le corresponde: la oferta inminente del adversario, que
             # es el mecanismo por el que nos afecta -vuelca genero, cae el
             # precio marginal, baja nuestro ingreso-.
-            h = (hf if a.flujo_rival
+            h = (hf if a.rival_flow
                  else np.zeros((a.envs, N_HIST), dtype=np.float32))
             HF.append(torch.from_numpy(np.asarray(hf, dtype=np.float32)).to(dev))
             tg = torch.from_numpy(g).to(dev)
@@ -857,7 +857,7 @@ def main():
             th = torch.from_numpy(h).to(dev)
             with torch.no_grad():
                 s = net(tg, tb, th)
-                am, lp_m = net.macro_desde(s, eps)
+                am, lp_m = net.macro_from(s, eps)
                 au = s["micro"] + SIG() * eps_u
                 _lpu = torch.distributions.Normal(
                     s["micro"], SIG()).log_prob(au)
@@ -865,11 +865,11 @@ def main():
                 _lp_mi = _lpu.flatten(1).sum(-1)
                 if a.peso_jepa > 0:
                     JZ.append(s["jepa_z"].detach())
-            rec, fin = env.paso_dia(mapas=au.cpu().numpy(), macros=am.cpu().numpy())
+            rec, fin = env.step_day(mapas=au.cpu().numpy(), macros=am.cpu().numpy())
             # La mascara solo se conoce DESPUES de jugar el dia: dice que
             # dimensiones influyeron de verdad en alguna decision. Se recalcula
             # la log-prob con ella para que el cociente de PPO ignore el resto.
-            _ms = env.mascaras()
+            _ms = env.masks()
             if _ms is not None:
                 mt = torch.from_numpy(_ms).to(dev)
                 lp = lp_m + (_lpu * mt).flatten(1).sum(-1)
@@ -889,15 +889,15 @@ def main():
             V.append(s["valor"] * _vsd + _vmu)
             R.append(rec); D.append(fin)
         with torch.no_grad():
-            g, b, hf = env.codifica()
+            g, b, hf = env.encode()
             ult = (net(torch.from_numpy(g).to(dev),
                       torch.from_numpy(b).to(dev))["valor"] * _vsd + _vmu)
 
         R = np.array(R); D = np.array(D); Vn = torch.stack(V).cpu().numpy()
         adv = np.zeros_like(R); acc = 0.0; u = ult.cpu().numpy()
-        for t in reversed(range(a.dias)):
-            sig = u if t == a.dias - 1 else Vn[t + 1]
-            delta = R[t] + a.gamma * sig * (1 - D[t]) - Vn[t]
+        for t in reversed(range(a.days)):
+            next_ = u if t == a.days - 1 else Vn[t + 1]
+            delta = R[t] + a.gamma * next_ * (1 - D[t]) - Vn[t]
             acc = delta + a.gamma * a.lam * (1 - D[t]) * acc
             adv[t] = acc
         ret = adv + Vn
@@ -1017,7 +1017,7 @@ def main():
                     s["micro"], SIG()).log_prob(_fau)
                 if _fms is not None:
                     _lp2 = _lp2 * _fms
-                _lpma = net.logprob_macro(s, _fam)
+                _lpma = net.macro_logprob(s, _fam)
                 _lpmi = _lp2.flatten(1).sum(-1)
                 lp = _lpma + _lpmi
                 if a.cociente_factorizado:
@@ -1122,7 +1122,7 @@ def main():
                 _l2 = torch.distributions.Normal(_s["micro"], SIG()).log_prob(fau)
                 if fms is not None:
                     _l2 = _l2 * fms
-                lp = net.logprob_macro(_s, fam) + _l2.flatten(1).sum(-1)
+                lp = net.macro_logprob(_s, fam) + _l2.flatten(1).sum(-1)
                 # POR DIMENSION. La log-prob es una SUMA sobre las dimensiones
                 # muestreadas, asi que el KL total escala con el tamano de la
                 # cabeza: al pasar el micro de 10x10 a 16x10x10 el mismo
@@ -1139,7 +1139,7 @@ def main():
                 # -que aporta +1 $ de 953- gasta el presupuesto de divergencia
                 # y el controlador frena a TODO, incluido el micro, que aporta
                 # el resto.
-                _lpma2 = net.logprob_macro(_s, fam)
+                _lpma2 = net.macro_logprob(_s, fam)
                 _lpmi2 = _l2.flatten(1).sum(-1)
                 _ndmi = (float(fms.flatten(1).sum(-1).mean()) if fms is not None
                          else int(np.prod(fau.shape[1:])))
@@ -1282,7 +1282,7 @@ def main():
         # curriculo no ensenan nada.
         _wpp_ref = None
         if upd % max(1, a.refresco) == 0:
-            _wpp_ref = env.win_rate_por_peldano()
+            _wpp_ref = env.win_rate_per_rung()
         if _rm_actual and upd % max(1, a.refresco) == 0:
             try:
                 _wpp3 = list(_wpp_ref)
@@ -1299,7 +1299,7 @@ def main():
                     # el mas dominado de todos deja su sitio
                     _k_ref = max(_dominados, key=lambda i: _wpp3[i])
                     _rm_actual[_k_ref] = _nuevo
-                    env.pon_rival_macro(_rm_actual)
+                    env.set_rival_macro(_rm_actual)
                     # LA RED ENTERA, no el vector macro. `pon_rival_macro`
                     # manda un vector, o sea NUESTRO EJECUTOR CON LA HEURISTICA
                     # DE TABLERO y sin cabeza micro; en modo ops eso le quita
@@ -1316,10 +1316,10 @@ def main():
                          for k, v in net.state_dict().items()})
                     _j_ref = _asig[_k_ref] if _asig and _k_ref < len(_asig) else _k_ref
                     _pool_red.add(_j_ref)
-                    env.pon_autojuego_en(
+                    env.set_selfplay_on(
                         [k for k, j in enumerate(_asig or [])
                          if j == _j_ref] or [_k_ref], _red_congelada)
-                    env.olvida_resultados()
+                    env.forget_results()
                     print(f"  [upd {upd}] peldano {_k_ref} lo ganabamos al "
                           f"{_wpp3[_k_ref]:.0%}: se releva por NUESTRA politica "
                           f"actual. Los demas se conservan porque aun ensenan",
@@ -1331,7 +1331,7 @@ def main():
         if a.curriculo_auto and upd % max(1, a.refresco) == 0 and _niveles:
             try:
                 # la medida de ANTES del relevo; ver `_wpp_ref` arriba.
-                _w4 = list(_wpp_ref) if _wpp_ref is not None else env.win_rate_por_peldano()
+                _w4 = list(_wpp_ref) if _wpp_ref is not None else env.win_rate_per_rung()
                 # la estimacion vive en el PELDANO, no en el trabajador: si un
                 # trabajador cambia de peldano, su historia se queda con el
                 # peldano que jugaba.
@@ -1387,9 +1387,9 @@ def main():
                 if True:
                     if _nuevo_asig != _asig:
                         _asig = _nuevo_asig
-                        env.pon_rival_tope([_pool[j][1] for j in _asig])
-                        env.sube_nivel([_pool[j][0] for j in _asig])
-                        env.pon_rival_macro([_pool[j][2] for j in _asig])
+                        env.set_rival_cap([_pool[j][1] for j in _asig])
+                        env.raise_level([_pool[j][0] for j in _asig])
+                        env.set_rival_macro([_pool[j][2] for j in _asig])
                         # Los peldanos de autojuego llevan RED, no vector, y
                         # `pon_rival_macro` acaba de machacarla en todos. Se
                         # devuelve a los trabajadores que caen en uno de ellos.
@@ -1397,8 +1397,8 @@ def main():
                             _vuelven = [k for k, j in enumerate(_asig)
                                         if j in _pool_red]
                             if _vuelven:
-                                env.pon_autojuego_en(_vuelven, _red_congelada)
-                        env.olvida_resultados()
+                                env.set_selfplay_on(_vuelven, _red_congelada)
+                        env.forget_results()
                         _res = {}
                         for j in _asig:
                             _res[j] = _res.get(j, 0) + 1
@@ -1410,7 +1410,7 @@ def main():
                 print(f"  aviso: curriculo automatico ({_e})", flush=True)
         if a.desliza > 0 and upd % 25 == 0 and _niveles:
             try:
-                _wpp = env.win_rate_por_peldano()
+                _wpp = env.win_rate_per_rung()
                 # el peldano mas facil es el primero de la lista
                 if _wpp and _wpp[0] == _wpp[0] and _wpp[0] >= a.desliza:
                     # Al anadir por arriba se ROTA EL ESTILO en vez de
@@ -1422,9 +1422,9 @@ def main():
                                     % len(_estilos)]
                     _rivtope = _rivtope[1:] + [_rivtope[-1]]
                     _niveles = _niveles[1:] + [_sig]
-                    env.pon_rival_tope(_rivtope)
-                    env.sube_nivel(_niveles)
-                    env.olvida_resultados()
+                    env.set_rival_cap(_rivtope)
+                    env.raise_level(_niveles)
+                    env.forget_results()
                     print(f"  [upd {upd}] ESCALERA DESLIZADA: el peldano mas "
                           f"facil se ganaba al {_wpp[0]:.0%}; sale del muestreo. "
                           f"topes ahora {_rivtope}", flush=True)
@@ -1446,10 +1446,10 @@ def main():
                 _nuevo = AgenteE2E(cfg)
                 _nuevo.load_state_dict({k: v.detach().cpu().clone()
                                         for k, v in net.state_dict().items()})
-                env.pon_autojuego(_nuevo)
+                env.set_selfplay(_nuevo)
                 # Sin esto promociona en cascada: la ventana de 60 episodios
                 # sigue llena de victorias contra el rival viejo.
-                env.olvida_resultados()
+                env.forget_results()
                 _ultima_promo = upd
                 print(f"  [upd {upd}] RIVAL PROMOCIONADO (win={_wr:.3f} >= "
                       f"{a.promociona_rival}): pasa a ser una copia de la "
@@ -1460,7 +1460,7 @@ def main():
             ret = float(np.mean(ret_ep[-80:])) if ret_ep else float("nan")
             print(f"upd {upd:4d}/{a.updates}  win={wr:.3f}  ret={ret:7.2f}  "
                   + (f"[KL corto {kl_cortes}] " if kl_cortes else "")
-                  + f"$={env.dinero_medio():7.0f} vs {rv['dinero']:7.0f}  "
+                  + f"$={env.mean_money():7.0f} vs {rv['dinero']:7.0f}  "
                   f"cult={rv['cultivos']:4.1f}r  uds={rv['unidades']:4.1f}r  "
                   f"macro={[round(float(x),2) for x in fam.mean(0)]}  "
                   f"{time.time()-t0:.0f}s", flush=True)
@@ -1482,7 +1482,7 @@ def main():
                     # en 3.000 $ -la caja inicial- y el margen real caia a
                     # -98,3 %. `x_inaccion` si lo detecta, y a CUALQUIER escala:
                     # 1,0 significa que la politica no hace nada.
-                    _inac = env.dinero_medio() / 3000.0
+                    _inac = env.mean_money() / 3000.0
                     _RIV_ULT[0] = float((env.rival_stats() or {}).get("dinero", 0.0) or 0.0)
                     # Y NO SE ASCIENDE ESTANDO INERTE. Un peldano se pasa
                     # PRODUCIENDO valor, no sobreviviendo a un rival aun peor:
@@ -1544,7 +1544,7 @@ def main():
                     # la instantanea congelada hacia 2.588, o sea PEOR que la
                     # inaccion, y ganarle no exigia hacer nada. `win` decia
                     # 1,00 y el margen real era -98,3 %.
-                    _din = env.dinero_medio()
+                    _din = env.mean_money()
                     _inercia = _din / float(
                         spec.DEFAULT_CONFIG.get("startingMoney", 3000) or 3000)
                     # Solo cuando el horizonte es UNICO. Con mezcla, `liga` es
@@ -1626,12 +1626,12 @@ def main():
                     # cuando solo era que la partida era corta.
                     _rporh = getattr(env, "rival_por_horizonte", lambda: {})()
                     for _d, _rv_d in _rporh.items():
-                        _b = BASE_POR_HORIZONTE.get(_d, {}).get(a.nivel, 0.0)
+                        _b = BASE_POR_HORIZONTE.get(_d, {}).get(a.level, 0.0)
                         if _b > 0:
                             _m[f"3_contexto/merma_{_d}d_pct"] = 100.0 * (1.0 - _rv_d / _b)
                     # Escenario: siempre presentes, para poder seguir el curso.
                     _m["3_contexto/liga"] = float(_liga) if a.ligas else -1.0
-                    _m["3_contexto/nivel_rival"] = float(a.nivel)
+                    _m["3_contexto/nivel_rival"] = float(a.level)
                     for _k, _v in _extra.items():
                         _m[("1_resultado/" if _k.startswith("dinero")
                             else "3_contexto/") + _k] = float(_v)
@@ -1678,8 +1678,8 @@ def main():
                             # contenido cambiaba: la tabla parecia decir que
                             # empatabamos contra el rival mas duro cuando ese
                             # peldano ni siquiera se estaba jugando.
-                            _wpp2 = env.win_rate_por_peldano()
-                            _rpp2 = env.rival_por_peldano()
+                            _wpp2 = env.win_rate_per_rung()
+                            _rpp2 = env.rival_per_rung()
                             _map = (_asig if _asig else list(range(len(_wpp2))))
                             for _i2, _v2 in enumerate(_wpp2):
                                 if _v2 == _v2 and _i2 < len(_map):
@@ -1721,7 +1721,7 @@ def main():
         # Sin esto, una noche sin supervision no acumula nada.
         if upd % 10 == 0 or upd == a.updates:
             torch.save({"sd": net.state_dict(), "cfg": vars(cfg), "init": vec0,
-                        "upd": upd, "huella": huella(), "huella_modelo": huella_modelo(),
+                        "upd": upd, "huella": fingerprint(), "huella_modelo": model_fingerprint(),
                         "opt": opt.state_dict()}, a.out + ".ultimo")
         # --- red de seguridad: comprobar y, si toca, rescatar ---
         if ret_ep and len(ret_ep) >= 40:
@@ -1752,11 +1752,11 @@ def main():
 
         if ret_ep and len(ret_ep) >= 20:
             r80 = float(np.mean(ret_ep[-80:]))
-            if r80 > mejor:
-                mejor = r80
+            if r80 > best:
+                best = r80
                 torch.save({"sd": net.state_dict(), "cfg": vars(cfg),
                             "init": vec0, "ret": r80, "upd": upd,
-                            "huella": huella(), "huella_modelo": huella_modelo(), "opt": opt.state_dict()}, a.out)
+                            "huella": fingerprint(), "huella_modelo": model_fingerprint(), "opt": opt.state_dict()}, a.out)
 
 
 if __name__ == "__main__":

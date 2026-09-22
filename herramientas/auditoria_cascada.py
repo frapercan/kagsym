@@ -68,7 +68,7 @@ def sitios(path):
 
 
 if __name__ == "__main__":
-    tot = 0
+    total = 0
     for f in CASCADA:
         p = os.path.join(RAIZ, f)
         if not os.path.exists(p):
@@ -79,5 +79,5 @@ if __name__ == "__main__":
         print(f"\n===== {f}  ({len(s)} sitios) =====")
         for tipo, ln, txt in s:
             print(f"  {tipo:<7} {ln:>5}  {txt}")
-        tot += len(s)
-    print(f"\n  TOTAL: {tot} puntos de decision a clasificar")
+        total += len(s)
+    print(f"\n  TOTAL: {total} puntos de decision a clasificar")

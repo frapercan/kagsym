@@ -24,23 +24,23 @@ CACHE = "data/escalera_publica.json"
 
 
 def leaderboard(api):
-    tok, filas = None, []
+    tok, rows = None, []
     for _ in range(200):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             r = api.competition_leaderboard_view(COMP, page_size=200, page_token=tok)
         m = re.search(r"Next Page Token = (\S+)", buf.getvalue())
         nuevo = m.group(1) if m else None
-        n0 = len(filas)
+        n0 = len(rows)
         for e in (r or []):
             try:
-                filas.append((str(getattr(e, "team_name", "?")), float(e.score)))
+                rows.append((str(getattr(e, "team_name", "?")), float(e.score)))
             except Exception:
                 pass
-        if not nuevo or nuevo == tok or len(filas) == n0:
+        if not nuevo or nuevo == tok or len(rows) == n0:
             break
         tok = nuevo
-    return filas
+    return rows
 
 
 def cuadernos(api):
@@ -110,9 +110,9 @@ if __name__ == "__main__":
         cand = [c for c in casados if lo <= c["score"] < lo + PASO]
         if not cand:
             vacios.append(lo); continue
-        mejor = max(cand, key=lambda c: c["score"])
-        elegidos.append(mejor)
-        print(f"  {lo}-{lo+PASO-1:<9}{mejor['ref'][:50]:<52}{mejor['score']:>7.0f}")
+        best = max(cand, key=lambda c: c["score"])
+        elegidos.append(best)
+        print(f"  {lo}-{lo+PASO-1:<9}{best['ref'][:50]:<52}{best['score']:>7.0f}")
     print(f"\n  cubiertos {len(elegidos)} de {(ALTO-BAJO)//PASO + 1} tramos")
     if vacios:
         print(f"  SIN cuaderno publico: {vacios}")

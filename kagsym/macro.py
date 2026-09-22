@@ -41,12 +41,12 @@ N_MACRO = N_NIVELES + N_PRIORIDAD + N_FIJADAS + N_MERCADO + N_TURNO
 class Macro:
     """Objetivos, no ordenes. El ejecutor decide como alcanzarlos."""
 
-    casillas: float = 0.3333   # -> escala sobre el techo de riego, SIN borde
+    tiles: float = 0.3333   # -> escala sobre el techo de riego, SIN borde
                                #    (exp(logit(1/3)) = 0.5, el valor de antes)
-    animales: float = 0.5      # -> fraccion de la capacidad de atencion dedicada a ganado
-    peones: float = 0.35       # -> peones objetivo por dia
+    animals: float = 0.5      # -> fraccion de la capacidad de atencion dedicada a ganado
+    hands: float = 0.35       # -> peones objetivo por dia
     venta: float = 0.25        # -> agresividad: 0 vender ya, 1 acumular al maximo
-    cultivo: float = 0.0       # -> sesgo hacia cultivo caro (1) o barato y rapido (0)
+    crop: float = 0.0       # -> sesgo hacia cultivo caro (1) o barato y rapido (0)
     expandir: float = 0.25     # -> saturacion exigida antes de comprar tierra
     adherencia: float = 0.25   # -> cuanto se premia conservar el destino de ayer
     fertilizar: float = 0.0    # -> cuanto vale fertilizar frente a las demas tareas
@@ -186,16 +186,16 @@ class Macro:
     f_fert_viaje: float = 0.5      # 4.0   fertilizante que se coge de una vez
 
     @staticmethod
-    def por_defecto() -> "Macro":
+    def default() -> "Macro":
         """Los valores que reproducen la capa guionizada tal y como esta medida."""
         return Macro()
 
     @staticmethod
-    def desde_vector(v) -> "Macro":
+    def from_vector(v) -> "Macro":
         vals = [min(1.0, max(0.0, float(x))) for x in v]
         return Macro(*vals[:N_MACRO])
 
-    def a_vector(self) -> list:
+    def to_vector(self) -> list:
         return [getattr(self, f.name) for f in fields(self)]
 
 
@@ -283,14 +283,14 @@ RANGOS_F = [
 PESOS_TURNO = ("precio", "rival", "cobertizo", "estacion", "caja")
 
 
-def pesos_turno(macro) -> dict:
+def turn_weights(macro) -> dict:
     """Cuanto reacciona la venta a cada senal del turno. Defecto 0 = regla de hoy."""
     if macro is None:
         return {k: 0.0 for k in PESOS_TURNO}
     return {k: _logit(getattr(macro, "w_" + k, 0.5)) for k in PESOS_TURNO}
 
 
-def mercado_factores(macro: Macro) -> dict:
+def market_factors(macro: Macro) -> dict:
     """Multiplicador aprendido por producto. 0.5 -> 1.0 (neutro), sin bordes."""
     from . import spec as _sp
     out = {}
@@ -308,7 +308,7 @@ def _logit(f: float) -> float:
     return math.log(f / (1.0 - f))
 
 
-def parametros(macro: Macro) -> dict:
+def params(macro: Macro) -> dict:
     """Los que estaban a ojo, ya en sus unidades reales y SIN borde."""
     out = {}
     for n, defecto, tipo in RANGOS_F:
@@ -320,7 +320,7 @@ def parametros(macro: Macro) -> dict:
     return out
 
 
-def aplica_parametros(macro: Macro) -> None:
+def apply_params(macro: Macro) -> None:
     """Escribe los parametros donde los leen las capas. Un solo sitio.
 
     Se hace asi -y no pasando el macro por seis firmas- porque `tareas.py` y
@@ -329,8 +329,8 @@ def aplica_parametros(macro: Macro) -> None:
     """
     if macro is None:
         return
-    from .exacto import mercado as _M, tareas as _T, ejecutor as _E
-    p = parametros(macro)
+    from .symbolic import market_ops as _M, tasks as _T, executor as _E
+    p = params(macro)
     _M.PRESUPUESTO_MANO_OBRA = p["mano_obra"]
     _M.FRACCION_SEMILLA      = p["semilla"]
     _M.MARGEN_PEON           = p["margen_peon"]
@@ -370,18 +370,18 @@ def aplica_parametros(macro: Macro) -> None:
     FACTOR_RIEGO = p["factor_riego"]
 
 
-def peones_objetivo(obs, macro: Macro) -> int:
+def target_hands(obs, macro: Macro) -> int:
     # SIN TECHO, y el motor respalda que no lo haya: no limita las
     # contrataciones -`_hire_cost(hires_today)` solo las ENCARECE-, asi que el
     # 15 de antes era un muro puesto por mi sobre un nivel aprendible. Mismo
     # mecanismo que los parametros: 0.5 da el valor de siempre (7,5 -> 8) y los
     # extremos alcanzan cualquier plantilla, que es lo que hace falta para que
     # el modelo sirva en ligas con otra caja y otro horizonte.
-    n = max(0, int(round(7.5 * math.exp(_logit(macro.peones)))))
+    n = max(0, int(round(7.5 * math.exp(_logit(macro.hands)))))
     return n if TOPE_PEONES is None else min(n, TOPE_PEONES)
 
 
-def casillas_objetivo(obs, macro: Macro) -> int:
+def target_tiles(obs, macro: Macro) -> int:
     """Cuantas casillas plantadas mantener. Tope exacto: las que se pueden regar.
 
     Una planta sin regar dos dias se convierte en hierba, asi que el techo real
@@ -395,7 +395,7 @@ def casillas_objetivo(obs, macro: Macro) -> int:
     # ahi. Con eso el techo quedaba clavado en 12 casillas por muchos peones que
     # se contrataran despues, y la granja no podia crecer. El CEM no eligio una
     # granja de 7 casillas y 1.9 unidades: era la unica alcanzable.
-    n_unidades = 1 + peones_objetivo(obs, macro)
+    n_units = 1 + target_hands(obs, macro)
     cultivables = sum(1 for y in range(spec.BOARD) for x in range(spec.BOARD)
                       if farm["tiles"][y][x] != "LOCKED")
     # la mitad del presupuesto se va en moverse: medido 42.3% en el experto
@@ -415,16 +415,16 @@ def casillas_objetivo(obs, macro: Macro) -> int:
     # f = 1/3 reproduce el valor de antes (exp(logit(1/3)) = 0.5), f = 0.5 pide
     # el techo de riego entero, y los extremos alcanzan cualquier granja que el
     # motor permita. El unico recorte que queda es el del motor.
-    techo_riego = n_unidades * spec.TURNS_PER_DAY * FACTOR_RIEGO
-    deseadas = techo_riego * math.exp(_logit(macro.casillas))
+    techo_riego = n_units * spec.TURNS_PER_DAY * FACTOR_RIEGO
+    deseadas = techo_riego * math.exp(_logit(macro.tiles))
     return max(0, int(min(cultivables, deseadas)))
 
 
-def animales_objetivo(obs, macro: Macro) -> int:
+def target_animals(obs, macro: Macro) -> int:
     """Cuantos animales sostener. Cada uno cuesta ~3 acciones al dia."""
     me = int(obs["player"])
     farm = obs["farms"][me]
-    n_unidades = 1 + peones_objetivo(obs, macro)   # planificadas, ver arriba
+    n_units = 1 + target_hands(obs, macro)   # planificadas, ver arriba
     # DOBLE CONTEO CORREGIDO. Estaba `* 0.5` ("la mitad se va en moverse") y
     # ademas `/ ACCIONES_POR_ANIMAL = 3`, que ya incluye el desplazamiento. El
     # resultado era 4 tareas por unidad y dia, la mitad de lo real.
@@ -433,14 +433,14 @@ def animales_objetivo(obs, macro: Macro) -> int:
     # unidades: 8 tareas por unidad y dia, que es exactamente 24/3. Medido: con
     # el `0.5`, los animales saturaban en ~19 pasara lo que pasara -incluso con
     # 4 cuadrantes y 100 casillas libres-.
-    capacidad = n_unidades * spec.TURNS_PER_DAY
-    plantadas = sum(1 for fila in farm["tiles"] for t in fila
+    capacity = n_units * spec.TURNS_PER_DAY
+    planted = sum(1 for row in farm["tiles"] for t in row
                     if isinstance(t, dict) and t.get("kind") == "PLANT")
-    hueco = max(0.0, capacidad - plantadas) / max(1e-6, ACCIONES_ANIMAL)
-    return max(0, int(macro.animales * hueco))
+    room = max(0.0, capacity - planted) / max(1e-6, ACCIONES_ANIMAL)
+    return max(0, int(macro.animals * room))
 
 
-def horizonte_venta(obs, macro: Macro) -> int:
+def sell_horizon(obs, macro: Macro) -> int:
     """Turnos que se mira hacia delante antes de decidir vender.
 
     Es la decision acoplada al rival: aguantar producto solo compensa si el
@@ -455,25 +455,25 @@ def horizonte_venta(obs, macro: Macro) -> int:
                             * math.exp(_logit(macro.venta)))))
 
 
-def cultivo_objetivo(obs, macro: Macro):
+def target_crop(obs, macro: Macro):
     """Interpola entre el cultivo mas rapido y el mas rentable por casilla-dia.
 
     No es una categoria libre: elegir un cultivo que no da tiempo a madurar es
     perdida segura, asi que solo entran los viables, que es exacto.
     """
-    from .exacto.tareas import cycle_days, cycle_profit
-    dias = spec.EPISODE_STEPS // spec.TURNS_PER_DAY - int(obs["day"])
-    viables = [c for c in spec.CROP_LIST if cycle_days(c) <= dias]
-    if not viables:
+    from .symbolic.tasks import cycle_days, cycle_profit
+    days = spec.EPISODE_STEPS // spec.TURNS_PER_DAY - int(obs["day"])
+    viable = [c for c in spec.CROP_LIST if cycle_days(c) <= days]
+    if not viable:
         return None
-    if macro.cultivo <= 0.0:
-        return min(viables, key=lambda c: cycle_days(c))
-    por_valor = sorted(viables, key=lambda c: cycle_profit(obs, c) / max(1, cycle_days(c)))
-    i = min(len(por_valor) - 1, int(macro.cultivo * len(por_valor)))
+    if macro.crop <= 0.0:
+        return min(viable, key=lambda c: cycle_days(c))
+    por_valor = sorted(viable, key=lambda c: cycle_profit(obs, c) / max(1, cycle_days(c)))
+    i = min(len(por_valor) - 1, int(macro.crop * len(por_valor)))
     return por_valor[i]
 
 
-def adherencia_asignacion(macro: Macro) -> float:
+def assignment_stickiness(macro: Macro) -> float:
     """Bonus multiplicativo por conservar el destino del turno anterior.
 
     El humgaro reasigna desde cero cada turno y eso es miope: medido, el 23.8%
@@ -505,8 +505,8 @@ def prioridades(macro: Macro) -> dict:
     import math
     vals = [getattr(macro, "p_" + c) for c in CATEGORIAS]
     e = [math.exp(3.0 * v) for v in vals]
-    tot = sum(e) or 1.0
-    return {c: x / tot for c, x in zip(CATEGORIAS, e)}
+    total = sum(e) or 1.0
+    return {c: x / total for c, x in zip(CATEGORIAS, e)}
 
 
 def orden_categorias(macro: Macro) -> list:

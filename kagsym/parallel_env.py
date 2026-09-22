@@ -21,10 +21,10 @@ import multiprocessing as mp
 import numpy as np
 
 
-def _trabajador(conn, n_envs, pasos, seed0, macro_vec, nivel, modo="residuo",
-                tope_peones=None, horas=None, idx0=0, n_total=None):
+def _trabajador(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
+                tope_peones=None, hours=None, idx0=0, n_total=None):
     import os
-import sys
+    import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     # UN HILO POR TRABAJADOR. torch arranca con tantos hilos como cores, asi que
     # 10 trabajadores pedian 120 hilos sobre 12 nucleos y se pasaban el tiempo
@@ -36,42 +36,42 @@ import sys
         torch.set_num_threads(1)
     except Exception:
         pass
-    from kagsym.exacto import tareas as _T
-    if horas:
+    from kagsym.symbolic import tasks as _T
+    if hours:
         # Igual que TOPE_PEONES: global por proceso, no llega desde el padre.
         from . import spec as _S
-        _S.set_turns_per_day(horas)
-    _T.MODO_MICRO = modo
+        _S.set_turns_per_day(hours)
+    _T.MODO_MICRO = mode
     # El tope vive en un global de modulo y los trabajadores son PROCESOS
     # aparte: ponerlo en el padre no llega aqui. Hay que pasarlo explicito.
     if tope_peones is not None:
         from . import macro as _M
         _M.TOPE_PEONES = tope_peones
-    from kagsym.entorno import EntornoDia
+    from kagsym.environment import EntornoDia
     from kagsym.macro import Macro
 
-    env = EntornoDia(n_envs, pasos=pasos, seed0=seed0,
-                     macro=Macro.desde_vector(macro_vec), nivel=nivel,
+    env = EntornoDia(n_envs, steps=steps, seed0=seed0,
+                     macro=Macro.from_vector(macro_vec), level=level,
                      idx0=idx0, n_total=n_total)
     while True:
         cmd, datos = conn.recv()
         if cmd == "codifica":
-            conn.send(env.codifica())
+            conn.send(env.encode())
         elif cmd == "paso":
             mapas, macros = datos
-            rec, fin = env.paso_dia(mapas=mapas, macros=macros)
-            conn.send((rec, fin, env.win_rate(), env.dinero_medio(),
-                       env.util_medio(), env.rival_stats(),
-                       env.sin_liquidar_medio(), env.mascaras()))
+            rec, fin = env.step_day(mapas=mapas, macros=macros)
+            conn.send((rec, fin, env.win_rate(), env.mean_money(),
+                       env.mean_useful(), env.rival_stats(),
+                       env.mean_unsold(), env.masks()))
         elif cmd == "autojuego":
             # Pesos del rival: una instantanea de nuestra propia politica. Se
             # mandan por la tuberia cada vez que se congela una version nueva,
             # no cada paso: el coste es despreciable frente a simular.
             import io
             import torch
-            from kagsym.exacto.ejecutor import Agent as _Ag
+            from kagsym.symbolic.executor import Agent as _Ag
             from kagsym.macro import Macro as _Mac, N_MACRO
-            from kagsym.redes.mundo import AgenteE2E, MundoConfig
+            from kagsym.nets.world import AgenteE2E, MundoConfig
             from kagsym import obs as _O
             sd, cfgd = datos
             _net = AgenteE2E(MundoConfig(**{k: v for k, v in cfgd.items()
@@ -83,7 +83,7 @@ import sys
                 # Decide UNA VEZ AL DIA, igual que nosotros. Llamar a la red
                 # cada turno es 24x mas caro y ademas ASIMETRICO: el rival
                 # jugaria con otra frecuencia de decision y no seria auto-juego.
-                ag = _Ag(episode_steps=pasos, macro=_Mac.desde_vector([0.5] * N_MACRO))
+                ag = _Ag(episode_steps=steps, macro=_Mac.from_vector([0.5] * N_MACRO))
                 # MISMA exploracion que nosotros. Con el rival determinista
                 # (eps=0) el emparejamiento es "nosotros con ruido" contra
                 # "nosotros sin ruido", y perdemos por el handicap, no por ser
@@ -122,26 +122,26 @@ import sys
                         with torch.no_grad():
                             s_ = _net(torch.from_numpy(g).unsqueeze(0),
                                       torch.from_numpy(b).unsqueeze(0))
-                            am, _ = _net.macro_desde(s_, eps_r)
+                            am, _ = _net.macro_from(s_, eps_r)
                             estado["mapa"] = (s_["micro"][0]
                                               + _sg * eps_u).numpy()
-                        ag.macro = _Mac.desde_vector(am[0].numpy())
-                        from .entorno import _parte_micro
+                        ag.macro = _Mac.from_vector(am[0].numpy())
+                        from .environment import _parte_micro
                         ag.micro = lambda o2: _parte_micro(estado["mapa"])
                         estado["dia"] = d_
                     return ag(ob)
                 return jugar
 
-            env.pon_rival_politica(fabrica)
+            env.set_rival_policy(fabrica)
             conn.send(True)
         elif cmd == "rival_tope":
-            from .entorno import publico_con_tope as _pct, carga_publico as _cp
+            from .environment import public_with_cap as _pct, load_public as _cp
             _n = "v48-fast-routes"
-            env.pon_rival_politica(
+            env.set_rival_policy(
                 (lambda: _cp(_n)) if datos is None else (lambda t=datos: _pct(_n, t)))
             conn.send(True)
         elif cmd == "rival_macro":
-            env.pon_rival_macro(datos)
+            env.set_rival_macro(datos)
             conn.send(True)
         elif cmd == "olvida_resultados":
             # Vacia el historial de victorias. Hace falta al PROMOCIONAR el
@@ -152,7 +152,7 @@ import sys
             env.resultados.clear()
             conn.send(True)
         elif cmd == "nivel":
-            env.nivel = datos
+            env.level = datos
             conn.send(True)
         elif cmd == "cerrar":
             conn.close()
@@ -162,8 +162,8 @@ import sys
 class EntornoParalelo:
     """Misma interfaz que `EntornoDia`, repartida entre procesos."""
 
-    def __init__(self, n_envs, n_procs=8, pasos=720, seed0=1, macro=None, nivel=2,
-                 modo="residuo", tope_peones=None, horas=None):
+    def __init__(self, n_envs, n_procs=8, steps=720, seed0=1, macro=None, level=2,
+                 mode="residuo", tope_peones=None, hours=None):
         self.n_procs = min(n_procs, n_envs)
         self.n = n_envs
         # HORIZONTE POR TRABAJADOR. `pasos` puede ser una lista: cada proceso
@@ -187,8 +187,8 @@ class EntornoParalelo:
                 return [v[i % len(v)] for i in range(self.n_procs)]
             return [v] * self.n_procs
 
-        self.pasos_proc = [int(x) for x in _reparte(pasos)]
-        self.horas_proc = _reparte(horas)
+        self.pasos_proc = [int(x) for x in _reparte(steps)]
+        self.horas_proc = _reparte(hours)
         self.tope_proc = _reparte(tope_peones)
 
         # REPARTO POR COSTE, no por cabeza. Con una rejilla heterogenea un
@@ -199,8 +199,8 @@ class EntornoParalelo:
         # sumando `n_envs`. Minimo uno por trabajador: un peldano sin episodios
         # no aporta gradiente y la red dejaria de ver esa escala.
         peso = [1.0 / p for p in self.pasos_proc]
-        tot = sum(peso)
-        self.por_proc = [max(1, int(n_envs * w / tot)) for w in peso]
+        total = sum(peso)
+        self.por_proc = [max(1, int(n_envs * w / total)) for w in peso]
         sobran = n_envs - sum(self.por_proc)
         i = 0
         while sobran != 0:                     # reparte el resto por peso
@@ -221,16 +221,16 @@ class EntornoParalelo:
         ctx = mp.get_context("fork")
         self.conns, self.procs = [], []
         off = 0
-        vec = list(macro.a_vector()) if hasattr(macro, "a_vector") else list(macro)
+        vec = list(macro.to_vector()) if hasattr(macro, "a_vector") else list(macro)
         for k, m in enumerate(self.por_proc):
             padre, hijo = ctx.Pipe()
             # Semillas DISJUNTAS por trabajador: si se solapan, varios procesos
             # juegan la misma partida y el lote deja de ser independiente.
             p = ctx.Process(target=_trabajador,
                             args=(hijo, m, self.pasos_proc[k], seed0, vec,
-                                  (nivel[k % len(nivel)]
-                                   if isinstance(nivel, (list, tuple)) else nivel),
-                                  modo, self.tope_proc[k],
+                                  (level[k % len(level)]
+                                   if isinstance(level, (list, tuple)) else level),
+                                  mode, self.tope_proc[k],
                                   self.horas_proc[k], off, n_envs),
                             daemon=True)
             p.start()
@@ -243,7 +243,7 @@ class EntornoParalelo:
         self._riv = [None] * self.n_procs
         self._sinliq = [float("nan")] * self.n_procs
 
-    def codifica(self):
+    def encode(self):
         for c in self.conns:
             c.send(("codifica", None))
         partes = [c.recv() for c in self.conns]
@@ -251,7 +251,7 @@ class EntornoParalelo:
                 np.concatenate([p[1] for p in partes]),
                 np.concatenate([p[2] for p in partes]))
 
-    def paso_dia(self, mapas=None, macros=None):
+    def step_day(self, mapas=None, macros=None):
         off = 0
         for c, m in zip(self.conns, self.por_proc):
             c.send(("paso", (None if mapas is None else mapas[off:off + m],
@@ -288,7 +288,7 @@ class EntornoParalelo:
         segun lo bien que juegue la politica.
         """
         out = {}
-        for k, pasos in enumerate(self.pasos_proc):
+        for k, steps in enumerate(self.pasos_proc):
             d = self._din[k]
             if d is None or (isinstance(d, float) and d != d):
                 continue
@@ -298,7 +298,7 @@ class EntornoParalelo:
     def rival_por_horizonte(self):
         """{dias: dinero medio del RIVAL} desglosado, no promediado."""
         out = {}
-        for k, pasos in enumerate(self.pasos_proc):
+        for k, steps in enumerate(self.pasos_proc):
             r = self._riv[k]
             if not isinstance(r, dict):
                 continue
@@ -308,10 +308,10 @@ class EntornoParalelo:
             out.setdefault(self._etiqueta(k), []).append(float(d))
         return {k: sum(v) / len(v) for k, v in out.items() if v}
 
-    def mascaras(self):
+    def masks(self):
         return getattr(self, "_masc", None)
 
-    def pon_autojuego(self, net):
+    def set_selfplay(self, net):
         """Congela la politica actual como rival en todos los trabajadores."""
         sd = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
         cfgd = dict(vars(net.cfg))
@@ -320,7 +320,7 @@ class EntornoParalelo:
         for c in self.conns:
             c.recv()
 
-    def pon_autojuego_en(self, idxs, net):
+    def set_selfplay_on(self, idxs, net):
         """Congela la politica como rival SOLO en los trabajadores dados.
 
         `pon_autojuego` es global: sustituye el rival de los once peldanos a la
@@ -344,7 +344,7 @@ class EntornoParalelo:
             if 0 <= k < len(self.conns):
                 self.conns[k].recv()
 
-    def pon_rival_tope(self, tope):
+    def set_rival_cap(self, cap):
         """Rival = v48 con ese tope de peones (None = sin tope).
 
         Se fija explicito en vez de por `nivel`, porque la escalera de ligas
@@ -354,14 +354,14 @@ class EntornoParalelo:
         una rejilla el tope del rival es el tercer eje del peldano y tiene que
         variar con el. Con un solo valor se aplica a todos, como antes.
         """
-        vals = (list(tope) if isinstance(tope, (list, tuple))
-                else [tope] * self.n_procs)
+        vals = (list(cap) if isinstance(cap, (list, tuple))
+                else [cap] * self.n_procs)
         for k, c in enumerate(self.conns):
             c.send(("rival_tope", vals[k % len(vals)]))
         for c in self.conns:
             c.recv()
 
-    def pon_rival_macro(self, vector):
+    def set_rival_macro(self, vector):
         """Propaga el rival-experto a los trabajadores (procesos aparte).
 
         Admite LISTA, un vector por trabajador, y `None` en una posicion deja
@@ -392,7 +392,7 @@ class EntornoParalelo:
         for c in self.conns:
             c.recv()
 
-    def sube_nivel(self, nivel):
+    def raise_level(self, level):
         """Admite LISTA, un nivel por trabajador.
 
         Por que hace falta: el tope de peones gradua la DIFICULTAD del rival,
@@ -401,8 +401,8 @@ class EntornoParalelo:
         36.139 $) aunque v48 puntue mas (153.720)-. Entrenar contra un solo
         estilo arriesga aprender a batir a ESE, no a jugar.
         """
-        vals = (list(nivel) if isinstance(nivel, (list, tuple))
-                else [nivel] * self.n_procs)
+        vals = (list(level) if isinstance(level, (list, tuple))
+                else [level] * self.n_procs)
         for k, c in enumerate(self.conns):
             c.send(("nivel", vals[k % len(vals)]))
         for c in self.conns:
@@ -412,7 +412,7 @@ class EntornoParalelo:
         v = [x for x in v if x == x]
         return float(np.mean(v)) if v else float("nan")
 
-    def olvida_resultados(self):
+    def forget_results(self):
         """Vacia el historial de victorias en todos los trabajadores y en el
         agregado del padre. Lo usa la promocion de rival: contra el rival nuevo
         la tasa tiene que medirse desde cero, no arrastrar la del anterior."""
@@ -422,7 +422,7 @@ class EntornoParalelo:
             c.recv()
         self._wr = [float("nan")] * self.n_procs
 
-    def rival_por_peldano(self):
+    def rival_per_rung(self):
         """Dinero del rival en CADA peldano. El dato ya se recibia por
         trabajador (`_riv[k]`) y no se exponia: sin el no se puede comprobar
         que la escalera este graduada ni que cada peldano aporte algo."""
@@ -434,7 +434,7 @@ class EntornoParalelo:
                 out.append(float("nan"))
         return out
 
-    def win_rate_por_peldano(self):
+    def win_rate_per_rung(self):
         """Tasa de victoria de CADA trabajador, o sea de cada peldano.
 
         Cada trabajador juega un peldano distinto de la escalera, asi que su
@@ -447,10 +447,10 @@ class EntornoParalelo:
     def win_rate(self, ultimos=60):
         return self._media(self._wr)
 
-    def dinero_medio(self, ultimos=50):
+    def mean_money(self, ultimos=50):
         return self._media(self._din)
 
-    def util_medio(self, ultimos=400):
+    def mean_useful(self, ultimos=400):
         return self._media(self._util)
 
     def rival_stats(self, ultimos=50):
@@ -460,7 +460,7 @@ class EntornoParalelo:
                     "animales": float("nan"), "unidades": float("nan")}
         return {k: self._media([r[k] for r in vs]) for k in vs[0]}
 
-    def sin_liquidar_medio(self, ultimos=50):
+    def mean_unsold(self, ultimos=50):
         return self._media(self._sinliq)
 
     def cerrar(self):

@@ -45,7 +45,7 @@ FICHEROS_MODELO = [
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def huella() -> str:
+def fingerprint() -> str:
     """12 hex que resumen el ejecutor y la codificacion."""
     h = hashlib.sha256()
     for f in FICHEROS:
@@ -58,7 +58,7 @@ def huella() -> str:
     return h.hexdigest()[:12]
 
 
-def huella_modelo() -> str:
+def model_fingerprint() -> str:
     """12 hex que resumen la red y el lazo de entrenamiento.
 
     Se guarda junto a los checkpoints. Si no coincide, dos checkpoints no son
@@ -77,7 +77,7 @@ def huella_modelo() -> str:
 
 def comprueba(guardada, que: str = "resultado") -> bool:
     """Avisa si la huella guardada no es la del codigo actual."""
-    actual = huella()
+    actual = fingerprint()
     if guardada is None:
         print(f"AVISO: {que} sin huella de codigo; no se puede validar la comparacion")
         return False

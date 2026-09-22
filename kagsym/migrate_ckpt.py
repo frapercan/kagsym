@@ -26,7 +26,7 @@ from __future__ import annotations
 import torch
 
 from . import obs as O
-from .redes.mundo import N_HIST
+from .nets.world import N_HIST
 
 # Los rasgos absolutos nuevos van SIEMPRE al final del bloque `time`, y esta
 # migracion lo da por hecho. Si alguna vez se anade uno en otra posicion, esto
@@ -43,7 +43,7 @@ NUEVO = O.N_GLOBAL + N_HIST
 ANCHOS_CONOCIDOS = (NUEVO, NUEVO - 1, NUEVO - 3)
 
 
-def migra_entrada(w: torch.Tensor) -> torch.Tensor:
+def migrate_input(w: torch.Tensor) -> torch.Tensor:
     """(out, ancho viejo) -> (out, NUEVO), con ceros en las columnas nuevas."""
     ancho = w.shape[1]
     if ancho == NUEVO:
@@ -59,7 +59,7 @@ def migra_entrada(w: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def migra_salida_macro(sd: dict) -> list:
+def migrate_macro_head(sd: dict) -> list:
     """Cabeza macro que CRECE, preservando la funcion aprendida.
 
     Cada vez que se expone una constante que estaba a ojo, el vector gana
@@ -104,25 +104,45 @@ def migra_salida_macro(sd: dict) -> list:
     return tocadas
 
 
-def migra_sd(sd: dict) -> tuple[dict, list[str]]:
+# Atributos renombrados al pasar el codigo a ingles. Las claves de un
+# `state_dict` son rutas de ATRIBUTO, asi que renombrar un submodulo invalida
+# todos los checkpoints anteriores. Se traducen al cargar, que es lo mismo que
+# ya se hace con las cabezas que crecen.
+RENOMBRES = {"mundo.": "world."}
+
+
+def migrate_keys(sd: dict) -> list[str]:
+    """Traduce las claves de checkpoints anteriores al renombrado ES->EN."""
+    tocadas = []
+    for viejo, nuevo in RENOMBRES.items():
+        claves = [k for k in sd if k.startswith(viejo)]
+        for k in claves:
+            sd[nuevo + k[len(viejo):]] = sd.pop(k)
+        if claves:
+            tocadas.append(f"{viejo}* -> {nuevo}* ({len(claves)} tensores)")
+    return tocadas
+
+
+def migrate_sd(sd: dict) -> tuple[dict, list[str]]:
     """Devuelve (state_dict migrado, lista de claves tocadas)."""
     out, tocadas = dict(sd), []
-    tocadas += migra_salida_macro(out)
-    for k in ("mundo.glob_enc.0.weight", "mundo.resumen.0.weight"):
+    tocadas += migrate_keys(out)        # antes que nada: los nombres viejos
+    tocadas += migrate_macro_head(out)
+    for k in ("world.glob_enc.0.weight", "world.resumen.0.weight"):
         if k in out and out[k].shape[1] != NUEVO:
-            out[k] = migra_entrada(out[k])
+            out[k] = migrate_input(out[k])
             tocadas.append(k)
     return out, tocadas
 
 
-def carga_estricta(net, sd, nombre="checkpoint"):
+def load_strict(net, sd, nombre="checkpoint"):
     """Carga migrando, y REVIENTA si queda algo sin cargar.
 
     Deliberadamente ruidoso: el fallo original fue silencioso. Si un tensor no
     encaja, mejor una excepcion que una politica con partes al azar que parece
     funcionar y da numeros sin sentido.
     """
-    sd, tocadas = migra_sd(sd)
+    sd, tocadas = migrate_sd(sd)
     act = net.state_dict()
     # SIGMA DE LA CABEZA MICRO. Antes era constante del config; desde el
     # 2026-09-22 es un `nn.Parameter` que aprende PPO, como el del macro. Un
@@ -152,7 +172,7 @@ def carga_estricta(net, sd, nombre="checkpoint"):
     return tocadas
 
 
-def carga_tolerante(net, sd, nombre="checkpoint", verbose=True):
+def load_tolerant(net, sd, nombre="checkpoint", verbose=True):
     """Migra, carga lo que encaje, y DICE EN VOZ ALTA lo que queda al azar.
 
     La tolerancia es deliberada en algunos sitios (`--init-net` arranca de un
@@ -160,7 +180,7 @@ def carga_tolerante(net, sd, nombre="checkpoint", verbose=True):
     mensaje decia "56/58 tensores" sin nombrarlos, y los dos ausentes eran el
     codificador global y el resumen. Aqui se nombran, siempre.
     """
-    sd, tocadas = migra_sd(sd)
+    sd, tocadas = migrate_sd(sd)
     act = net.state_dict()
     # SIGMA DE LA CABEZA MICRO. Antes era constante del config; desde el
     # 2026-09-22 es un `nn.Parameter` que aprende PPO, como el del macro. Un

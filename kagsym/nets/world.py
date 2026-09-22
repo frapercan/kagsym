@@ -42,7 +42,7 @@ import torch.nn.functional as F
 
 from .. import obs as O
 from ..macro import N_MACRO
-from .bloques import BloqueSep, ResBlock, symlog
+from .blocks import BloqueSep, ResBlock, symlog
 
 N_PRODUCTOS = 9
 N_HIST = 4 * N_PRODUCTOS      # flujo del rival en 4 ventanas hacia atras
@@ -116,8 +116,8 @@ class CodificadorMundo(nn.Module):
             hist = torch.zeros(glob.shape[0], N_HIST, device=glob.device, dtype=glob.dtype)
         g = symlog(torch.cat([glob, hist], dim=-1))
         h = self.stem(symlog(grid))
-        escala, sesgo = self.glob_enc(g).chunk(2, dim=-1)
-        h = h * (1 + escala[:, :, None, None]) + sesgo[:, :, None, None]
+        scale, sesgo = self.glob_enc(g).chunk(2, dim=-1)
+        h = h * (1 + scale[:, :, None, None]) + sesgo[:, :, None, None]
         return self.blocks(h), self.resumen(g)
 
 
@@ -147,7 +147,7 @@ class AgenteE2E(nn.Module):
         super().__init__()
         self.cfg = cfg
         w, hid = cfg.width, cfg.hidden
-        self.mundo = CodificadorMundo(cfg)
+        self.world = CodificadorMundo(cfg)
         self.cuerpo = nn.Sequential(
             nn.Linear(2 * w + hid, hid), nn.GELU(),
             nn.Linear(hid, hid), nn.GELU())
@@ -169,7 +169,7 @@ class AgenteE2E(nn.Module):
         # Canales 1.. = un logit por verbo de OPS_VOCAB.
         # Van en UN solo tensor a proposito: PPO ya hace flatten(1).sum(-1)
         # sobre el micro, asi que la perdida no cambia ni una linea.
-        from ..exacto.tareas import N_OPS
+        from ..symbolic.tasks import N_OPS
         self.n_ops = N_OPS if cfg.con_ops else 0
         # CAPACIDAD DE LA CABEZA QUE DECIDE. Medido el 2026-09-21 por
         # descomposicion: el mapa micro aporta +952 $ de 953 y el macro +1, y
@@ -297,7 +297,7 @@ class AgenteE2E(nn.Module):
                 self.micro.bias[0] = 1.0
 
     def tronco(self, grid, glob, hist=None):
-        h, g = self.mundo(grid, glob, hist)
+        h, g = self.world(grid, glob, hist)
         z = self.cuerpo(torch.cat([h.mean(dim=(2, 3)), h.amax(dim=(2, 3)), g], -1))
         return h, z
 
@@ -313,7 +313,7 @@ class AgenteE2E(nn.Module):
             "valor": self.critico(z).squeeze(-1),
         }
 
-    def macro_desde(self, salida, eps):
+    def macro_from(self, salida, eps):
         """Accion macro y su log-prob, con la perturbacion `eps` dada.
 
         `eps` se muestrea UNA VEZ por episodio y se reutiliza los 30 dias. La
@@ -329,7 +329,7 @@ class AgenteE2E(nn.Module):
               - (torch.log(a + 1e-8) + torch.log1p(-a + 1e-8))).sum(-1)
         return a, lp
 
-    def logprob_macro(self, salida, a):
+    def macro_logprob(self, salida, a):
         """Recalcula la log-prob de una accion ya tomada (fase de actualizacion)."""
         mu = salida["macro_mu"]
         sigma = self.log_sigma.exp()

@@ -31,44 +31,44 @@ kagsym/*
 # el vector aprendido y sus 30 parametros
 !kagsym/macro.py
 # conformacion de recompensa
-!kagsym/potencial.py
+!kagsym/potential.py
 # la recompensa
-!kagsym/recompensa.py
+!kagsym/reward.py
 # un paso = un dia
-!kagsym/entorno.py
+!kagsym/environment.py
 # N partidas en paralelo
-!kagsym/entorno_par.py
+!kagsym/parallel_env.py
 # migracion de checkpoints
-!kagsym/migrar_ckpt.py
+!kagsym/migrate_ckpt.py
 # registro de metricas
 !kagsym/tracking.py
 # huella del codigo
 !kagsym/version.py
 
-!kagsym/exacto/
-kagsym/exacto/*
-!kagsym/exacto/__init__.py
-!kagsym/exacto/asignacion.py
-!kagsym/exacto/ejecutor.py
-!kagsym/exacto/mercado.py
-!kagsym/exacto/tareas.py
+!kagsym/symbolic/
+kagsym/symbolic/*
+!kagsym/symbolic/__init__.py
+!kagsym/symbolic/asignacion.py
+!kagsym/symbolic/ejecutor.py
+!kagsym/symbolic/mercado.py
+!kagsym/symbolic/tareas.py
 
-!kagsym/redes/
-kagsym/redes/*
-!kagsym/redes/__init__.py
-!kagsym/redes/bloques.py
-!kagsym/redes/mundo.py
+!kagsym/nets/
+kagsym/nets/*
+!kagsym/nets/__init__.py
+!kagsym/nets/bloques.py
+!kagsym/nets/mundo.py
 
 !kagsym/cli/
 kagsym/cli/*
 !kagsym/cli/__init__.py
-!kagsym/cli/entrenar_e2e.py
+!kagsym/cli/train.py
 
-!kagsym/pruebas/
-kagsym/pruebas/*
-!kagsym/pruebas/__init__.py
-!kagsym/pruebas/test_asignacion.py
-!kagsym/pruebas/test_fastenv.py
+!kagsym/tests/
+kagsym/tests/*
+!kagsym/tests/__init__.py
+!kagsym/tests/test_assignment.py
+!kagsym/tests/test_fastenv.py
 
 # nunca, aunque encajen arriba
 *.bak

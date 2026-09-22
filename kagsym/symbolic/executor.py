@@ -11,7 +11,7 @@ import os
 import time
 
 from .. import spec
-from . import mercado, tareas
+from . import market_ops, tasks
 
 # spec.TURNS_PER_DAY se lee en tiempo de llamada (ver spec.set_turns_per_day):
 # como alias de modulo se congelaba al importar y no seguia a
@@ -100,16 +100,16 @@ class Agent:
             try:
                 from .. import obs as _O
                 import numpy as _np
-                dias = max(1.0, self.horizon / float(spec.TURNS_PER_DAY))
-                f = _O.flujo_rival(obs).reshape(len(_O.VENTANAS_RIVAL), -1)
+                days = max(1.0, self.horizon / float(spec.TURNS_PER_DAY))
+                f = _O.rival_flow(obs).reshape(len(_O.VENTANAS_RIVAL), -1)
                 # la ventana mas cercana que cubre el horizonte
                 k = min(range(len(_O.VENTANAS_RIVAL)),
-                        key=lambda i: abs(_O.VENTANAS_RIVAL[i] - dias))
+                        key=lambda i: abs(_O.VENTANAS_RIVAL[i] - days))
                 return _np.asarray(f[k], dtype=_np.float64) / max(1.0, self.horizon)
             except Exception:
                 return None
         try:
-            return self.rival.flujo(obs, accion_provisional)
+            return self.rival.flow(obs, accion_provisional)
         except Exception:
             return None
 
@@ -127,18 +127,18 @@ class Agent:
             return
         self._ultimo_dia = obs["day"]
         mi = obs["farms"][int(obs["player"])]
-        secas = plantadas = 0
-        for fila in mi["tiles"]:
-            for t in fila:
+        dry = planted = 0
+        for row in mi["tiles"]:
+            for t in row:
                 if isinstance(t, dict) and t.get("kind") == "PLANT":
-                    plantadas += 1
+                    planted += 1
                     if not t["watered_today"]:
-                        secas += 1
-        if plantadas == 0:
+                        dry += 1
+        if planted == 0:
             return
-        if secas > 0:
+        if dry > 0:
             # Nos hemos pasado: cada casilla cuesta mas de lo que creiamos.
-            self.turnos_por_casilla *= 1.0 + min(SUBE_COSTE, secas / plantadas)
+            self.turnos_por_casilla *= 1.0 + min(SUBE_COSTE, dry / planted)
         else:
             self.turnos_por_casilla = max(TURNOS_CASILLA_MIN,
                                           self.turnos_por_casilla * BAJA_COSTE)
@@ -157,8 +157,8 @@ class Agent:
         # escriben aqui, una vez por turno, en lugar de pasar el macro por
         # seis firmas mas.
         if self.macro is not None:
-            from ..macro import aplica_parametros
-            aplica_parametros(self.macro)
+            from ..macro import apply_params
+            apply_params(self.macro)
 
         # Unidades PLANIFICADAS, no las que hay en este instante. Tercera vez
         # que muerde la misma trampa: `len(mi["hands"])` vale SIEMPRE 0 en la
@@ -169,12 +169,12 @@ class Agent:
         # ~4 000 $ tirados por partida y la ganaderia sin caja.
         n_units = 1 + len(mi["hands"])
         if self.macro is not None:
-            from ..macro import peones_objetivo
-            n_units = max(n_units, 1 + peones_objetivo(obs, self.macro))
-        sostenibles = sustainable_tiles(obs, n_units, self.turnos_por_casilla)
-        plantadas = sum(1 for fila in mi["tiles"] for t in fila
+            from ..macro import target_hands
+            n_units = max(n_units, 1 + target_hands(obs, self.macro))
+        sustainable = sustainable_tiles(obs, n_units, self.turnos_por_casilla)
+        planted = sum(1 for row in mi["tiles"] for t in row
                         if isinstance(t, dict) and t.get("kind") == "PLANT")
-        libre = max(0, sostenibles - plantadas)
+        free = max(0, sustainable - planted)
 
         # En modo "ops" el micro devuelve DOS mapas: valor 10x10 y logits
         # N_OPS x 10 x 10. En los demas modos devuelve solo el valor.
@@ -185,19 +185,19 @@ class Agent:
                 _mv, _mo = _salida
             else:
                 _mv = _salida
-        unidades = tareas.assign_units(
-            obs, libre,
-            mapa_valor=_mv, mapa_ops=_mo,
-            previos=self._destinos,
+        units = tasks.assign_units(
+            obs, free,
+            value_map=_mv, verb_map=_mo,
+            previous=self._destinos,
             macro=self.macro)
-        provisional = {"farmer": unidades[0] if unidades else ["PASS"],
-                       "hands": unidades[1:], "market": []}
+        provisional = {"farmer": units[0] if units else ["PASS"],
+                       "hands": units[1:], "market": []}
 
-        flujo = self._opponent_flow(obs, provisional)
+        flow = self._opponent_flow(obs, provisional)
         # El ORDEN importa: el motor procesa las ordenes en secuencia, asi que
         # vender primero financia contratar, y contratar va antes que comprar
         # semilla porque sin manos que rieguen la semilla se pierde.
-        ordenes = []
+        orders = []
         mac = self.macro
         # ORDEN POR VALOR EN JUEGO, no por el orden en que se escribieron las
         # llamadas. El motor solo acepta `maxMarketOrdersPerTurn` (10) por turno
@@ -221,22 +221,22 @@ class Agent:
         # queda sin. Con prioridades uniformes se recupera el orden anterior.
         from ..macro import orden_categorias
         cajas = {
-            "tierra": lambda: mercado.land_orders(obs, macro=mac),
-            "pienso": lambda: mercado.feed_orders(obs),
-            "animal": lambda: mercado.animal_orders(obs, macro=mac),
-            "venta": lambda: mercado.sell_orders(obs, opp_flow=flujo,
+            "tierra": lambda: market_ops.land_orders(obs, macro=mac),
+            "pienso": lambda: market_ops.feed_orders(obs),
+            "animal": lambda: market_ops.animal_orders(obs, macro=mac),
+            "venta": lambda: market_ops.sell_orders(obs, opp_flow=flow,
                                                  horizon=self.horizon, macro=mac),
-            "semilla": lambda: mercado.seed_orders(obs, objetivo_casillas=min(libre, 12),
+            "semilla": lambda: market_ops.seed_orders(obs, tile_target=min(free, 12),
                                                    macro=mac),
-            "peon": lambda: mercado.hire_orders(obs, macro=mac),
+            "peon": lambda: market_ops.hire_orders(obs, macro=mac),
         }
         cats = orden_categorias(mac) if mac is not None else list(cajas)
         for c in cats:
-            ordenes += cajas[c]()
-        ordenes = ordenes[: spec.DEFAULT_CONFIG["maxMarketOrdersPerTurn"]]
+            orders += cajas[c]()
+        orders = orders[: spec.DEFAULT_CONFIG["maxMarketOrdersPerTurn"]]
 
-        accion = dict(provisional, market=ordenes)
-        self._ultima_accion = accion
+        action = dict(provisional, market=orders)
+        self._ultima_accion = action
         # La copia solo la consume `_update_gate`, que se rinde de inmediato si
         # no hay modelo de rival. Copiar la observacion ENTERA -dos granjas de
         # 100 casillas, mercado, pueblo, inventarios- cada turno cuando nadie
@@ -245,10 +245,10 @@ class Agent:
         # de entrenamiento ni de evaluacion pasa `rival=`.
         if self.rival is not None:
             from ..fastenv import _fast_copy
-            self.prev = (_fast_copy(obs), _fast_copy(accion))
+            self.prev = (_fast_copy(obs), _fast_copy(action))
         self.t_total += time.perf_counter() - t0
         self.n_turnos += 1
-        return accion
+        return action
 
     @property
     def ms_por_turno(self) -> float:

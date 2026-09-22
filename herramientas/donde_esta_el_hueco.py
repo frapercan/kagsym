@@ -15,21 +15,21 @@ SEM = [601, 602, 603, 604]
 
 def instrumenta(ckpt):
     from kagsym import obs as O, spec
-    from kagsym.exacto import tareas as T
-    from kagsym.exacto.ejecutor import Agent
-    from kagsym.entorno import publico_con_tope
+    from kagsym.symbolic import tasks as T
+    from kagsym.symbolic.executor import Agent
+    from kagsym.environment import public_with_cap
     from kagsym.fastenv import FastEnv
     from kagsym.macro import Macro, N_MACRO
-    from kagsym.migrar_ckpt import carga_estricta
-    from kagsym.redes import mundo as M
-    from kagsym.redes.mundo import AgenteE2E, MundoConfig
+    from kagsym.migrate_ckpt import load_strict
+    from kagsym.nets import world as M
+    from kagsym.nets.world import AgenteE2E, MundoConfig
     import kagsym.macro as _M
     d = torch.load(ckpt, map_location="cpu", weights_only=False)
     ops = bool((d.get("cfg") or {}).get("con_ops", False))
     T.MODO_MICRO = "ops" if ops else "residuo"
     spec.set_turns_per_day(H); spec.set_episode_steps(H * D); _M.TOPE_PEONES = None
     net = AgenteE2E(MundoConfig(device="cpu", con_ops=ops))
-    carga_estricta(net, d["sd"], ckpt); net.eval()
+    load_strict(net, d["sd"], ckpt); net.eval()
     HIST = torch.zeros(1, M.N_HIST)
     ven = [collections.Counter(), collections.Counter()]   # uds vendidas
     ing = [collections.Counter(), collections.Counter()]   # ingreso
@@ -37,8 +37,8 @@ def instrumenta(ckpt):
         env = FastEnv(configuration={"episodeSteps": H * D, "turnsPerDay": H,
                                      "startingMoney": CAJA}, seed=s)
         o = env.reset()
-        ag = Agent(episode_steps=H * D, macro=Macro.desde_vector([0.5] * N_MACRO))
-        rv = publico_con_tope("v48-fast-routes", 10 ** 6)
+        ag = Agent(episode_steps=H * D, macro=Macro.from_vector([0.5] * N_MACRO))
+        rv = public_with_cap("v48-fast-routes", 10 ** 6)
         dia = None
         with torch.no_grad():
             while not env.done:
@@ -47,7 +47,7 @@ def instrumenta(ckpt):
                     gr, b = O.encode_obs(ob)
                     sal = net(torch.from_numpy(gr).unsqueeze(0),
                               torch.from_numpy(b).unsqueeze(0), HIST)
-                    ag.macro = Macro.desde_vector(torch.sigmoid(sal["macro_mu"])[0].numpy())
+                    ag.macro = Macro.from_vector(torch.sigmoid(sal["macro_mu"])[0].numpy())
                     mp = sal["micro"][0].numpy()
                     ag.micro = (lambda _o, m=((mp[0], mp[1:]) if ops else mp): m)
                     dia = ob["day"]
@@ -73,14 +73,14 @@ if __name__ == "__main__":
     n = len(SEM)
     print(f"contra v48 sin tope, {n} semillas, 24h x 30d. Ingreso bruto por producto.\n")
     print(f"  {'producto':<14}{'nos uds':>9}{'nos $':>10}{'v48 uds':>9}{'v48 $':>10}{'hueco $':>10}")
-    filas = []
+    rows = []
     for p in spec.PRODUCTS:
         a, b = ing[0][p] / n, ing[1][p] / n
-        filas.append((b - a, p, ven[0][p] / n, a, ven[1][p] / n, b))
-    filas.sort(reverse=True)
-    for h, p, ua, a, ub, b in filas:
+        rows.append((b - a, p, ven[0][p] / n, a, ven[1][p] / n, b))
+    rows.sort(reverse=True)
+    for h, p, ua, a, ub, b in rows:
         print(f"  {p:<14}{ua:>9.0f}{a:>10.0f}{ub:>9.0f}{b:>10.0f}{h:>+10.0f}")
     ta, tb = sum(ing[0].values()) / n, sum(ing[1].values()) / n
     print(f"  {'TOTAL':<14}{'':>9}{ta:>10.0f}{'':>9}{tb:>10.0f}{tb-ta:>+10.0f}")
-    dos = sum(h for h, *_ in filas[:2])
+    dos = sum(h for h, *_ in rows[:2])
     print(f"\n  los DOS peores concentran {100*dos/max(1e-9,(tb-ta)):.0f} % del hueco")

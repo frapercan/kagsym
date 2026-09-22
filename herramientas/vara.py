@@ -19,29 +19,29 @@ SEM = list(range(601, 609))          # fijas: comparables entre checkpoints
 
 def evalua(ckpt):
     from kagsym import obs as O, spec
-    from kagsym.exacto import tareas as T
-    from kagsym.exacto.ejecutor import Agent
-    from kagsym.entorno import publico_con_tope
+    from kagsym.symbolic import tasks as T
+    from kagsym.symbolic.executor import Agent
+    from kagsym.environment import public_with_cap
     from kagsym.fastenv import FastEnv
     from kagsym.macro import Macro, N_MACRO
-    from kagsym.migrar_ckpt import carga_estricta
-    from kagsym.redes import mundo as M
-    from kagsym.redes.mundo import AgenteE2E, MundoConfig
+    from kagsym.migrate_ckpt import load_strict
+    from kagsym.nets import world as M
+    from kagsym.nets.world import AgenteE2E, MundoConfig
     import kagsym.macro as _M
     d = torch.load(ckpt, map_location="cpu", weights_only=False)
     ops = bool((d.get("cfg") or {}).get("con_ops", False))
     T.MODO_MICRO = "ops" if ops else "residuo"
     spec.set_turns_per_day(H); spec.set_episode_steps(H*D); _M.TOPE_PEONES = None
     net = AgenteE2E(MundoConfig(device="cpu", con_ops=ops))
-    carga_estricta(net, d["sd"], ckpt); net.eval()
+    load_strict(net, d["sd"], ckpt); net.eval()
     HIST = torch.zeros(1, M.N_HIST)
     mios, suyos = [], []
     for s in SEM:
         env = FastEnv(configuration={"episodeSteps": H*D, "turnsPerDay": H,
                                      "startingMoney": CAJA}, seed=s)
         o = env.reset()
-        ag = Agent(episode_steps=H*D, macro=Macro.desde_vector([0.5]*N_MACRO))
-        rv = publico_con_tope("v48-fast-routes", 10**6)
+        ag = Agent(episode_steps=H*D, macro=Macro.from_vector([0.5]*N_MACRO))
+        rv = public_with_cap("v48-fast-routes", 10**6)
         dia = None
         with torch.no_grad():
             while not env.done:
@@ -50,7 +50,7 @@ def evalua(ckpt):
                     gr, b = O.encode_obs(ob)
                     sal = net(torch.from_numpy(gr).unsqueeze(0),
                               torch.from_numpy(b).unsqueeze(0), HIST)
-                    ag.macro = Macro.desde_vector(
+                    ag.macro = Macro.from_vector(
                         torch.sigmoid(sal["macro_mu"])[0].numpy())
                     mp = sal["micro"][0].numpy()
                     ag.micro = (lambda _o, m=((mp[0], mp[1:]) if ops else mp): m)

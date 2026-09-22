@@ -89,7 +89,7 @@ mismo—.
 ## Entrenar
 
 ```bash
-python -m kagsym.cli.entrenar_e2e \
+python -m kagsym.cli.train \
   --updates 4000 --envs 44 --procs 11 \
   --rejilla "24,30,9;24,30,7;24,30,5;24,30,0;24,30,0;24,30,5" \
   --niveles "6,7,8,12,15,1" \
@@ -112,7 +112,7 @@ mismo macro en los dos lados, la red hace 75.009 $ y el vector 33.164.
 ## Verificar
 
 ```bash
-pytest kagsym/pruebas -q          # el húngaro == scipy; FastEnv == el motor real
+pytest kagsym/tests -q          # el húngaro == scipy; FastEnv == el motor real
 python herramientas/vara.py ckpt.pt   # vara fija: v48 sin tope, 8 semillas
 python herramientas/auditoria_cascada.py
 ```
@@ -127,14 +127,14 @@ kagsym/
   spec.py  fastenv.py      el motor y su clon exacto
   obs.py                   codificación de la observación
   macro.py                 el vector de 58 dimensiones y sus 30 parámetros
-  recompensa.py            el objetivo (fijo) y la conformación
-  potencial.py
-  entorno.py               un paso = un día
-  entorno_par.py           N partidas en paralelo
-  exacto/                  la capa simbólica: tareas, mercado, húngaro
-  redes/                   el mundo y las cabezas
+  reward.py            el objetivo (fijo) y la conformación
+  potential.py
+  environment.py               un paso = un día
+  parallel_env.py           N partidas en paralelo
+  symbolic/                  la capa simbólica: tasks, market, Hungarian
+  nets/                   el world model and the heads
   cli/entrenar_e2e.py      el único entrenador
-  pruebas/
+  tests/
 herramientas/              medida y construcción de la escalera
 ```
 

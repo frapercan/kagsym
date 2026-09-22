@@ -15,12 +15,12 @@ import numpy as np
 
 from . import obs as O
 from . import spec
-from .exacto.ejecutor import Agent
+from .symbolic.executor import Agent
 from .fastenv import FastEnv
 from .macro import Macro
-from .recompensa import ContadorProduccion
-from .recompensa import PESO_RIVAL as _PESO_RIVAL
-from .recompensa import PESO_ILEGAL as _PESO_ILEGAL
+from .reward import ContadorProduccion
+from .reward import PESO_RIVAL as _PESO_RIVAL
+from .reward import PESO_ILEGAL as _PESO_ILEGAL
 
 # spec.TURNS_PER_DAY se lee en tiempo de llamada (ver spec.set_turns_per_day):
 # como alias de modulo se congelaba al importar y no seguia a
@@ -87,7 +87,7 @@ ESCALERA = [
     "your-market-list-is-an-order-book",                #  188274 $, score 2671
 ]
 
-def publico_con_tope(nombre, max_peones: int):
+def public_with_cap(nombre, max_hands: int):
     """Un agente publico al que se le limita cuantos peones puede contratar.
 
     ATENUAR NO SIRVE: medido, dejar pasar turno al azar al 20 % de las acciones
@@ -99,27 +99,27 @@ def publico_con_tope(nombre, max_peones: int):
     Limitar los peones si conserva la coherencia del plan: su propia logica se
     dimensiona sola al numero de unidades que tiene.
     """
-    base = carga_publico(nombre)
+    base = load_public(nombre)
 
     def jugar(obs):
         a = base(obs)
         ya = len(obs["farms"][int(obs["player"])]["hands"])
-        hueco = max(0, max_peones - ya)
-        ordenes = []
+        room = max(0, max_hands - ya)
+        orders = []
         for o in (a.get("market") or []):
             if o[0] == "HIRE":
                 n_ = int(o[2]) if len(o) > 2 else 1
-                n_ = min(n_, hueco)
-                hueco -= max(0, n_)
+                n_ = min(n_, room)
+                room -= max(0, n_)
                 if n_ > 0:
-                    ordenes.append([o[0], o[1], n_] if len(o) > 2 else o)
+                    orders.append([o[0], o[1], n_] if len(o) > 2 else o)
             else:
-                ordenes.append(o)
-        return dict(a, market=ordenes)
+                orders.append(o)
+        return dict(a, market=orders)
     return jugar
 
 
-def publico_atenuado(nombre, p: float, semilla: int = 0):
+def publico_atenuado(nombre, p: float, seed: int = 0):
     """Un agente publico que solo ACTUA con probabilidad `p`; si no, pasa turno.
 
     Por que existe. La ESCALERA no era una escalera: medido el 2026-09-20 contra
@@ -135,8 +135,8 @@ def publico_atenuado(nombre, p: float, semilla: int = 0):
     agente sigue comprando tierra y peones que luego no usa.
     """
     import random as _rnd
-    base = carga_publico(nombre)
-    rng = _rnd.Random(semilla)
+    base = load_public(nombre)
+    rng = _rnd.Random(seed)
 
     def jugar(obs):
         a = base(obs)
@@ -151,7 +151,7 @@ def publico_atenuado(nombre, p: float, semilla: int = 0):
 _PUBLICOS = {}
 
 
-def carga_publico(nombre):
+def load_public(nombre):
     """Carga un agente publico de `agents_pub/` como funcion obs -> accion.
 
     CON CACHE. Sin ella, `spec_from_file_location` + `exec_module` recompilaban
@@ -164,9 +164,9 @@ def carga_publico(nombre):
     if ag is None:
         import importlib.util
         import os
-        ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents_pub", nombre + ".py")
+        path_ = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents_pub", nombre + ".py")
         spec_ = importlib.util.spec_from_file_location(
-            "pub_" + nombre.replace("-", "_"), ruta)
+            "pub_" + nombre.replace("-", "_"), path_)
         mod = importlib.util.module_from_spec(spec_)
         spec_.loader.exec_module(mod)
         ag = mod.agent
@@ -187,12 +187,12 @@ def _parte_micro(m):
 
 
 class EntornoDia:
-    def __init__(self, n, pasos=720, seed0=1, escala=None, macro=None,
+    def __init__(self, n, steps=720, seed0=1, scale=None, macro=None,
                  idx0=0, n_total=None,
-                 rival_fn=None, nivel=0, potencial=True, gamma=0.995):
-        from .recompensa import ESCALA as _ESC
-        self.n, self.pasos, self.seed0 = n, pasos, seed0
-        self.escala = float(_ESC if escala is None else escala)
+                 rival_fn=None, level=0, potential=True, gamma=0.995):
+        from .reward import ESCALA as _ESC
+        self.n, self.steps, self.seed0 = n, steps, seed0
+        self.scale = float(_ESC if scale is None else scale)
         self.idx0 = int(idx0)
         self.n_total = int(n_total) if n_total else int(n)
         self.macro_fijo = macro
@@ -200,7 +200,7 @@ class EntornoDia:
         # Peldano de la escalera. Los agentes publicos guardan estado entre
         # turnos, asi que hay que construir uno NUEVO por partida: reutilizarlo
         # arrastra la granja de la partida anterior.
-        self.nivel = nivel
+        self.level = level
         self.resultados = []
         # Shaping por potencial (Ng, Harada & Russell 1999):
         #     r' = r + gamma*Phi(s') - Phi(s)
@@ -227,11 +227,11 @@ class EntornoDia:
         # La usa PPO para que el cociente de importancia ignore las ~1 570
         # dimensiones gaussianas que no pueden cambiar ninguna accion.
         self._masc = [None] * n
-        self.potencial = potencial
+        self.potential = potential
         self.gamma = gamma
         self._phi = [0.0] * n
         self.sin_liquidar = []
-        self.envs, self.agentes, self.cont, self.obs = [None] * n, [None] * n, [None] * n, [None] * n
+        self.envs, self.agents, self.counter, self.obs = [None] * n, [None] * n, [None] * n, [None] * n
         self._rival = [None] * n
         self.ep = 0
         self.finales, self.utiles = [], []
@@ -247,25 +247,25 @@ class EntornoDia:
         # avisar. Particionando por residuo modulo el total de entornos, dos
         # entornos distintos no pueden coincidir jamas.
         s = self.seed0 + self.ep * self.n_total + self.idx0 + i
-        self.envs[i] = FastEnv(configuration={"episodeSteps": self.pasos}, seed=s)
+        self.envs[i] = FastEnv(configuration={"episodeSteps": self.steps}, seed=s)
         self.obs[i] = self.envs[i].reset()
-        mac = self.macro_fijo if self.macro_fijo is not None else Macro.por_defecto()
-        self.agentes[i] = Agent(episode_steps=self.pasos, macro=mac,
+        mac = self.macro_fijo if self.macro_fijo is not None else Macro.default()
+        self.agents[i] = Agent(episode_steps=self.steps, macro=mac,
                                 micro=lambda ob, k=i: _parte_micro(self._micro[k]))
-        self.cont[i] = ContadorProduccion()
+        self.counter[i] = ContadorProduccion()
         self._micro[i] = None
         self._rival[i] = self._nuevo_rival()
-        self._phi[i] = self._calcula_phi(i) if self.potencial else 0.0
+        self._phi[i] = self._calcula_phi(i) if self.potential else 0.0
 
     def _calcula_phi(self, i):
-        from .potencial import phi as _phi_fn
+        from .potential import phi as _phi_fn
         try:
             ob = self.obs[i][0]
-            return _phi_fn(ob, 0, ob["private"]) / self.escala
+            return _phi_fn(ob, 0, ob["private"]) / self.scale
         except Exception:
             return 0.0
 
-    def pon_rival_politica(self, fabrica):
+    def set_rival_policy(self, fabrica):
         """Rival = una POLITICA nuestra (auto-juego).
 
         Por que hace falta. Entrenando contra v48 perdemos el 100 % de las
@@ -284,7 +284,7 @@ class EntornoDia:
         for i in range(self.n):
             self._rival[i] = fabrica()
 
-    def pon_rival_macro(self, vector):
+    def set_rival_macro(self, vector):
         """Rival = NUESTRO ejecutor exacto con un macro dado.
 
         Los agentes publicos son especialistas de 30 dias: medido, en partidas
@@ -304,40 +304,40 @@ class EntornoDia:
 
     def _nuevo_rival(self):
         if getattr(self, "_macro_rival", None) is not None:
-            from .exacto.ejecutor import Agent as _Ag
+            from .symbolic.executor import Agent as _Ag
             from .macro import Macro as _Mac
             # Agente NUEVO por episodio: guarda estado entre turnos
             # (`_destinos`, `turnos_por_casilla`) y reutilizarlo contamina.
             # `episode_steps=None` a proposito: no tocar el global, que ya lo
             # fijo nuestro propio agente con los pasos de esta liga.
-            return _Ag(macro=_Mac.desde_vector(self._macro_rival))
+            return _Ag(macro=_Mac.from_vector(self._macro_rival))
         if getattr(self, "_fabrica_rival", None) is not None:
             return self._fabrica_rival()
         if self.rival_fn is not None:
             return self.rival_fn
-        nombre = ESCALERA[min(self.nivel, len(ESCALERA) - 1)]
+        nombre = ESCALERA[min(self.level, len(ESCALERA) - 1)]
         if nombre is None:
             from kaggle_environments.envs.kaggriculture import kaggriculture as E
             return E.pass_agent
         try:
-            tope = TOPES[min(self.nivel, len(TOPES) - 1)]
-            if tope is not None:
-                return publico_con_tope(nombre, tope)
-            return carga_publico(nombre)
+            cap = TOPES[min(self.level, len(TOPES) - 1)]
+            if cap is not None:
+                return public_with_cap(nombre, cap)
+            return load_public(nombre)
         except Exception:
             from kaggle_environments.envs.kaggriculture import kaggriculture as E
             return E.pass_agent
 
-    def sube_nivel(self):
-        self.nivel = min(self.nivel + 1, len(ESCALERA) - 1)
+    def raise_level(self):
+        self.level = min(self.level + 1, len(ESCALERA) - 1)
         self.resultados.clear()
-        return ESCALERA[self.nivel]
+        return ESCALERA[self.level]
 
     def win_rate(self, ultimos=60):
         r = self.resultados[-ultimos:]
         return float(np.mean(r)) if r else float("nan")
 
-    def codifica(self):
+    def encode(self):
         """Rejilla, vector global y OFERTA INMINENTE DEL RIVAL.
 
         La tercera salida alimenta la entrada `hist` de la red, que existia
@@ -350,10 +350,10 @@ class EntornoDia:
         Hf = np.zeros((self.n, O.N_HIST_RIVAL), dtype=np.float32)
         for i, o in enumerate(self.obs):
             G[i], B[i] = O.encode_obs(o[0])
-            Hf[i] = O.flujo_rival(o[0])
+            Hf[i] = O.rival_flow(o[0])
         return G, B, Hf
 
-    def paso_dia(self, mapas=None, macros=None):
+    def step_day(self, mapas=None, macros=None):
         """Juega 24 turnos. `mapas` (n,10,10) es el residuo de valor del dia."""
         from kaggle_environments.envs.kaggriculture import kaggriculture as E
         rec = np.zeros(self.n, dtype=np.float32)
@@ -362,32 +362,32 @@ class EntornoDia:
             if mapas is not None:
                 self._micro[i] = np.asarray(mapas[i], dtype=np.float32)
             if macros is not None:
-                self.agentes[i].macro = Macro.desde_vector(macros[i])
-            env, cont = self.envs[i], self.cont[i]
-            from .exacto import tareas as _Tm
+                self.agents[i].macro = Macro.from_vector(macros[i])
+            env, counter = self.envs[i], self.counter[i]
+            from .symbolic import tasks as _Tm
             if _Tm.MODO_MICRO == "ops":
-                _Tm.activa_mascara()
-            util = tot = 0
+                _Tm.enable_mask()
+            util = total = 0
             for _ in range(spec.TURNS_PER_DAY):
                 if env.done:
                     break
                 ob = self.obs[i][0]
-                acc = self.agentes[i](ob)
+                acc = self.agents[i](ob)
                 _invs = (ob.get("private", {}).get("inventories") or []
                          if _PESO_ILEGAL else [])
                 for _j, l in enumerate([acc.get("farmer")]
                                        + list(acc.get("hands") or [])):
                     if l:
-                        tot += 1
+                        total += 1
                         util += 1 if (l[0] not in MOV and l[0] != "PASS") else 0
                         if _PESO_ILEGAL and l[0] not in MOV and l[0] != "PASS":
                             _iv = (_invs[_j] if _j < len(_invs)
                                    and isinstance(_invs[_j], dict) else {})
                             if not _Tm._puede(_iv, l):
-                                rec[i] -= _PESO_ILEGAL / self.escala
-                cont.cosechado(ob, acc, 0)
-                ingreso, bonus = cont.vendido(ob, acc)
-                rec[i] += ingreso / self.escala + bonus
+                                rec[i] -= _PESO_ILEGAL / self.scale
+                counter.harvested(ob, acc, 0)
+                income, bonus = counter.sold(ob, acc)
+                rec[i] += income / self.scale + bonus
                 try:
                     rival = self._rival[i](self.obs[i][1])
                 except Exception:
@@ -409,17 +409,17 @@ class EntornoDia:
                     break
             if _Tm.MODO_MICRO == "ops":
                 self._masc[i] = _Tm.recoge_mascara()
-            if tot:
-                self.utiles.append(util / tot)
-            if self.potencial and not env.done:
+            if total:
+                self.utiles.append(util / total)
+            if self.potential and not env.done:
                 nuevo = self._calcula_phi(i)
                 rec[i] += self.gamma * nuevo - self._phi[i]
                 self._phi[i] = nuevo
             if env.done:
                 r = env.rewards()
-                if self.potencial:
+                if self.potential:
                     # Phi(s_T) = MI caja por construccion (sin el rival)
-                    fin_phi = float(r[0]) / self.escala
+                    fin_phi = float(r[0]) / self.scale
                     rec[i] += self.gamma * fin_phi - self._phi[i]
                 self.sin_liquidar.append(
                     int(sum(self.obs[i][0]["private"]["shed"].values())))
@@ -434,7 +434,7 @@ class EntornoDia:
                 # predice; los saltos de su caja no lo son. Al cierre es un
                 # escalar por episodio, la misma forma que el +-1 de siempre.
                 if _PESO_RIVAL:
-                    rec[i] -= _PESO_RIVAL * float(r[1]) / self.escala
+                    rec[i] -= _PESO_RIVAL * float(r[1]) / self.scale
                 res = 1.0 if r[0] > r[1] else (0.5 if r[0] == r[1] else 0.0)
                 rec[i] += 2.0 * res - 1.0
                 self.resultados.append(res)
@@ -457,18 +457,18 @@ class EntornoDia:
                 self._reset(i)
         return rec, fin
 
-    def mascaras(self):
+    def masks(self):
         """(n, 1+N_OPS, B, B): que dimensiones del micro decidieron hoy.
 
         Fuera del modo "ops" no hay nada que enmascarar y se devuelve None.
         """
-        from .exacto import tareas as _Tm
+        from .symbolic import tasks as _Tm
         if _Tm.MODO_MICRO != "ops":
             return None
         z = np.zeros((1 + _Tm.N_OPS, spec.BOARD, spec.BOARD), dtype=np.float32)
         return np.stack([m if m is not None else z for m in self._masc])
 
-    def dinero_medio(self, ultimos=50):
+    def mean_money(self, ultimos=50):
         return float(np.mean(self.finales[-ultimos:])) if self.finales else float("nan")
 
     def rival_stats(self, ultimos=50):
@@ -476,10 +476,10 @@ class EntornoDia:
         return {"dinero": m(self.riv_fin), "cultivos": m(self.riv_cult),
                 "animales": m(self.riv_anim), "unidades": m(self.riv_uds)}
 
-    def sin_liquidar_medio(self, ultimos=50):
+    def mean_unsold(self, ultimos=50):
         """Unidades que quedaron en el cobertizo al cerrar. Deben ser 0."""
         v = self.sin_liquidar[-ultimos:]
         return float(np.mean(v)) if v else float("nan")
 
-    def util_medio(self, ultimos=400):
+    def mean_useful(self, ultimos=400):
         return float(np.mean(self.utiles[-ultimos:])) if self.utiles else float("nan")

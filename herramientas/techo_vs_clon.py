@@ -22,8 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runs", "ligas"))
 import numpy as np, torch
 from kagsym import spec
-from kagsym.exacto import tareas as T
-from kagsym.exacto.ejecutor import Agent
+from kagsym.symbolic import tasks as T
+from kagsym.symbolic.executor import Agent
 from kagsym.fastenv import FastEnv
 from kagsym.macro import Macro, N_MACRO
 import kagsym.macro as _M
@@ -38,14 +38,14 @@ spec.set_turns_per_day(H); spec.set_episode_steps(H*D); _M.TOPE_PEONES = TOPE
 T.MODO_MICRO = "residuo"
 RIV = list(np.load(INIT))
 
-def juega(vec, semillas):
+def play(vec, seeds):
     mios, suyos = [], []
-    for s in semillas:
+    for s in seeds:
         env = FastEnv(configuration={"episodeSteps": H*D, "turnsPerDay": H,
                                      "startingMoney": CAJA}, seed=s)
         o = env.reset()
-        ag = Agent(episode_steps=H*D, macro=Macro.desde_vector(list(vec)))
-        rv = Agent(episode_steps=H*D, macro=Macro.desde_vector(RIV))
+        ag = Agent(episode_steps=H*D, macro=Macro.from_vector(list(vec)))
+        rv = Agent(episode_steps=H*D, macro=Macro.from_vector(RIV))
         while not env.done:
             o, _ = env.step([ag(o[0]), rv(o[1])])
         r = env.rewards(); mios.append(float(r[0])); suyos.append(float(r[1]))
@@ -55,7 +55,7 @@ if __name__ == "__main__":
     t0 = time.time()
     print(f"techo de la clase VECTOR FIJO contra el clon, celda {H}h x {D}d "
           f"caja {CAJA} tope {TOPE}")
-    b0, r0 = juega(RIV, SEM_VAL)
+    b0, r0 = play(RIV, SEM_VAL)
     print(f"  referencias   inaccion {CAJA}   el rival (=nuestro init) {b0:.0f}")
     print(f"  CEM {POB}x{ITERS} sobre {N_MACRO} dims, {len(SEM_BUSCA)} semillas por sorteo\n")
     mu, sg = np.array(RIV, float), np.full(N_MACRO, 0.25)
@@ -63,7 +63,7 @@ if __name__ == "__main__":
     for it in range(ITERS):
         t1 = time.time()
         pob = np.clip(mu + sg * np.random.randn(POB, N_MACRO), 0.0, 1.0)
-        pts = np.array([juega(v, SEM_BUSCA)[0] for v in pob])
+        pts = np.array([play(v, SEM_BUSCA)[0] for v in pob])
         idx = np.argsort(pts)[-ELITE:]
         mu, sg = pob[idx].mean(0), pob[idx].std(0) + 0.02
         if pts.max() > mejor_s:
@@ -73,7 +73,7 @@ if __name__ == "__main__":
                   f"{(time.time()-t1)*ITERS:.0f}s)\n", flush=True)
         print(f"   it {it+1:>2}  busqueda {pts.max():>7.0f}  "
               f"sigma medio {sg.mean():.3f}", flush=True)
-    m, v = juega(mejor_v, SEM_VAL)
+    m, v = play(mejor_v, SEM_VAL)
     print(f"\n  busqueda (inflada por seleccion)  {mejor_s:>7.0f}")
     print(f"  REEVALUADO en semillas frescas     {m:>7.0f}   rival {v:.0f}   "
           f"margen {m-v:+.0f}")

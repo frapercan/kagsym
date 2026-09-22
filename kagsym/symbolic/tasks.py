@@ -21,7 +21,7 @@ from .. import spec
 # spec.TURNS_PER_DAY se lee en tiempo de llamada (ver spec.set_turns_per_day):
 # como alias de modulo se congelaba al importar y no seguia a
 # `turnsPerDay`, desincronizando el ejecutor del motor sin avisar.
-from .asignacion import asignacion_maxima
+from .assignment import max_assignment
 
 BOARD = spec.BOARD
 DIRS = {"NORTH": (0, -1), "SOUTH": (0, 1), "EAST": (1, 0), "WEST": (-1, 0)}
@@ -96,23 +96,23 @@ def growth_factor(obs, crop: str) -> float:
     dias = x1.28. El melon gana por casilla-dia y pierde por capital-dia, y
     cuando el capital es la restriccion la que manda es la segunda.
     """
-    coste = max(1, spec.CROPS[crop]["seed"])
-    retorno = cycle_yield(crop) * unit_price(obs, crop)
+    cost = max(1, spec.CROPS[crop]["seed"])
+    ret = cycle_yield(crop) * unit_price(obs, crop)
     d = max(1, cycle_days(crop))
-    return (retorno / coste) ** (1.0 / d)
+    return (ret / cost) ** (1.0 / d)
 
 
-def capital_is_binding(obs, casillas_libres: int) -> bool:
+def capital_is_binding(obs, free_tiles: int) -> bool:
     """Falta dinero para llenar las casillas que se podrian atender?"""
-    if casillas_libres <= 0:
+    if free_tiles <= 0:
         return False
-    dinero = float(obs["farms"][int(obs["player"])]["money"])
+    money = float(obs["farms"][int(obs["player"])]["money"])
     barato = min(spec.CROPS[c]["seed"] for c in spec.CROP_LIST if plantable(obs, c)) \
         if any(plantable(obs, c) for c in spec.CROP_LIST) else 1
-    return dinero < casillas_libres * barato
+    return money < free_tiles * barato
 
 
-def best_crop(obs, seeds_only: bool = False, casillas_libres: int = 0) -> str | None:
+def best_crop(obs, seeds_only: bool = False, free_tiles: int = 0) -> str | None:
     """El mejor cultivo SEGUN CUAL SEA LA RESTRICCION.
 
     Con casillas de sobra y poco dinero, la restriccion es el capital y gana el
@@ -124,17 +124,17 @@ def best_crop(obs, seeds_only: bool = False, casillas_libres: int = 0) -> str | 
     no poder ni contratar peones.
     """
     seeds = obs["private"].get("seeds", {})
-    por_capital = capital_is_binding(obs, casillas_libres)
-    mejor, valor = None, 0.0
+    por_capital = capital_is_binding(obs, free_tiles)
+    best, value = None, 0.0
     for c in spec.CROP_LIST:
         if not plantable(obs, c):
             continue
         if seeds_only and seeds.get(c, 0) <= 0:
             continue
         v = growth_factor(obs, c) if por_capital else cycle_profit(obs, c) / max(1, cycle_days(c))
-        if v > valor:
-            mejor, valor = c, v
-    return mejor
+        if v > value:
+            best, value = c, v
+    return best
 
 
 # --- tareas -----------------------------------------------------------------
@@ -172,9 +172,9 @@ def _tarea_cobertizo(obs, farm, ctx=None, macro=None):
         ctx = contexto_turno(obs, farm)
     # Solo se valora el animal que de verdad esta en el cobertizo.
     hay = [a for a in spec.ANIMALS if int(shed.get(a, 0)) > 0]
-    for a in sorted(hay, key=lambda a: -valor_animal(ctx, a, macro)):
-        if ctx.libres.get(spec.ANIMALS[a]["structure"], 0) > 0:
-            return (max(1.0, valor_animal(ctx, a, macro) / ctx.dias),
+    for a in sorted(hay, key=lambda a: -animal_value(ctx, a, macro)):
+        if ctx.free_slots.get(spec.ANIMALS[a]["structure"], 0) > 0:
+            return (max(1.0, animal_value(ctx, a, macro) / ctx.days),
                     ["PICKUP", a, 1])
     # 1b) DESCARGAR. La cosecha se queda en el inventario de la unidad hasta el
     # cierre del dia; con DROP llega al cobertizo YA y puede venderse el mismo
@@ -190,9 +190,9 @@ def _tarea_cobertizo(obs, farm, ctx=None, macro=None):
     #
     # Es el tercer sitio hoy donde confundo valor bruto con marginal (antes: el
     # precio nominal del animal y el bonus del fertilizante).
-    from .mercado import future_price, marginal_prices
+    from .market_ops import future_price, marginal_prices
     priv_inv = priv.get("inventories") or []
-    mejor = 0.0
+    best = 0.0
     for inv in priv_inv:
         v_ = 0.0
         for item, n_ in (inv or {}).items():
@@ -200,14 +200,14 @@ def _tarea_cobertizo(obs, farm, ctx=None, macro=None):
                 ahora = float(sum(marginal_prices(obs, item, int(n_))))
                 luego = float(future_price(obs, item, spec.TURNS_PER_DAY)) * int(n_)
                 v_ += max(0.0, ahora - luego)      # solo la caida que se evita
-        mejor = max(mejor, v_)
-    if mejor > 0:
-        return (mejor, ["DROP"])
+        best = max(best, v_)
+    if best > 0:
+        return (best, ["DROP"])
 
     # 2) fertilizante, si hay plantas que fertilizar y esta en el cobertizo
     fert = int(shed.get("FERTILIZER", 0))
     if fert > 0:
-        fertilizables = sum(1 for fila in farm["tiles"] for t in fila
+        fertilizables = sum(1 for row in farm["tiles"] for t in row
                             if isinstance(t, dict) and t.get("kind") == "PLANT"
                             and t.get("fertilized_until_day", -1) < obs["day"])
         if fertilizables > 0:
@@ -215,7 +215,7 @@ def _tarea_cobertizo(obs, farm, ctx=None, macro=None):
             return (2.0 * unit_price(obs, "FERTILIZER"), ["PICKUP", "FERTILIZER", n])
 
     # 3) trigo para alimentar a los animales que aun no han comido
-    hambrientos = sum(1 for fila in farm["tiles"] for t in fila
+    hambrientos = sum(1 for row in farm["tiles"] for t in row
                       if isinstance(t, dict) and t.get("animal") and not t.get("fed_today"))
     if hambrientos > 0 and int(shed.get("WHEAT", 0)) > 0:
         n = min(hambrientos, int(shed["WHEAT"]))
@@ -244,12 +244,12 @@ def _animales_esperando(obs) -> list:
 
 
 def _estructuras_libres(farm) -> dict:
-    libres = {"COOP": 0, "PASTURE": 0}
-    for fila in farm["tiles"]:
-        for t in fila:
-            if isinstance(t, dict) and t.get("kind") in libres and not t.get("animal"):
-                libres[t["kind"]] += 1
-    return libres
+    free_slots = {"COOP": 0, "PASTURE": 0}
+    for row in farm["tiles"]:
+        for t in row:
+            if isinstance(t, dict) and t.get("kind") in free_slots and not t.get("animal"):
+                free_slots[t["kind"]] += 1
+    return free_slots
 
 
 def _tasa_riego(farm) -> float:
@@ -261,8 +261,8 @@ def _tasa_riego(farm) -> float:
     Sale del propio estado, no de una constante.
     """
     total = regadas = 0
-    for fila in farm["tiles"]:
-        for t in fila:
+    for row in farm["tiles"]:
+        for t in row:
             if isinstance(t, dict) and t.get("kind") == "PLANT":
                 total += 1
                 regadas += 1 if t.get("watered_today") else 0
@@ -290,33 +290,33 @@ class contexto_turno:
         self._pend = self._libres = self._val = self._dias = None
 
     @property
-    def pendientes(self):
+    def pending_animals(self):
         if self._pend is None:
             self._pend = _animales_esperando(self.obs)
         return self._pend
 
     @property
-    def libres(self):
+    def free_slots(self):
         if self._libres is None:
             self._libres = _estructuras_libres(self.farm)
         return self._libres
 
     @property
-    def dias(self):
+    def days(self):
         if self._dias is None:
             self._dias = max(1, days_left(self.obs))
         return self._dias
 
-    def valor(self, animal):
+    def value(self, animal):
         if self._val is None:
             self._val = {}
         if animal not in self._val:
-            from .mercado import animal_net_value
+            from .market_ops import animal_net_value
             self._val[animal] = animal_net_value(self.obs, animal)
         return self._val[animal]
 
 
-def valor_animal(ctx, a, macro):
+def animal_value(ctx, a, macro):
     """Valor del animal PONDERADO por el factor aprendido de su producto.
 
     `ctx.valor` es `animal_net_value`, una formula escrita a mano. Decidir con
@@ -331,17 +331,17 @@ def valor_animal(ctx, a, macro):
     se pondero UN sitio -PICKUP en `tile_options`- y los otros cuatro se
     quedaron sin ponderar toda una sesion sin que nadie lo viera.
     """
-    v = ctx.valor(a)
+    v = ctx.value(a)
     if macro is None:
         return v
     try:
-        from ..macro import mercado_factores
-        return v * mercado_factores(macro).get(spec.ANIMALS[a]["product"], 1.0)
+        from ..macro import market_factors
+        return v * market_factors(macro).get(spec.ANIMALS[a]["product"], 1.0)
     except Exception:
         return v
 
 
-def tile_task(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None, macro=None):
+def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=None):
     """(valor en $, operacion) de la mejor accion posible en esa casilla."""
     tile = farm["tiles"][y][x]
     day = obs["day"]
@@ -358,13 +358,13 @@ def tile_task(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None, macro=N
         # Un animal esperando en el cobertizo no vale nada hasta que hay donde
         # ponerlo. Construir desbloquea un ingreso de ~1700 $ ya pagado.
         for kind in ("COOP", "PASTURE"):
-            animales = [a for a in ctx.pendientes if spec.ANIMALS[a]["structure"] == kind]
-            if animales and ctx.libres.get(kind, 0) <= 0:
-                v = max(valor_animal(ctx, a, macro) for a in animales)
-                return (max(1.0, v / ctx.dias), ["BUILD_" + kind])
-        if capacidad_libre <= 0:
+            animals = [a for a in ctx.pending_animals if spec.ANIMALS[a]["structure"] == kind]
+            if animals and ctx.free_slots.get(kind, 0) <= 0:
+                v = max(animal_value(ctx, a, macro) for a in animals)
+                return (max(1.0, v / ctx.days), ["BUILD_" + kind])
+        if free_capacity <= 0:
             return None
-        crop = best_crop(obs, seeds_only=True, casillas_libres=capacidad_libre)
+        crop = best_crop(obs, seeds_only=True, free_tiles=free_capacity)
         if crop is None:
             return None
         # Se prorratea: plantar hoy captura el ciclo entero, pero el valor se
@@ -376,15 +376,15 @@ def tile_task(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None, macro=N
     kind = tile.get("kind")
 
     if kind == "WEED":
-        crop = best_crop(obs, seeds_only=True, casillas_libres=capacidad_libre)
+        crop = best_crop(obs, seeds_only=True, free_tiles=free_capacity)
         v = cycle_profit(obs, crop) / max(1, cycle_days(crop)) if crop else 1.0
         return (v * VALOR_DIG, ["DIG"])    # fraccion expuesta, no fija
 
     if kind == "PLANT":
         cd = spec.CROPS[tile["crop"]]
-        edad = day - tile["planted_day"]
-        precio = unit_price(obs, tile["crop"])
-        maduro = edad >= cd["first_yield_day"] and tile["yield_units"] > 0
+        age = day - tile["planted_day"]
+        price = unit_price(obs, tile["crop"])
+        maduro = age >= cd["first_yield_day"] and tile["yield_units"] > 0
 
         if not tile["watered_today"]:
             # `consecutive_unwatered` NACE EN 1 al plantar: una planta sin regar
@@ -392,16 +392,16 @@ def tile_task(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None, macro=N
             # una emergencia, no un aviso. Verificado contra el motor.
             if tile["consecutive_unwatered"] >= 1:
                 restante = max(1, cycle_yield(tile["crop"]) - tile["yield_units"])
-                return (restante * precio, ["WATER"])
+                return (restante * price, ["WATER"])
             if not cd["ongoing"]:
                 w0 = (cd["max_yield_day"] + 1) // 2
-                if w0 <= edad <= cd["max_yield_day"] and tile["yield_units"] < cd["max_yield"]:
+                if w0 <= age <= cd["max_yield_day"] and tile["yield_units"] < cd["max_yield"]:
                     bonus = 2 if tile["fertilized_until_day"] >= day else 1
-                    return (bonus * precio, ["WATER"])
+                    return (bonus * price, ["WATER"])
             else:
-                if edad >= cd["first_yield_day"] - 1:
-                    return (precio, ["WATER"])
-            return (0.4 * precio, ["WATER"])
+                if age >= cd["first_yield_day"] - 1:
+                    return (price, ["WATER"])
+            return (0.4 * price, ["WATER"])
 
         # FERTILIZAR: SOLO en modo directo, donde la RED valora.
         #
@@ -428,48 +428,48 @@ def tile_task(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None, macro=N
             # 563 y regar 386 -mas siembras que riegos es una sentencia-.
             if (not cd["ongoing"] and tile.get("fertilized_until_day", -1) < day):
                 w0 = (cd["max_yield_day"] + 1) // 2
-                if w0 <= edad + 1 <= cd["max_yield_day"] and tile["yield_units"] < cd["max_yield"]:
+                if w0 <= age + 1 <= cd["max_yield_day"] and tile["yield_units"] < cd["max_yield"]:
                     dias_utiles = min(HORIZONTE_FERTILIZAR,
-                                      cd["max_yield_day"] - edad, days_left(obs))
+                                      cd["max_yield_day"] - age, days_left(obs))
                     if dias_utiles > 0:
                         # VALOR MARGINAL, no bruto. El bonus anade +1 unidad por dia
                         # REGADO, no por dia. Valorarlo a `dias * precio` lo hacia
                         # ganar siempre a regar (1-2 x precio): medido, el riego
                         # caia de 1 791 a 904, las cosechas de 768 a 360 y el dinero
                         # de 36 566 a 22 768 $.
-                        return (_pf * dias_utiles * precio * _tasa_riego(farm), ["FERTILIZE"])
+                        return (_pf * dias_utiles * price * _tasa_riego(farm), ["FERTILIZE"])
             elif cd["ongoing"] and tile.get("fertilized_until_day", -1) < day:
-                if edad >= cd["first_yield_day"] - 1 and days_left(obs) > 1:
+                if age >= cd["first_yield_day"] - 1 and days_left(obs) > 1:
                     return (_pf * min(HORIZONTE_FERTILIZAR, days_left(obs))
-                            * precio * _tasa_riego(farm), ["FERTILIZE"])
+                            * price * _tasa_riego(farm), ["FERTILIZE"])
 
-        if maduro and (cd["ongoing"] or edad >= cd["max_yield_day"]):
-            return (tile["yield_units"] * precio, ["HARVEST"])
+        if maduro and (cd["ongoing"] or age >= cd["max_yield_day"]):
+            return (tile["yield_units"] * price, ["HARVEST"])
         if maduro and tile["yield_units"] >= cd["max_yield"]:
-            return (tile["yield_units"] * precio, ["HARVEST"])
+            return (tile["yield_units"] * price, ["HARVEST"])
         return None
 
     if kind in ("COOP", "PASTURE"):
         animal = tile.get("animal")
         if animal is None:
-            candidatos = [a for a in ctx.pendientes
+            candidates = [a for a in ctx.pending_animals
                           if spec.ANIMALS[a]["structure"] == kind]
-            if candidatos:
-                mejor = max(candidatos,
-                            key=lambda a: valor_animal(ctx, a, macro))
-                return (max(1.0, valor_animal(ctx, mejor, macro) / ctx.dias),
-                        ["PLACE", mejor, 1])
+            if candidates:
+                best = max(candidates,
+                            key=lambda a: animal_value(ctx, a, macro))
+                return (max(1.0, animal_value(ctx, best, macro) / ctx.days),
+                        ["PLACE", best, 1])
             return None
         prod = spec.ANIMALS[animal]["product"]
-        precio = unit_price(obs, prod)
+        price = unit_price(obs, prod)
         if not tile.get("fed_today"):
-            return (2 * precio, ["FEED"])          # sin comer dos dias, escapa
+            return (2 * price, ["FEED"])          # sin comer dos dias, escapa
         if tile.get("yield_units", 0) > 0:
-            return (tile["yield_units"] * precio, ["HARVEST"])
+            return (tile["yield_units"] * price, ["HARVEST"])
         if tile.get("fertilizer_available"):
             return (unit_price(obs, "FERTILIZER"), ["COLLECT_FERTILIZER"])
         if not tile.get("cared_today"):
-            return (0.5 * precio, ["CARE"])
+            return (0.5 * price, ["CARE"])
     return None
 
 
@@ -573,9 +573,9 @@ _RNG_VERBO = np.random.default_rng(0)
 GRAD_ACUM = None
 
 
-def siembra_verbo(semilla: int) -> None:
+def siembra_verbo(seed: int) -> None:
     global _RNG_VERBO
-    _RNG_VERBO = np.random.default_rng(semilla)
+    _RNG_VERBO = np.random.default_rng(seed)
 
 
 def activa_grad(n_ops: int) -> None:
@@ -589,7 +589,7 @@ def recoge_grad():
     return g
 
 
-def activa_mascara():
+def enable_mask():
     import numpy as np
     global MASCARA_ACUM
     MASCARA_ACUM = np.zeros((1 + N_OPS, BOARD, BOARD), dtype=np.float32)
@@ -602,7 +602,7 @@ def recoge_mascara():
     return m
 
 
-def tile_options(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None,
+def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
                  macro=None) -> list:
     """Todas las operaciones LEGALES en esa casilla, sin valorarlas ni ordenarlas.
 
@@ -625,12 +625,12 @@ def tile_options(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None,
             _fa = {}
             if macro is not None:
                 try:
-                    from ..macro import mercado_factores
-                    _fa = mercado_factores(macro)
+                    from ..macro import market_factors
+                    _fa = market_factors(macro)
                 except Exception:
                     _fa = {}
-            mejor = max(hay, key=lambda a: valor_animal(ctx, a, macro))
-            out.append((OPS_IX["PICKUP_ANIMAL"], ["PICKUP", mejor, 1]))
+            best = max(hay, key=lambda a: animal_value(ctx, a, macro))
+            out.append((OPS_IX["PICKUP_ANIMAL"], ["PICKUP", best, 1]))
         # CANTIDAD, no solo verbo. `OPS_VOCAB` tiene `PICKUP_WHEAT` como un
         # verbo sin argumento, asi que esto emitia SIEMPRE 1 mientras la
         # heuristica coge `min(hambrientos, trigo_en_cobertizo)`. Medido el
@@ -646,14 +646,14 @@ def tile_options(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None,
         # como la legalidad y el enrutado. La red sigue eligiendo el VERBO.
         trigo = int(shed.get("WHEAT", 0))
         if trigo > 0:
-            hambrientos = sum(1 for fila in farm["tiles"] for t in fila
+            hambrientos = sum(1 for row in farm["tiles"] for t in row
                               if isinstance(t, dict) and t.get("animal")
                               and not t.get("fed_today"))
             out.append((OPS_IX["PICKUP_WHEAT"],
                         ["PICKUP", "WHEAT", max(1, min(hambrientos, trigo))]))
         fert = int(shed.get("FERTILIZER", 0))
         if fert > 0:
-            fertilizables = sum(1 for fila in farm["tiles"] for t in fila
+            fertilizables = sum(1 for row in farm["tiles"] for t in row
                                 if isinstance(t, dict) and t.get("kind") == "PLANT"
                                 and t.get("fertilized_until_day", -1) < obs["day"])
             out.append((OPS_IX["PICKUP_FERTILIZER"],
@@ -662,9 +662,9 @@ def tile_options(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None,
 
     if tile is None:
         for kind in ("COOP", "PASTURE"):
-            if any(spec.ANIMALS[a]["structure"] == kind for a in ctx.pendientes):
+            if any(spec.ANIMALS[a]["structure"] == kind for a in ctx.pending_animals):
                 out.append((OPS_IX["BUILD_" + kind], ["BUILD_" + kind]))
-        if capacidad_libre > 0:
+        if free_capacity > 0:
             # UNA OPCION POR CULTIVO con semilla disponible y que dé tiempo a
             # madurar. La legalidad y la viabilidad las sigue poniendo el motor;
             # la PREFERENCIA pasa a la red.
@@ -687,22 +687,22 @@ def tile_options(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None,
 
     if kind == "PLANT":
         cd = spec.CROPS[tile["crop"]]
-        edad = day - tile["planted_day"]
+        age = day - tile["planted_day"]
         if not tile["watered_today"]:
             out.append((OPS_IX["WATER"], ["WATER"]))
         if tile.get("fertilized_until_day", -1) < day:
             out.append((OPS_IX["FERTILIZE"], ["FERTILIZE"]))
-        if tile.get("yield_units", 0) > 0 and edad >= cd["first_yield_day"]:
+        if tile.get("yield_units", 0) > 0 and age >= cd["first_yield_day"]:
             out.append((OPS_IX["HARVEST"], ["HARVEST"]))
         return out
 
     if kind in ("COOP", "PASTURE"):
         animal = tile.get("animal")
         if animal is None:
-            cands = [a for a in ctx.pendientes if spec.ANIMALS[a]["structure"] == kind]
+            cands = [a for a in ctx.pending_animals if spec.ANIMALS[a]["structure"] == kind]
             if cands:
-                mejor = max(cands, key=lambda a: valor_animal(ctx, a, macro))
-                out.append((OPS_IX["PLACE"], ["PLACE", mejor, 1]))
+                best = max(cands, key=lambda a: animal_value(ctx, a, macro))
+                out.append((OPS_IX["PLACE"], ["PLACE", best, 1]))
             return out
         if not tile.get("fed_today"):
             out.append((OPS_IX["FEED"], ["FEED"]))
@@ -715,12 +715,12 @@ def tile_options(obs, farm, x: int, y: int, capacidad_libre: int, ctx=None,
     return out
 
 
-def tareas_del_tablero(obs, farm, capacidad_libre: int, mapa_valor=None, macro=None,
-                       mapa_ops=None) -> dict:
+def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
+                       verb_map=None) -> dict:
     """(x,y) -> (valor en $, operacion) para cada casilla que ofrece algo."""
-    tareas = {}
+    tasks = {}
     _pendientes = []          # casillas invisibles, se resuelven al final
-    libre = capacidad_libre
+    free = free_capacity
     ctx = contexto_turno(obs, farm)
     _invs_turno = (obs["private"].get("inventories") or []
                    if MODO_MICRO == "ops" else [])
@@ -729,7 +729,7 @@ def tareas_del_tablero(obs, farm, capacidad_libre: int, mapa_valor=None, macro=N
         for x in range(BOARD):
             if not unlocked(farm, x, y):
                 continue
-            if MODO_MICRO == "ops" and mapa_ops is not None:
+            if MODO_MICRO == "ops" and verb_map is not None:
                 # E2E: la LEGALIDAD la da el motor, el VERBO lo elige la red.
                 # OJO: solo se entra aqui CON mapa_ops. `MODO_MICRO` es global
                 # al proceso, asi que un agente SIN red -el rival de una liga,
@@ -741,7 +741,7 @@ def tareas_del_tablero(obs, farm, capacidad_libre: int, mapa_valor=None, macro=N
                 # Nada de `tile_task` entra aqui -ni su orden de preferencia ni
                 # sus formulas de valor-.
                 import math
-                opciones = tile_options(obs, farm, x, y, libre, ctx, macro)
+                options = tile_options(obs, farm, x, y, free, ctx, macro)
                 # `_puede` ES LEGALIDAD, no una preocupacion de asignacion: el
                 # motor IGNORA la accion si la unidad no lleva lo que consume.
                 # Con la heuristica daba igual -ofrecia otra cosa-, pero al
@@ -758,11 +758,11 @@ def tareas_del_tablero(obs, farm, capacidad_libre: int, mapa_valor=None, macro=N
                 # aprendible; ensenarlo por CLONACION no, porque el experto
                 # nunca esta en esa situacion.
                 if FILTRA_INVENTARIO and _invs_turno:
-                    opciones = [o_ for o_ in opciones
+                    options = [o_ for o_ in options
                                 if any(_puede(iv, o_[1]) for iv in _invs_turno)]
-                if not opciones:
+                if not options:
                     continue
-                if mapa_ops is not None:
+                if verb_map is not None:
                     if MUESTREA_VERBO:
                         # MUESTREAR en vez de UMBRALIZAR. El argmax hace que
                         # mover un logit no cambie NADA hasta que cruza a otro
@@ -773,41 +773,41 @@ def tareas_del_tablero(obs, farm, capacidad_libre: int, mapa_valor=None, macro=N
                         # inaccion. Con softmax, subir un logit baja a los demas
                         # SIEMPRE, asi que el retorno esperado si depende de
                         # todos ellos y hay gradiente que seguir.
-                        _lg = np.array([float(mapa_ops[o[0]][y][x])
-                                        for o in opciones], dtype=np.float64)
+                        _lg = np.array([float(verb_map[o[0]][y][x])
+                                        for o in options], dtype=np.float64)
                         _lg -= _lg.max()
                         _pr = np.exp(_lg / max(1e-6, TEMP_VERBO))
                         _pr /= _pr.sum()
-                        _sel = int(_RNG_VERBO.choice(len(opciones), p=_pr))
-                        k, op = opciones[_sel]
+                        _sel = int(_RNG_VERBO.choice(len(options), p=_pr))
+                        k, op = options[_sel]
                         if GRAD_ACUM is not None:
                             # d/dlogit_j de log p(elegido) = [j==elegido] - p_j,
                             # solo sobre las opciones LEGALES de esta casilla.
                             # Sumado sobre todas las decisiones del episodio da
                             # el gradiente de score-function que usa REINFORCE.
-                            for _i, (_k, _) in enumerate(opciones):
+                            for _i, (_k, _) in enumerate(options):
                                 GRAD_ACUM[_k] += (1.0 if _i == _sel else 0.0) - _pr[_i]
                     else:
-                        k, op = max(opciones,
-                                    key=lambda o: float(mapa_ops[o[0]][y][x]))
+                        k, op = max(options,
+                                    key=lambda o: float(verb_map[o[0]][y][x]))
                     # Solo el APRENDIZ trae mapa_ops; el rival no, asi que esto
                     # distingue quien acumula sin pasar banderas por la tuberia.
                     if MASCARA_ACUM is not None:
                         MASCARA_ACUM[0, y, x] = 1.0        # el valor decidio aqui
-                        if len(opciones) > 1:
-                            for _k, _ in opciones:
+                        if len(options) > 1:
+                            for _k, _ in options:
                                 MASCARA_ACUM[1 + _k, y, x] = 1.0   # hubo comparacion
                 else:
-                    k, op = opciones[0]
-                r = float(mapa_valor[y][x]) if mapa_valor is not None else 0.0
+                    k, op = options[0]
+                r = float(value_map[y][x]) if value_map is not None else 0.0
                 v = math.copysign(
                     math.expm1(abs(min(TOPE_MAPA, GANANCIA_MAPA * r))), r)
-                tareas[(x, y)] = (v, op)
+                tasks[(x, y)] = (v, op)
                 if op[0] == "PLANT":
-                    libre -= 1
+                    free -= 1
                 continue
-            t = tile_task(obs, farm, x, y, libre, ctx, macro)
-            if t is None and mapa_ops is not None and mapa_valor is not None:
+            t = tile_task(obs, farm, x, y, free, ctx, macro)
+            if t is None and verb_map is not None and value_map is not None:
                 # SEGUNDA PASADA, y el orden importa. Resolviendolo aqui, una
                 # casilla extra con PLANT consumia `libre` y estrangulaba las
                 # tareas de plantar que la heuristica habria propuesto despues:
@@ -819,7 +819,7 @@ def tareas_del_tablero(obs, farm, capacidad_libre: int, mapa_valor=None, macro=N
                 _pendientes.append((x, y))
                 continue
             if t is not None:
-                if mapa_valor is not None:
+                if value_map is not None:
                     import math
                     if MODO_MICRO == "directo":
                         # La red EMITE el valor; la heuristica desaparece. Es la
@@ -830,20 +830,20 @@ def tareas_del_tablero(obs, farm, capacidad_libre: int, mapa_valor=None, macro=N
                         # contra la columna ficticia del humgaro -> PASS.
                         # La red emite en espacio symlog (donde se ajusto);
                         # se deshace para volver a dolares.
-                        r = float(mapa_valor[y][x])
+                        r = float(value_map[y][x])
                         t = (math.copysign(math.expm1(
                             abs(min(TOPE_MAPA, GANANCIA_MAPA * r))), r), t[1])
                     else:
                         # MULTIPLICATIVO: residuo sobre la heuristica. Se
                         # conserva para poder medir contra el, que es la unica
                         # forma de saber si el modo directo aporta.
-                        r = float(mapa_valor[y][x])
+                        r = float(value_map[y][x])
                         _z = GANANCIA_MAPA * r
                         t = (t[0] * math.exp(max(-TOPE_RESIDUO,
                                                  min(TOPE_RESIDUO, _z))), t[1])
-                tareas[(x, y)] = t
+                tasks[(x, y)] = t
                 if t[1][0] == "PLANT":
-                    libre -= 1
+                    free -= 1
     # SEGUNDA PASADA: las casillas que la heuristica declaro vacias y el motor
     # considera legales. La LEGALIDAD la da el motor, el VERBO lo elige la red
     # entre las opciones legales y el VALOR lo emite la red; el UMBRAL que
@@ -855,11 +855,11 @@ def tareas_del_tablero(obs, farm, capacidad_libre: int, mapa_valor=None, macro=N
     # plantar de la heuristica -medido, 8,62 tareas/turno caian a 5,78-. Aqui
     # la heuristica ya decidio con toda su capacidad y esto solo rellena.
     for _x, _y in _pendientes:
-        _ex = tile_options(obs, farm, _x, _y, libre, ctx, macro)
+        _ex = tile_options(obs, farm, _x, _y, free, ctx, macro)
         if not _ex:
             continue
         import math
-        _lg = np.array([float(mapa_ops[o[0]][_y][_x]) for o in _ex],
+        _lg = np.array([float(verb_map[o[0]][_y][_x]) for o in _ex],
                        dtype=np.float64)
         _lg -= _lg.max()
         _pr = np.exp(_lg / max(1e-6, TEMP_VERBO))
@@ -874,31 +874,31 @@ def tareas_del_tablero(obs, farm, capacidad_libre: int, mapa_valor=None, macro=N
         else:
             _sel = int(np.argmax(_lg))
         _k2, _o2 = _ex[_sel]
-        _r2 = float(mapa_valor[_y][_x])
+        _r2 = float(value_map[_y][_x])
         _v2 = math.copysign(
             math.expm1(abs(min(TOPE_MAPA, GANANCIA_MAPA * _r2))), _r2)
         _v2 -= UMBRAL_EXTRA
         if _v2 <= 0.0:
             continue
         if _o2[0] == "PLANT":
-            if libre <= 0:
+            if free <= 0:
                 continue
-            libre -= 1
-        tareas[(_x, _y)] = (_v2, _o2)
+            free -= 1
+        tasks[(_x, _y)] = (_v2, _o2)
         if MASCARA_ACUM is not None:
             MASCARA_ACUM[0, _y, _x] = 1.0
             if len(_ex) > 1:
                 for _k3, _ in _ex:
                     MASCARA_ACUM[1 + _k3, _y, _x] = 1.0
 
-    return tareas
+    return tasks
 
 
-def _accion(pos, casilla, tareas) -> list:
+def _accion(pos, tile, tasks) -> list:
     """Ejecutar la tarea si ya se esta encima; si no, dar un paso hacia ella."""
-    if casilla == pos:
-        return tareas[casilla][1]
-    return [step_toward(pos, casilla)]
+    if tile == pos:
+        return tasks[tile][1]
+    return [step_toward(pos, tile)]
 
 
 def _puede(inv, op) -> bool:
@@ -919,30 +919,30 @@ def _puede(inv, op) -> bool:
     return True
 
 
-def _asignar_greedy(units, tareas, invs=None) -> list:
+def _asignar_greedy(units, tasks, invs=None) -> list:
     """Cada unidad, por orden, se queda la mejor tarea libre que le quede.
 
     Se conserva para poder medir contra ella: es la version anterior de esta
     capa, y sin la comparacion no hay forma de saber si el optimo aporta algo.
     """
     invs = invs or [{}] * len(units)
-    acciones = []
+    actions = []
     tomadas = set()
     for i, pos in enumerate(units):
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
-        mejor, mejor_v = None, 0.0
-        for casilla, (valor, _op) in tareas.items():
-            if casilla in tomadas or not _puede(inv, _op):
+        best, mejor_v = None, 0.0
+        for tile, (value, _op) in tasks.items():
+            if tile in tomadas or not _puede(inv, _op):
                 continue
-            v = valor * (DESCUENTO_POR_PASO ** dist(pos, casilla))
+            v = value * (DESCUENTO_POR_PASO ** dist(pos, tile))
             if v > mejor_v:
-                mejor, mejor_v = casilla, v
-        if mejor is None:
-            acciones.append(["PASS"])
+                best, mejor_v = tile, v
+        if best is None:
+            actions.append(["PASS"])
             continue
-        tomadas.add(mejor)
-        acciones.append(_accion(pos, mejor, tareas))
-    return acciones
+        tomadas.add(best)
+        actions.append(_accion(pos, best, tasks))
+    return actions
 
 
 # SIN IMPLEMENTAR, y se deja escrito para que no se vuelva a descubrir. Habia
@@ -961,7 +961,7 @@ def _asignar_greedy(units, tareas, invs=None) -> list:
 MODO_MICRO = "residuo"
 
 
-def _asignar_humgaro(units, tareas, invs=None, previos=None, adherencia=0.0) -> list:
+def _asignar_humgaro(units, tasks, invs=None, previous=None, adherencia=0.0) -> list:
     """Asignacion de coste minimo: maximiza el valor descontado TOTAL.
 
     El greedy falla de una forma concreta y frecuente: la primera unidad se
@@ -975,36 +975,36 @@ def _asignar_humgaro(units, tareas, invs=None, previos=None, adherencia=0.0) -> 
     es mejor-. `best_crop` puede devolver un cultivo de beneficio negativo
     cuando manda el capital, asi que el caso ocurre de verdad.
     """
-    casillas = list(tareas)
+    tiles = list(tasks)
     n = len(units)
-    m = len(casillas) + n
-    valor = [[0.0] * m for _ in range(n)]
+    m = len(tiles) + n
+    value = [[0.0] * m for _ in range(n)]
     invs = invs or [{}] * len(units)
     for i, pos in enumerate(units):
-        fila = valor[i]
+        row = value[i]
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
-        for j, casilla in enumerate(casillas):
-            v, op = tareas[casilla]
+        for j, tile in enumerate(tiles):
+            v, op = tasks[tile]
             if not _puede(inv, op):
                 continue                  # queda en 0: pierde contra la ficticia
-            fila[j] = v * (DESCUENTO_POR_PASO ** dist(pos, casilla))
-            if adherencia and previos is not None and previos.get(i) == casilla:
-                fila[j] *= (1.0 + adherencia)
+            row[j] = v * (DESCUENTO_POR_PASO ** dist(pos, tile))
+            if adherencia and previous is not None and previous.get(i) == tile:
+                row[j] *= (1.0 + adherencia)
 
-    acciones = []
-    for i, j in enumerate(asignacion_maxima(valor)):
-        if j >= len(casillas) or valor[i][j] <= 0.0:
-            acciones.append(["PASS"])
-            if previos is not None:
-                previos[i] = None
+    actions = []
+    for i, j in enumerate(max_assignment(value)):
+        if j >= len(tiles) or value[i][j] <= 0.0:
+            actions.append(["PASS"])
+            if previous is not None:
+                previous[i] = None
         else:
-            acciones.append(_accion(units[i], casillas[j], tareas))
-            if previos is not None:
-                previos[i] = casillas[j]
-    return acciones
+            actions.append(_accion(units[i], tiles[j], tasks))
+            if previous is not None:
+                previous[i] = tiles[j]
+    return actions
 
 
-def _valor_ruta(inicio, casillas, tareas, presup, inv, prof=4):
+def _valor_ruta(start_, tiles, tasks, presup, inv, depth=4):
     """Valor de la RUTA que arranca en `inicio`, no de la casilla sola.
 
     El humgaro valora v * DESCUENTO^dist(unidad, casilla): decide una tarea y
@@ -1018,86 +1018,86 @@ def _valor_ruta(inicio, casillas, tareas, presup, inv, prof=4):
     optimo del problema de rutas -eso es un MIP- pero captura lo que falta:
     el valor de agrupar.
     """
-    tot = 0.0
-    pos = inicio
-    resto = [c for c in casillas if c != inicio]
-    gasto = 0
-    for _ in range(prof):
+    total = 0.0
+    pos = start_
+    rest = [c for c in tiles if c != start_]
+    spent = 0
+    for _ in range(depth):
         if pos is None:
             break
-        d = dist(pos, inicio) if pos is not inicio else 0
-        v_, op = tareas[pos]
+        d = dist(pos, start_) if pos is not start_ else 0
+        v_, op = tasks[pos]
         if not _puede(inv, op):
             break
-        gasto += 1 + (dist(pos, inicio) if tot else 0)
-        if gasto > presup:
+        spent += 1 + (dist(pos, start_) if total else 0)
+        if spent > presup:
             break
-        tot += v_ * (DESCUENTO_POR_PASO ** gasto)
-        if not resto:
+        total += v_ * (DESCUENTO_POR_PASO ** spent)
+        if not rest:
             break
-        sig = max(resto, key=lambda c: tareas[c][0] /
-                  (1.0 + dist(pos, c)) if _puede(inv, tareas[c][1]) else -1e9)
-        if tareas[sig][0] <= 0:
+        next_ = max(rest, key=lambda c: tasks[c][0] /
+                  (1.0 + dist(pos, c)) if _puede(inv, tasks[c][1]) else -1e9)
+        if tasks[next_][0] <= 0:
             break
-        resto.remove(sig); pos = sig
-    return tot
+        rest.remove(next_); pos = next_
+    return total
 
 
-def _asignar_ruta(units, tareas, invs, previos, adherencia, presup):
+def _asignar_ruta(units, tasks, invs, previous, adherencia, presup):
     """Como el humgaro, pero la matriz lleva valor de RUTA en vez de de casilla."""
-    casillas = list(tareas)
-    n = len(units); m = len(casillas) + n
-    valor = [[0.0] * m for _ in range(n)]
+    tiles = list(tasks)
+    n = len(units); m = len(tiles) + n
+    value = [[0.0] * m for _ in range(n)]
     invs = invs or [{}] * len(units)
     for i, pos in enumerate(units):
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
-        for j, c in enumerate(casillas):
-            v_, op = tareas[c]
+        for j, c in enumerate(tiles):
+            v_, op = tasks[c]
             if not _puede(inv, op):
                 continue
-            viaje = dist(pos, c)
-            if viaje >= presup:
+            travel = dist(pos, c)
+            if travel >= presup:
                 continue
-            r = _valor_ruta(c, casillas, tareas, presup - viaje, inv)
-            valor[i][j] = r * (DESCUENTO_POR_PASO ** viaje)
-            if adherencia and previos is not None and previos.get(i) == c:
-                valor[i][j] *= (1.0 + adherencia)
-    acciones = []
-    for i, j in enumerate(asignacion_maxima(valor)):
-        if j >= len(casillas) or valor[i][j] <= 0.0:
-            acciones.append(["PASS"])
-            if previos is not None: previos[i] = None
+            r = _valor_ruta(c, tiles, tasks, presup - travel, inv)
+            value[i][j] = r * (DESCUENTO_POR_PASO ** travel)
+            if adherencia and previous is not None and previous.get(i) == c:
+                value[i][j] *= (1.0 + adherencia)
+    actions = []
+    for i, j in enumerate(max_assignment(value)):
+        if j >= len(tiles) or value[i][j] <= 0.0:
+            actions.append(["PASS"])
+            if previous is not None: previous[i] = None
         else:
-            acciones.append(_accion(units[i], casillas[j], tareas))
-            if previos is not None: previos[i] = casillas[j]
-    return acciones
+            actions.append(_accion(units[i], tiles[j], tasks))
+            if previous is not None: previous[i] = tiles[j]
+    return actions
 
 
-def assign_units(obs, capacidad_libre: int, metodo: str = None,
-                 mapa_valor=None, previos=None, macro=None, mapa_ops=None) -> list:
+def assign_units(obs, free_capacity: int, method: str = None,
+                 value_map=None, previous=None, macro=None, verb_map=None) -> list:
     """Una accion por unidad, maximizando el valor descontado del conjunto.
 
     El presupuesto no es el problema que se temia: 16 unidades x 116 columnas
     se resuelven exacto en 0.23 ms, frente a los ~83 ms de media que da la
     bolsa de 60 s para 720 turnos (ver `tests/test_assign.py`).
     """
-    metodo = metodo or METODO_ASIGNACION
+    method = method or METODO_ASIGNACION
     me = int(obs["player"])
     farm = obs["farms"][me]
     units = [tuple(farm["farmer"])] + [tuple(p) for p in farm["hands"]]
 
-    tareas = tareas_del_tablero(obs, farm, capacidad_libre, mapa_valor, macro, mapa_ops)
-    if not tareas:
+    tasks = board_tasks(obs, farm, free_capacity, value_map, macro, verb_map)
+    if not tasks:
         return [["PASS"] for _ in units]
     invs = obs["private"].get("inventories", [])
-    if metodo == "greedy":
-        return _asignar_greedy(units, tareas, invs)
+    if method == "greedy":
+        return _asignar_greedy(units, tasks, invs)
     adh = 0.0
     if macro is not None:
-        from ..macro import adherencia_asignacion
-        adh = adherencia_asignacion(macro)
-    if metodo == "ruta":
+        from ..macro import assignment_stickiness
+        adh = assignment_stickiness(macro)
+    if method == "ruta":
         from .. import spec as _sp
         presup = max(1, _sp.TURNS_PER_DAY - int(obs.get("hour", 0)))
-        return _asignar_ruta(units, tareas, invs, previos, adh, presup)
-    return _asignar_humgaro(units, tareas, invs, previos, adh)
+        return _asignar_ruta(units, tasks, invs, previous, adh, presup)
+    return _asignar_humgaro(units, tasks, invs, previous, adh)
