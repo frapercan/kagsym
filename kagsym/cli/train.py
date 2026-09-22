@@ -1138,22 +1138,21 @@ def main():
                 if fms is not None:
                     _l2 = _l2 * fms
                 lp = net.macro_logprob(_s, fam) + _l2.flatten(1).sum(-1)
-                # POR DIMENSION. La log-prob es una SUMA sobre las dimensiones
-                # muestreadas, asi que el KL total escala con el tamano de la
-                # cabeza: al pasar el micro de 10x10 a 16x10x10 el mismo
-                # movimiento real daba 16x mas KL y el guard cortaba en la
-                # epoca 1 de las 4, siempre. Normalizar lo hace comparable
-                # entre arquitecturas.
+                # PER DIMENSION. The log-prob is a SUM over the sampled
+                # dimensions, so the total KL scales with the head's size: when
+                # the micro went from 10x10 to 16x10x10 the same real movement
+                # gave 16x more KL and the guard cut at epoch 1 of 4, always.
+                # Normalising makes it comparable across architectures.
                 _nd = (N_MACRO + float(fms.flatten(1).sum(-1).mean())
                        if fms is not None
                        else N_MACRO + int(np.prod(fau.shape[1:])))
                 kl = float((flp - lp).mean().clamp(min=0)) / _nd
-                # KL POR CABEZA. Las dos politicas son gaussianas
-                # independientes, asi que el KL total se descompone en la suma
-                # y cada mitad puede controlar su propio lr. Sin esto, el macro
-                # -que aporta +1 $ de 953- gasta el presupuesto de divergencia
-                # y el controlador frena a TODO, incluido el micro, que aporta
-                # el resto.
+                # KL PER HEAD. The two policies are independent Gaussians, so
+                # the total KL decomposes into the sum and each half can drive
+                # its own lr. Without this the macro -which contributes +$1 of
+                # 953- spends the divergence budget and the controller brakes
+                # EVERYTHING, including the micro, which contributes the
+                # rest.
                 _lpma2 = net.macro_logprob(_s, fam)
                 _lpmi2 = _l2.flatten(1).sum(-1)
                 _ndmi = (float(fms.flatten(1).sum(-1).mean()) if fms is not None
@@ -1166,23 +1165,23 @@ def main():
             if upd % 5 == 0 or upd == 1:
                 print(f"    [diag] kl/dim={kl:.2e}  sd(lp-flp)={_sd:.2f}  "
                       f"saturacion del cociente={_sat:.1%}  dims={_nd}", flush=True)
-            # LA CABEZA PEOR, no la media. El KL agregado diluye: medido esta
-            # noche, `kl_micro` llego a 0,112 mientras el agregado se quedaba
-            # por debajo del corte de 0,06 y el guardia no cortaba, con la
-            # saturacion subiendo a 0,22. Es el mismo error que el win rate
-            # medio escondiendo el estado por peldano.
+            # THE WORST HEAD, not the mean. Aggregate KL dilutes: measured,
+            # `kl_micro` reached 0.112 while the aggregate stayed below the
+            # 0.06 cut and the guard did not fire, with saturation rising to
+            # 0.22. It is the same error as the mean win rate hiding the
+            # per-rung state.
             #
-            # No anade ningun numero nuevo: usa los KL por cabeza que ya se
-            # calculan para los controladores de lr.
+            # It adds no new number: it uses the per-head KLs already computed
+            # for the lr controllers.
             if max(kl, kl_ma, kl_mi) > a.kl_max:
                 kl_cortes += 1
                 break
 
-        # CONTROL DEL PASO POR KL MEDIDO. Adivinar el lr a mano fallo dos
-        # veces seguidas: a 3e-4 el kl/dim crecia de 0.036 a 0.363 en 30
-        # updates -el dinero hacia pico en el 15 y caia- y a 3e-3 saltaba a
-        # 3.23 con 98 % de saturacion en el primer update. El KL ya esta
-        # medido cada epoca, asi que el lazo lo cierra el, no yo.
+        # STEP SIZE CONTROLLED BY MEASURED KL. Guessing the lr by hand failed
+        # twice in a row: at 3e-4 kl/dim grew from 0.036 to 0.363 in 30 updates
+        # -money peaked at 15 and fell- and at 3e-3 it jumped to 3.23 with 98%
+        # saturation on the first update. KL is already measured every epoch,
+        # so it closes the loop, not me.
         if a.kl_target > 0:
             def _factor(_k):
                 if _k > 2.0 * a.kl_target:
@@ -1191,47 +1190,46 @@ def main():
                     return 1.1
                 return 1.0
             _fma, _fmi = _factor(kl_ma), _factor(kl_mi)
-            # grupo 1 = macro, grupo 2 = micro: cada uno con SU lazo.
+            # group 1 = macro, group 2 = micro: each with ITS own loop.
             for _ix, _f2 in ((1, _fma), (2, _fmi)):
                 if _f2 != 1.0:
                     opt.param_groups[_ix]["lr"] = min(
                         1e-2, max(1e-6, opt.param_groups[_ix]["lr"] * _f2))
-            # El TRONCO alimenta a las dos, asi que se frena con la mas
-            # exigente y se suelta solo si las dos lo permiten. Y el grupo 3
-            # -critico y auxiliares- no es politica: no genera KL y no se toca.
-            # EL MACRO NUNCA MAS RAPIDO QUE EL MICRO. Sin esto, el lazo
-            # reparte velocidad en proporcion INVERSA al impacto: una cabeza
-            # que no cambia la conducta genera poco KL y se le deja correr,
-            # mientras la que decide genera mucho y se le frena. Medido en
-            # campeonato: lr del macro x6,7 en 15 updates, `micro_w_norma`
-            # PLANA -la cabeza que aporta 952 $ de 953 dejo de aprender- y el
-            # dinero cayendo de 33.508 a 30.080.
+            # Group 3 -critic and auxiliaries- is not policy: it generates no
+            # KL and is not touched.
+            # THE MACRO NEVER FASTER THAN THE MICRO. Without this the loop
+            # allocates speed in INVERSE proportion to impact: a head that does
+            # not change behaviour generates little KL and is let run, while
+            # the one that decides generates a lot and is braked. Measured at
+            # championship scale: macro lr 6.7x in 15 updates, `micro_w_norm`
+            # FLAT -the head contributing $952 of 953 stopped learning- and
+            # money falling from $33,508 to $30,080.
             #
-            # Es una RELACION entre dos cantidades medidas, no un numero
-            # elegido: el macro puede ir tan rapido como el micro, nunca mas.
+            # It is a RELATION between two measured quantities, not a chosen
+            # number: the macro may go as fast as the micro, never faster.
             opt.param_groups[1]["lr"] = min(opt.param_groups[1]["lr"],
                                             opt.param_groups[2]["lr"])
-            # EL TRONCO SE CONTROLA CON EL KL TOTAL, que es el que de verdad
-            # produce: alimenta a las dos cabezas, asi que su efecto sobre la
-            # politica es el conjunto, no el minimo de dos lazos ajenos.
+            # THE TRUNK IS CONTROLLED BY THE TOTAL KL, which is what it
+            # genuinely produces: it feeds both heads, so its effect on the
+            # policy is the whole, not the minimum of two loops that belong to
+            # someone else.
             #
-            # Antes era `min(_fma, _fmi)` y eso es un TRINQUETE: frena si
-            # CUALQUIERA de las dos frena (0,7) pero solo acelera si las DOS
-            # aceleran a la vez (1,1). Con dos cabezas moviendose de forma
-            # independiente, bajar es mucho mas probable que subir, asi que el
-            # tronco cae al suelo aunque el KL no lo pida.
+            # It used to be `min(_fma, _fmi)` and that is a RATCHET: it brakes
+            # if EITHER head brakes (0.7) but only accelerates if BOTH
+            # accelerate at once (1.1). With two heads moving independently,
+            # going down is far more likely than going up, so the trunk falls
+            # to the floor even when the KL does not ask for it.
             #
-            # Medido en COMPLETO-50, 2.625 updates: lr del tronco x0,18
-            # mientras las cabezas subian x1,35 -la razon cabezas/tronco paso
-            # de 1,1x a 8,3x- con el KL total en 0,007 contra un objetivo de
-            # 0,010. Estaba POR DEBAJO del objetivo: el lazo tenia que estar
-            # acelerando el tronco, no estrangulandolo. La representacion
-            # compartida quedo casi congelada y solo aprendian las cabezas
-            # encima de ella, que coincide con el estancamiento del dinero
-            # desde el update 1744.
+            # Measured over 2,625 updates: trunk lr 0.18x while the heads rose
+            # 1.35x -the heads/trunk ratio went from 1.1x to 8.3x- with total
+            # KL at 0.007 against a target of 0.010. It was BELOW the target:
+            # the loop should have been accelerating the trunk, not strangling
+            # it. The shared representation was left nearly frozen and only the
+            # heads on top of it learned, which coincides with money stalling
+            # from update 1744 onwards.
             #
-            # La propiedad de seguridad se conserva sola: si una cabeza se
-            # dispara, el KL total sube con ella y el tronco frena igual.
+            # The safety property holds by itself: if a head blows up, the
+            # total KL rises with it and the trunk brakes anyway.
             _ftr = _factor(kl)
             if _ftr != 1.0:
                 opt.param_groups[0]["lr"] = min(
@@ -1271,30 +1269,28 @@ def main():
             _grad_normas.append(float(_gn))
             opt.step()
 
-        # AUTOJUEGO POR MERITO, no por calendario. Cada peldano "nuestro"
-        # lleva una version congelada de la politica. La rotacion NO es
-        # rotatoria: se sustituye SOLO la que ya dominamos.
+        # SELF-PLAY BY MERIT, not by schedule. Each "ours" rung carries a
+        # frozen version of the policy. The rotation is NOT round-robin: only
+        # the one we already dominate is replaced.
         #
-        # Por que importa: una version de hace mil updates que todavia nos gana
-        # el 40 % de las veces es el mejor profesor que tenemos, y
-        # sobrescribirla porque "le toca" es tirarla. Y como esto es un
-        # simulador, medir contra quien nos cuesta es barato: rotar a ciegas
-        # es lo que se hace cuando evaluar es caro.
+        # Why it matters: a version from a thousand updates ago that still
+        # beats us 40% of the time is the best teacher we have, and
+        # overwriting it because "it is its turn" throws it away. And since
+        # this is a simulator, measuring against whoever costs us is cheap:
+        # rotating blind is what you do when evaluation is expensive.
         #
-        # El criterio es el mismo que el del deslizamiento -ganarlo de forma
-        # consistente- aplicado por peldano, con su tasa propia.
-        # UNA SOLA MEDIDA, COMPARTIDA. El relevo por merito y el curriculo
-        # automatico corren en el MISMO update (los dos con `% refresco`), y el
-        # relevo llama a `olvida_resultados()`, que pone todo el historial a
-        # nan. El curriculo, que va justo despues, volvia a preguntar y SIEMPRE
-        # encontraba nan: nunca actualizaba su estimacion, asi que repartia
-        # uniforme para siempre.
+        # The criterion is the same as for sliding -beating it consistently-
+        # applied per rung, with its own rate.
+        # ONE MEASUREMENT, SHARED. The merit relief and the automatic
+        # curriculum run on the SAME update (both on `% refresh`), and the
+        # relief calls `forget_results()`, which sets the whole history to nan.
+        # The curriculum, which runs right after, asked again and ALWAYS found
+        # nan: it never updated its estimate, so it split uniformly forever.
         #
-        # Medido en la run COMPLETO-50: 0 reasignaciones en 2.625 updates,
-        # cuota 1,00 en los once peldanos y `win_rate` agregado nan. Con 8 de
-        # los 11 trabajadores en peldanos que ganabamos al 88-100 %, o sea el
-        # 73 % del computo gastado en rivales que por el propio criterio del
-        # curriculo no ensenan nada.
+        # Measured: 0 reallocations in 2,625 updates, share 1.00 on all eleven
+        # rungs and an aggregate `win_rate` of nan. With 8 of the 11 workers on
+        # rungs we won 88-100% of the time, i.e. 73% of the compute spent on
+        # opponents that by the curriculum's own criterion teach nothing.
         _wpp_ref = None
         if upd % max(1, a.refresh) == 0:
             _wpp_ref = env.win_rate_per_rung()
@@ -1302,29 +1298,31 @@ def main():
             try:
                 _wpp3 = list(_wpp_ref)
                 _mios = [i for i, v in enumerate(_rm_actual) if v is not None]
-                # UMBRAL 0,5, y no es una constante a ojo: es la definicion de
-                # "somos mejores que esa version". Antes usaba `a.slide`, que
-                # por defecto vale 0, asi que `0 % >= 0` era cierto y relevaba
-                # precisamente las versiones que nos estaban GANANDO al 100 %.
+                # THRESHOLD 0.5, and it is not a hand-set constant: it is the
+                # definition of "we are better than that version". It used to
+                # use `a.slide`, which defaults to 0, so `0% >= 0` was true and
+                # it relieved precisely the versions that were BEATING us
+                # 100%.
                 _dominados = [i for i in _mios
                               if i < len(_wpp3) and _wpp3[i] == _wpp3[i]
                               and _wpp3[i] > 0.5]
                 if _dominados:
                     _nuevo = fam.mean(0).detach().cpu().numpy().tolist()
-                    # el mas dominado de todos deja su sitio
+                    # the most dominated of all gives up its slot
                     _k_ref = max(_dominados, key=lambda i: _wpp3[i])
                     _rm_actual[_k_ref] = _nuevo
                     env.set_rival_macro(_rm_actual)
-                    # LA RED ENTERA, no el vector macro. `pon_rival_macro`
-                    # manda un vector, o sea NUESTRO EJECUTOR CON LA HEURISTICA
-                    # DE TABLERO y sin cabeza micro; en modo ops eso le quita
-                    # justo el componente que lleva el valor.
+                    # THE WHOLE NETWORK, not the macro vector.
+                    # `set_rival_macro` sends a vector, i.e. OUR EXECUTOR WITH
+                    # THE BOARD HEURISTIC and no micro head; that removes
+                    # precisely the component that carries the value.
                     #
-                    # Medido con el MISMO macro en los dos lados, 5 semillas de
-                    # 24h x 30d: la red 64.762 $ contra 29.924 del rival de
-                    # vector -+116 %, 5 de 5-. Por eso el relevo lo sustituia
-                    # 105 veces en una noche sin que dejase de perder: no podia
-                    # ganar, le faltaba la mitad del agente.
+                    # Measured with the SAME macro on both sides, 5 seeds of
+                    # 24h x 30d: the network $64,762 against the vector
+                    # opponent's $29,924 -+116%, 5 of 5-. That is why the
+                    # relief replaced it 105 times in one night without it ever
+                    # ceasing to lose: it could not win, it was missing half
+                    # the agent.
                     _red_congelada = E2EAgent(cfg)
                     _red_congelada.load_state_dict(
                         {k: v.detach().cpu().clone()
@@ -1342,14 +1340,14 @@ def main():
             except Exception as _e:
                 print(f"  aviso: no se pudo relevar el autojuego ({_e})",
                       flush=True)
-        # ------- CURRICULO AUTOMATICO -------
+        # ------- AUTOMATIC CURRICULUM -------
         if a.auto_curriculum and upd % max(1, a.refresh) == 0 and _niveles:
             try:
-                # la medida de ANTES del relevo; ver `_wpp_ref` arriba.
+                # the measurement from BEFORE the relief; see `_wpp_ref` above.
                 _w4 = list(_wpp_ref) if _wpp_ref is not None else env.win_rate_per_rung()
-                # la estimacion vive en el PELDANO, no en el trabajador: si un
-                # trabajador cambia de peldano, su historia se queda con el
-                # peldano que jugaba.
+                # the estimate lives in the RUNG, not in the worker: if a
+                # worker changes rung, its history stays with the rung it was
+                # playing.
                 for _k4, _v4 in enumerate(_w4):
                     if _v4 == _v4 and _k4 < len(_asig):
                         _p4 = _pool_p[_asig[_k4]]
@@ -1357,21 +1355,21 @@ def main():
                                                if _p4 is not None else _v4)
                 _info = [( (p4 * (1.0 - p4)) if p4 is not None else 0.25 )
                          for p4 in _pool_p]          # sin medir -> p=0.5
-                # CUOTAS FIJAS, fuera del reparto por informacion. `p(1-p)`
-                # mide donde la ESTIMACION es mas incierta, no donde esta el
-                # objetivo, y eso falla en los dos extremos:
+                # FIXED QUOTAS, outside the information split. `p(1-p)`
+                # measures where the ESTIMATE is most uncertain, not where the
+                # objective is, and that fails at both extremes:
                 #
-                #  * Vale 0 cuando perdemos SIEMPRE. El peldano sin tope es el
-                #    rival de competicion y lo perdemos al 100 %, asi que el
-                #    criterio abandona justo lo que nos mide.
-                #  * Vale 0,25 -el MAXIMO- para el autojuego, porque una copia
-                #    congelada de nosotros da p = 0,5 por construccion. Sin
-                #    cuota se lo llevaria todo y acabariamos entrenando para
-                #    ganarnos a nosotros en vez de para ganarles a ellos.
+                #  * It is 0 when we ALWAYS lose. The uncapped rung is the
+                #    competition opponent and we lose it 100%, so the criterion
+                #    abandons precisely what measures us.
+                #  * It is 0.25 -the MAXIMUM- for self-play, because a frozen
+                #    copy of ourselves gives p = 0.5 by construction. Without a
+                #    quota it would take everything and we would end up
+                #    training to beat ourselves instead of to beat them.
                 #
-                # Medido el 2026-09-22 contra rival pasivo: nosotros 72.796 $,
-                # mediana de 63 agentes publicos 186.594. La distribucion de
-                # examen son ellos, no nuestra copia.
+                # Measured against a passive opponent: us $72,796, median of 63
+                # public agents $186,594. The exam distribution is them, not
+                # our own copy.
                 _n = len(_asig)
                 _es_auto = [j for j in range(len(_pool)) if _pool[j][2] is not None]
                 _es_obj = [j for j in range(len(_pool))
@@ -1381,8 +1379,8 @@ def main():
                 _fijos = ([_es_auto[i % len(_es_auto)] for i in range(_qa)]
                           + [_es_obj[i % len(_es_obj)] for i in range(_qo)])
                 _libres = _n - len(_fijos)
-                # el resto, por informacion, y SOLO sobre los peldanos que no
-                # tienen cuota propia
+                # the rest by information, and ONLY over the rungs that do
+                # not have a quota of their own
                 _resto = [j for j in range(len(_pool))
                           if j not in set(_es_auto) | set(_es_obj)]
                 _tot = sum(_info[j] for j in _resto) if _resto else 0.0
@@ -1405,9 +1403,9 @@ def main():
                         env.set_rival_cap([_pool[j][1] for j in _asig])
                         env.raise_level([_pool[j][0] for j in _asig])
                         env.set_rival_macro([_pool[j][2] for j in _asig])
-                        # Los peldanos de autojuego llevan RED, no vector, y
-                        # `pon_rival_macro` acaba de machacarla en todos. Se
-                        # devuelve a los trabajadores que caen en uno de ellos.
+                        # Self-play rungs carry a NETWORK, not a vector, and
+                        # `set_rival_macro` has just overwritten it everywhere.
+                        # It is restored to the workers that land on one.
                         if _pool_red and _red_congelada is not None:
                             _vuelven = [k for k, j in enumerate(_asig)
                                         if j in _pool_red]
@@ -1426,12 +1424,13 @@ def main():
         if a.slide > 0 and upd % 25 == 0 and _niveles:
             try:
                 _wpp = env.win_rate_per_rung()
-                # el peldano mas facil es el primero de la lista
+                # the easiest rung is the first in the list
                 if _wpp and _wpp[0] == _wpp[0] and _wpp[0] >= a.slide:
-                    # Al anadir por arriba se ROTA EL ESTILO en vez de
-                    # duplicar el ultimo: si no, a fuerza de deslizar los once
-                    # peldanos acabarian siendo el mismo rival y perderiamos la
-                    # variedad que es el motivo de tener once.
+                    # Adding at the top ROTATES THE STYLE instead of
+                    # duplicating the last one: otherwise, after enough sliding
+                    # all eleven rungs would end up being the same opponent and
+                    # we would lose the variety that is the reason for having
+                    # eleven.
                     _estilos = sorted(set(_niveles))
                     _sig = _estilos[(_estilos.index(_niveles[-1]) + 1)
                                     % len(_estilos)]
@@ -1447,23 +1446,23 @@ def main():
                 print(f"  aviso: no se pudo deslizar la escalera ({_e})", flush=True)
         if (a.promote_rival > 0 and upd % 5 == 0
                 and upd - _ultima_promo >= a.refresh):
-            # La separacion minima es `--refresco`. Sin ella promociona en
-            # cascada: vaciar el historial no basta porque cinco updates
-            # despues la ventana nueva tiene poquisimos episodios y, ganando,
-            # vuelve a dar ~1,0. Medido: 9 promociones en 45 updates.
+            # The minimum separation is `--refresh`. Without it promotion
+            # cascades: clearing the history is not enough because five updates
+            # later the new window has very few episodes and, winning, gives
+            # ~1.0 again. Measured: 9 promotions in 45 updates.
             _wr = env.win_rate()
             if _wr == _wr and _wr >= a.promote_rival:
-                # El rival se ha quedado pequeno: se sustituye por una copia
-                # CONGELADA de la politica de ahora. La copia no aprende, asi
-                # que el siguiente tramo se juega contra un adversario que ya
-                # sabe lo que nosotros sabiamos, y la senal binaria vuelve a
-                # tener varianza.
+                # The opponent has become too small: it is replaced by a
+                # FROZEN copy of the current policy. The copy does not learn,
+                # so the next stretch is played against an adversary that
+                # already knows what we knew, and the binary signal regains
+                # variance.
                 _nuevo = E2EAgent(cfg)
                 _nuevo.load_state_dict({k: v.detach().cpu().clone()
                                         for k, v in net.state_dict().items()})
                 env.set_selfplay(_nuevo)
-                # Sin esto promociona en cascada: la ventana de 60 episodios
-                # sigue llena de victorias contra el rival viejo.
+                # Without this promotion cascades: the 60-episode window is
+                # still full of wins against the old opponent.
                 env.forget_results()
                 _ultima_promo = upd
                 print(f"  [upd {upd}] RIVAL PROMOCIONADO (win={_wr:.3f} >= "
