@@ -150,7 +150,7 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level, mode="residuo",
             # `win_rate` averages the last 60 episodes, which are all wins
             # against the OLD opponent, so without this the threshold is
             # crossed again on the next check and promotion cascades.
-            env.resultados.clear()
+            env.results.clear()
             conn.send(True)
         elif cmd == "nivel":
             env.level = datos

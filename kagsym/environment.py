@@ -1,13 +1,14 @@
-"""N partidas en paralelo, avanzadas de DIA en dia.
+"""N episodes in parallel, advanced DAY by day.
 
-Un paso = un dia. Es la decision de diseno que hace tratable el credit
-assignment: el episodio son 30 pasos en vez de 720, y la accion de hoy cae en
-la misma ventana que su consecuencia. Medido: con decision por turno y
-recompensa de patrimonio, PPO convergia a 2 794 $, por debajo de los 3 000 $
-que da no jugar.
+One step = one day. This is the design decision that makes credit assignment
+tractable: an episode is 30 steps instead of 720, and today's action falls in
+the same window as its consequence. Measured: with a per-turn decision and a
+net-worth reward, PPO converged to $2,794, below the $3,000 you get by not
+playing.
 
-Instrumenta ademas la FRACCION UTIL, que es la puerta de la fase 1: el termino
-dominante de la brecha con el experto (23.3 % nuestro contra 50.6 % suyo).
+It also instruments the USEFUL FRACTION, the share of unit-turns spent on
+something other than moving or passing: the dominant term of the gap against
+the expert (23.3% ours against 50.6% theirs).
 """
 from __future__ import annotations
 
@@ -22,31 +23,27 @@ from .reward import ProductionLedger
 from .reward import RIVAL_WEIGHT as _RIVAL_W
 from .reward import ILLEGAL_WEIGHT as _ILLEGAL_W
 
-# spec.TURNS_PER_DAY se lee en tiempo de llamada (ver spec.set_turns_per_day):
-# como alias de modulo se congelaba al importar y no seguia a
-# `turnsPerDay`, desincronizando el ejecutor del motor sin avisar.
+# spec.TURNS_PER_DAY is read at call time (see spec.set_turns_per_day): as a
+# module alias it froze at import and stopped following `turnsPerDay`, silently
+# desynchronising the executor from the engine.
 MOV = {"NORTH", "SOUTH", "EAST", "WEST"}
 
 
-# Escalera de rivales, ORDENADA POR FUERZA MEDIDA en la matriz de la liga:
-#   the-2945 gana 100% a todos
-#   v16-rc5 y v48 empatan entre si (50%) y pierden con 2945
-#   shop-router pierde con todos
-# El criterio real de la competicion es victoria/derrota contra rivales de tu
-# nivel (Elo + torneo Bradley-Terry final), no dinero medio contra un pasivo.
-# ESCALERA REAL, por tope de peones. La anterior no era una escalera: medido
-# el 2026-09-20 contra un rival pasivo, v48 hace 179.514 $, v16-rc5 171.878 y
-# el 2945 171.392 -los tres valen lo mismo- y "shop-router-0909" esta ROTO (le
-# falta agents_pub/actions.json). Con eso se perdia el 100 % de las partidas en
-# cualquier nivel usable y `win_rate` valia 0,000 siempre.
+# Opponent ladder. The real competition criterion is win/loss against
+# opponents at your level (Elo plus a final Bradley-Terry tournament), not mean
+# money against a passive agent.
 #
-# Atenuar (pasar turno al azar) NO sirve: al 80 % de sus acciones v48 cae de
-# 179.514 $ a 312 $. Son ejecutores de PLANES acoplados, no politicas
-# reactivas. Limitar los peones si conserva la coherencia, porque su propia
-# logica se dimensiona al numero de unidades. Medido contra pasivo:
-#   tope  3 ->  16.746 $      tope  8 ->  79.908 $
-#   tope  5 ->  42.867 $      tope 15 -> 179.514 $
-# Por debajo de 3 se derrumba (tope 2 -> 1 $): no puede ni arrancar la granja.
+# THE REAL GRADATION IS THE HAND CAP, not the choice of agent. Measured against
+# a passive opponent, the strong public agents all land within 5% of each other
+# -$179,514, $171,878, $171,392- so swapping one for another changes nothing.
+#
+# Attenuating them (passing at random) does NOT work: at 80% of its actions v48
+# falls from $179,514 to $312. They are executors of COUPLED PLANS, not
+# reactive policies. Capping the hands does preserve coherence, because their
+# own logic sizes itself to the number of units. Measured against passive:
+#   cap  3 ->  $16,746      cap  8 ->  $79,908
+#   cap  5 ->  $42,867      cap 15 -> $179,514
+# Below 3 it collapses (cap 2 -> $1): it cannot even start the farm.
 LADDER_CAPS = [None, 3, 5, 8, None]
 
 LADDER = [
@@ -55,26 +52,27 @@ LADDER = [
     "v48-fast-routes",
     "v48-fast-routes",
     "the-2945-farm-96-vs-the-top-10-public-bots",
-    # v16-rc5 entra el 2026-09-22. Medido en la escalera de dificultad: a plena
-    # potencia saca MENOS dinero que v48 (133.912 contra 153.720) y sin embargo
-    # es el que MENOS nos deja a nosotros (36.139 contra 40.416). O sea que el
-    # mas duro para nuestra politica no es el que mas puntua, y entrenar solo
-    # contra v48 dejaba fuera precisamente al que peor se nos da.
+    # Measured on the difficulty ladder: at full power v16-rc5 makes LESS money
+    # than v48 ($133,912 against $153,720) and yet it is the one that leaves US
+    # the least ($36,139 against $40,416). The hardest opponent for our policy
+    # is not the highest-scoring one, and training only against v48 left out
+    # precisely the one we do worst against.
     "v16-rc5-high-score-8c-4s-premium-market-lead",
-    # ---- 2026-09-22: diez agentes publicos mas, de `runs/ligas/baja_escalera.py`.
+    # ---- ten more public agents, downloaded with `herramientas/baja_escalera.py`.
     #
-    # POR QUE HACIAN FALTA. Con seis peldanos ganabamos ocho de once al 88-100 %
-    # y perdiamos el ultimo al 100 %: el salto era demasiado grande y no habia
-    # relleno. Se bajaron 598 cuadernos publicos y se valido cada uno jugando
-    # una partida entera; 63 juegan, y de esos solo 40 son distintos -el resto
-    # son republicaciones exactas del mismo codigo, que dan el mismo dolar-.
+    # WHY THEY WERE NEEDED. With six rungs we won eight of eleven at 88-100% and
+    # lost the last one 100%: the jump was too large and there was no filler.
+    # 598 public notebooks were downloaded and each one validated by playing a
+    # full episode; 63 play, and of those only 40 are distinct -the rest are
+    # exact republications of the same code, giving the same dollar-.
     #
-    # ORDENADOS POR FUERZA MEDIDA contra rival pasivo, no por puntuacion: la
-    # correlacion entre puntuacion de leaderboard y dinero absoluto es r=+0,15.
-    # Todos cultivan casi igual; los 1.000 puntos de diferencia salen del cara
-    # a cara. Por eso la graduacion REAL la da el tope de peones -medida:
-    # 3->16.825, 4->24.003, 5->42.099, 7->61.361, 9->92.281, sin tope->177.315-
-    # y estos diez aportan DIVERSIDAD DE ESTILO, que es lo que el tope no da.
+    # ORDERED BY MEASURED STRENGTH against a passive opponent, not by score:
+    # the correlation between leaderboard score and absolute money is r=+0.15.
+    # They all farm almost identically; the 1,000 points of difference come
+    # from head-to-head play. That is why the REAL gradation comes from the
+    # hand cap -measured: 3->$16,825, 4->$24,003, 5->$42,099, 7->$61,361,
+    # 9->$92,281, uncapped->$177,315- and these ten contribute STYLE DIVERSITY,
+    # which the cap cannot give.
     "testkaggriculture-hamburger",                      #   80613 $, score 789
     "kaggriculture-adaptive-land-allocator",            #   90046 $, score 404
     "kaggriculture-weedproof-clone-market",             #  163933 $, score 1823
@@ -88,16 +86,16 @@ LADDER = [
 ]
 
 def public_with_cap(name_, max_hands: int):
-    """Un agente publico al que se le limita cuantos peones puede contratar.
+    """A public agent limited in how many hands it may hire.
 
-    ATENUAR NO SIRVE: medido, dejar pasar turno al azar al 20 % de las acciones
-    hunde a v48 de 179.514 $ a 312 $. No es un continuo, es un precipicio -estos
-    agentes son ejecutores de PLANES acoplados, no politicas reactivas: mueven
-    una unidad varios turnos hacia una casilla y luego actuan, asi que perder un
-    turno rompe la cadena entera-.
+    ATTENUATING DOES NOT WORK: measured, passing at random on 20% of actions
+    sinks v48 from $179,514 to $312. It is not a continuum, it is a cliff
+    -these agents are executors of COUPLED PLANS, not reactive policies: they
+    move a unit towards a tile over several turns and then act, so losing one
+    turn breaks the whole chain-.
 
-    Limitar los peones si conserva la coherencia del plan: su propia logica se
-    dimensiona sola al numero de unidades que tiene.
+    Capping the hands does preserve the plan's coherence: their own logic sizes
+    itself to the number of units they have.
     """
     base = load_public(name_)
 
@@ -119,20 +117,15 @@ def public_with_cap(name_, max_hands: int):
     return jugar
 
 
-def publico_atenuado(name_, p: float, seed: int = 0):
-    """Un agente publico que solo ACTUA con probabilidad `p`; si no, pasa turno.
+def public_attenuated(name_, p: float, seed: int = 0):
+    """A public agent that only ACTS with probability `p`; otherwise passes.
 
-    Por que existe. La ESCALERA no era una escalera: medido el 2026-09-20 contra
-    un rival pasivo, v48 hace 179.514 $, v16-rc5 171.878 y el 2945 171.392 -los
-    tres valen lo mismo- y el peldano 1 (shop-router-0909) esta ROTO, le falta
-    agents_pub/actions.json. Con eso perdemos el 100 % de las partidas en
-    cualquier nivel usable, `win_rate` vale 0,000 y el termino de victoria de la
-    recompensa es una constante que no aporta gradiente.
-
-    Atenuar es preferible a inventarse un bot intermedio: el comportamiento
-    sigue siendo el de un agente real y bueno, solo que actua menos a menudo.
-    Las ordenes de mercado se atenuan igual que las unidades, porque si no el
-    agente sigue comprando tierra y peones que luego no usa.
+    KEPT FOR REFERENCE, NOT IN USE. Attenuating looks preferable to inventing
+    an intermediate bot -the behaviour is still that of a real, good agent,
+    just acting less often- but it was measured and it does not work: at 80% of
+    its actions v48 falls from $179,514 to $312. These agents execute coupled
+    plans, so dropping one turn breaks the whole chain. The hand cap is what
+    grades them without breaking them (see `public_with_cap`).
     """
     import random as _rnd
     base = load_public(name_)
@@ -152,13 +145,13 @@ _PUBLICOS = {}
 
 
 def load_public(name_):
-    """Carga un agente publico de `agents_pub/` como funcion obs -> accion.
+    """Load a public agent from `agents_pub/` as a function obs -> action.
 
-    CON CACHE. Sin ella, `spec_from_file_location` + `exec_module` recompilaban
-    el modulo en CADA llamada: medido, 553 ms, el 64 % del coste de una partida
-    de 36 turnos (858 ms en total, de los que el motor y el ejecutor son 250 y
-    la red solo 57). Como se llama una vez por partida, una iteracion del CEM
-    con 40 candidatos x 3 semillas hacia 120 recompilaciones.
+    CACHED. Without the cache, `spec_from_file_location` + `exec_module`
+    recompiled the module on EVERY call: measured, 553 ms, 64% of the cost of a
+    36-turn episode (858 ms total, of which engine and executor are 250 and the
+    network only 57). Since it is called once per episode, one CEM iteration
+    with 40 candidates x 3 seeds did 120 recompilations.
     """
     ag = _PUBLICOS.get(name_)
     if ag is None:
@@ -175,10 +168,10 @@ def load_public(name_):
 
 
 def _parte_micro(m):
-    """En modo "ops" el mapa trae 1+N_OPS canales: canal 0 valor, resto verbos.
+    """The micro map carries 1+N_OPS channels: channel 0 value, rest verbs.
 
-    En los demas modos es (10,10) y se devuelve tal cual, asi que la misma
-    tuberia sirve para los tres sin ramificar en el resto del codigo.
+    An agent without a network returns (10,10) or nothing, so the same
+    pipeline serves both without branching elsewhere.
     """
     if m is None:
         return None
@@ -197,54 +190,54 @@ class DayEnv:
         self.n_total = int(n_total) if n_total else int(n)
         self.macro_fijo = macro
         self.rival_fn = rival_fn
-        # Peldano de la escalera. Los agentes publicos guardan estado entre
-        # turnos, asi que hay que construir uno NUEVO por partida: reutilizarlo
-        # arrastra la granja de la partida anterior.
+        # Ladder rung. Public agents keep state across turns, so a NEW one has
+        # to be built per episode: reusing it drags in the previous episode's
+        # farm.
         self.level = level
-        self.resultados = []
-        # Shaping por potencial (Ng, Harada & Russell 1999):
+        self.results = []
+        # Potential-based shaping (Ng, Harada & Russell 1999):
         #     r' = r + gamma*Phi(s') - Phi(s)
-        # con Phi = liquidacion exacta MIA menos la del RIVAL. Validado: el sesgo
-        # terminal |Phi(s_T) - (caja_yo - caja_rival)| es del 0.7 %, frente a los
-        # 611-917 $ que tenia el patrimonio neto. Por eso no cambia cual es la
-        # politica optima: solo adelanta el credito.
+        # with Phi = my exact liquidation minus the OPPONENT's. Validated: the
+        # terminal bias |Phi(s_T) - (my_cash - their_cash)| is 0.7%, against
+        # the $611-917 net worth had. That is why it does not change which
+        # policy is optimal: it only moves credit earlier.
         #
-        # El termino negativo del rival hace que DESTRUIR su valor puntue igual
-        # que crear el mio, que es lo coherente con un marcador de signo.
+        # The opponent's negative term makes DESTROYING their value score the
+        # same as creating mine, which is what a sign-based scoreboard implies.
         #
-        # Y quedarse con genero sin vender al cierre ya se penaliza solo: Phi
-        # solo cuenta lo que DA TIEMPO a convertirse en caja, asi que el ultimo
-        # salto cae a la caja. Un termino aparte lo contaria dos veces.
-        # Estadisticos del RIVAL. Sin ellos "19 000 $" no significa nada:
-        # puede ser empate o paliza. Medido contra v48: nosotros 36 566 $ con 26
-        # casillas productivas de 60, el 89 037 $ con 55 de las mismas 60.
-        self.riv_fin = []
+        # And being left with unsold produce at the close already penalises
+        # itself: Phi counts only what HAS TIME to become cash, so the last
+        # jump lands on the cash. A separate term would count it twice.
+        # OPPONENT statistics. Without them "$19,000" means nothing: it could
+        # be a tie or a thrashing. Measured against v48: us $36,566 with 26
+        # productive tiles of 60, them $89,037 with 55 of the same 60.
+        self.rival_finals = []
         self.riv_cult = []
         self.riv_anim = []
-        self.riv_uds = []
+        self.rival_units = []
         self._riv_uds_max = [1] * n
-        # Mascara de dimensiones que de verdad decidieron, un dia por env.
-        # La usa PPO para que el cociente de importancia ignore las ~1 570
-        # dimensiones gaussianas que no pueden cambiar ninguna accion.
+        # Mask of the dimensions that actually decided, one day per env. PPO
+        # uses it so the importance ratio ignores the ~1,570 Gaussian
+        # dimensions that cannot change any action.
         self._masks = [None] * n
         self.potential = potential
         self.gamma = gamma
         self._phi = [0.0] * n
-        self.sin_liquidar = []
+        self.unsold = []
         self.envs, self.agents, self.counter, self.obs = [None] * n, [None] * n, [None] * n, [None] * n
         self._rival = [None] * n
         self.ep = 0
-        self.finales, self.utiles = [], []
+        self.finals, self.utiles = [], []
         self._micro = [None] * n
         for i in range(n):
             self._reset(i)
 
     def _reset(self, i):
-        # SEMILLAS DISJUNTAS POR CONSTRUCCION. Antes cada trabajador arrancaba
-        # en `seed0 + off*1000` y dentro avanzaba `ep*n`, asi que el trabajador
-        # 0 alcanzaba el rango del 1 en el episodio 1.000 y varios procesos
-        # jugaban LA MISMA partida: el lote dejaba de ser independiente sin
-        # avisar. Particionando por residuo modulo el total de entornos, dos
+        # DISJOINT SEEDS BY CONSTRUCTION. Each worker used to start at
+        # `seed0 + off*1000` and advance by `ep*n` inside, so worker 0 reached
+        # worker 1's range at episode 1,000 and several processes played THE
+        # SAME episode: the batch silently stopped being independent.
+        # Partitioning by residue modulo the total number of envs, two
         # entornos distintos no pueden coincidir jamas.
         s = self.seed0 + self.ep * self.n_total + self.idx0 + i
         self.envs[i] = FastEnv(configuration={"episodeSteps": self.steps}, seed=s)
@@ -254,7 +247,7 @@ class DayEnv:
                                 micro=lambda ob, k=i: _parte_micro(self._micro[k]))
         self.counter[i] = ProductionLedger()
         self._micro[i] = None
-        self._rival[i] = self._nuevo_rival()
+        self._rival[i] = self._new_rival()
         self._phi[i] = self._compute_phi(i) if self.potential else 0.0
 
     def _compute_phi(self, i):
@@ -266,50 +259,48 @@ class DayEnv:
             return 0.0
 
     def set_rival_policy(self, factory):
-        """Rival = una POLITICA nuestra (auto-juego).
+        """Opponent = one of OUR policies (self-play).
 
-        Por que hace falta. Entrenando contra v48 perdemos el 100 % de las
-        partidas, asi que el termino terminal de la recompensa es CONSTANTE
-        en -1: no aporta un solo bit. Todo el gradiente venia del shaping, y el
-        criterio que de verdad puntua -ganar- era invisible para el aprendizaje.
+        Why it is needed. Training against a full-power public agent we lose
+        100% of episodes, so the terminal reward term is CONSTANT at -1: it
+        carries not one bit. All the gradient came from the shaping, and the
+        criterion that actually scores -winning- was invisible to learning.
 
-        Y no hay peldano intermedio entre los publicos: a shop-router le ganamos
-        el 100 % y a los otros tres les perdemos el 100 %.
-
-        Contra uno mismo la tasa de victorias es ~50 % por construccion, que es
-        donde la senal victoria/derrota tiene maxima varianza y por tanto maxima
-        informacion.
+        Against a copy of ourselves the win rate is ~50% by construction, which
+        is where the win/loss signal has maximum variance and therefore maximum
+        information. That is also why self-play needs a FIXED quota rather than
+        competing for one: p(1-p) would hand it the whole budget.
         """
         self._rival_factory = factory
         for i in range(self.n):
             self._rival[i] = factory()
 
     def set_rival_macro(self, vector):
-        """Rival = NUESTRO ejecutor exacto con un macro dado.
+        """Opponent = OUR exact executor with a given macro vector.
 
-        Los agentes publicos son especialistas de 30 dias: medido, en partidas
-        de 5-10 dias hacen 42-2.629 $ mientras nuestra heuristica hace ~3.000 y
-        gana 1,000 contra TODOS los niveles. Como rival de liga corta no valen
-        -win=1,000 no tiene mas gradiente que win=0,000-. Un vector macro
-        optimizado por CEM PARA ESE HORIZONTE si sabe jugar esos dias.
+        The public agents are 30-day specialists: measured, in 5-10 day games
+        they make $42-2,629 while our heuristic makes ~$3,000 and wins 1.000
+        against EVERY level. As short-league opponents they are useless
+        -win=1.000 carries no more gradient than win=0.000-. A macro vector
+        optimised by CEM FOR THAT HORIZON does know how to play those days.
         """
         self._rival_macro = None if vector is None else list(vector)
-        self.resultados.clear()
-        # REASIGNAR YA. `_reset` corrio en el constructor y los rivales de los
-        # episodios en curso son los antiguos: cambiar solo el atributo no
-        # cambia nada hasta el siguiente reset, y la medida sale identica a la
-        # de antes sin avisar.
+        self.results.clear()
+        # REASSIGN NOW. `_reset` ran in the constructor and the opponents of
+        # in-flight episodes are the old ones: changing only the attribute
+        # changes nothing until the next reset, and the measurement comes out
+        # identical to the previous one without warning.
         for i in range(self.n):
-            self._rival[i] = self._nuevo_rival()
+            self._rival[i] = self._new_rival()
 
-    def _nuevo_rival(self):
+    def _new_rival(self):
         if getattr(self, "_rival_macro", None) is not None:
             from .symbolic.executor import Agent as _Ag
             from .macro import Macro as _Mac
-            # Agente NUEVO por episodio: guarda estado entre turnos
-            # (`_destinos`, `turnos_por_casilla`) y reutilizarlo contamina.
-            # `episode_steps=None` a proposito: no tocar el global, que ya lo
-            # fijo nuestro propio agente con los pasos de esta liga.
+            # A NEW agent per episode: it keeps state across turns
+            # (`_destinations`, `turns_per_tile`) and reusing it contaminates.
+            # `episode_steps=None` on purpose: do not touch the global, which
+            # our own agent already set to this league's step count.
             return _Ag(macro=_Mac.from_vector(self._rival_macro))
         if getattr(self, "_rival_factory", None) is not None:
             return self._rival_factory()
@@ -330,20 +321,20 @@ class DayEnv:
 
     def raise_level(self):
         self.level = min(self.level + 1, len(LADDER) - 1)
-        self.resultados.clear()
+        self.results.clear()
         return LADDER[self.level]
 
     def win_rate(self, ultimos=60):
-        r = self.resultados[-ultimos:]
+        r = self.results[-ultimos:]
         return float(np.mean(r)) if r else float("nan")
 
     def encode(self):
         """Rejilla, vector global y OFERTA INMINENTE DEL RIVAL.
 
-        La tercera salida alimenta la entrada `hist` de la red, que existia
-        desde el principio -N_HIST = 4 x N_PRODUCTOS- y el entrenador rellenaba
-        con CEROS. Es lo causalmente anterior a nuestro ingreso en un mercado
-        compartido, y es predecible desde el tablero del rival, que se observa.
+        The third output feeds the network's `hist` input, which existed from
+        the start -N_HIST = 4 x N_PRODUCTS- and the trainer filled with ZEROS.
+        It is what causally precedes our income in a shared market, and it is
+        predictable from the opponent's board, which is observable.
         """
         G = np.zeros((self.n, *O.SHAPES["grid"]), dtype=np.float32)
         B = np.zeros((self.n, O.N_GLOBAL), dtype=np.float32)
@@ -354,7 +345,7 @@ class DayEnv:
         return G, B, Hf
 
     def step_day(self, mapas=None, macros=None):
-        """Juega 24 turnos. `mapas` (n,10,10) es el residuo de valor del dia."""
+        """Play 24 turns. `maps` (n,1+N_OPS,10,10) is the day's micro output."""
         from kaggle_environments.envs.kaggriculture import kaggriculture as E
         rec = np.zeros(self.n, dtype=np.float32)
         fin = np.zeros(self.n, dtype=np.float32)
@@ -393,12 +384,12 @@ class DayEnv:
                 except Exception:
                     rival = {"farmer": ["PASS"], "hands": [], "market": []}
                 self.obs[i], d = env.step([acc, rival])
-                # DENTRO del bucle de turnos, a proposito. Antes se tomaba una
-                # vez por dia, fuera, y ahi los peones ya estan limpiados: daba
-                # 1.0 siempre y parecia que el rival jugaba sin mano de obra.
-                # Medido el 2026-09-21 muestreando los 719 turnos: v48 sostiene
-                # 8,94 de media -y nosotros 9,88-, no 1. El comentario de abajo
-                # decia que estaba arreglado y no lo estaba.
+                # INSIDE the turn loop, on purpose. It used to be taken once
+                # per day, outside, and there the hands have already been
+                # cleared: it always gave 1.0 and made it look as if the
+                # opponent played with no workforce. Measured by sampling all
+                # 719 turns: v48 sustains 8.94 on average -and we 9.88- not 1.
+                # The comment below claimed this was fixed and it was not.
                 try:
                     self._riv_uds_max[i] = max(
                         self._riv_uds_max[i],
@@ -418,35 +409,38 @@ class DayEnv:
             if env.done:
                 r = env.rewards()
                 if self.potential:
-                    # Phi(s_T) = MI caja por construccion (sin el rival)
+                    # Phi(s_T) = MY cash by construction (no opponent term)
                     fin_phi = float(r[0]) / self.scale
                     rec[i] += self.gamma * fin_phi - self._phi[i]
-                self.sin_liquidar.append(
+                self.unsold.append(
                     int(sum(self.obs[i][0]["private"]["shed"].values())))
-                # TERMINO COMPETITIVO, en el OBJETIVO y no en el shaping.
-                # El de abajo (+-1) ya mira al rival, pero es un SIGNO: ganar
-                # por 1 $ puntua igual que ganar por 50.000, asi que no dice
-                # en que direccion apretar. Este es continuo en el MARGEN.
-                # No va denso por dia a proposito: eso es el termino que
-                # potencial.phi documenta como medido y retirado -el rival
-                # aportaba el 99,1 % de la varianza diaria y el critico caia a
-                # R2 -2,535-. El shaping solo puede llevar lo que el estado
-                # predice; los saltos de su caja no lo son. Al cierre es un
-                # escalar por episodio, la misma forma que el +-1 de siempre.
+                # COMPETITIVE TERM, in the OBJECTIVE and not in the shaping.
+                # The one below (+-1) already looks at the opponent, but it is
+                # a SIGN: winning by $1 scores the same as winning by $50,000,
+                # so it does not say which way to push. This one is continuous
+                # in the MARGIN.
+                # It is not dense per day on purpose: that is the term
+                # `potential.phi` documents as measured and withdrawn -the
+                # opponent accounted for 99.1% of the daily variance and the
+                # critic fell to R2 -2.535-. Shaping can only carry what the
+                # state predicts; jumps in their cash are not that. At the
+                # close it is one scalar per episode, the same shape as the
+                # familiar +-1.
                 if _RIVAL_W:
                     rec[i] -= _RIVAL_W * float(r[1]) / self.scale
                 res = 1.0 if r[0] > r[1] else (0.5 if r[0] == r[1] else 0.0)
                 rec[i] += 2.0 * res - 1.0
-                self.resultados.append(res)
-                self.finales.append(float(r[0]))
-                self.riv_fin.append(float(r[1]))
+                self.results.append(res)
+                self.finals.append(float(r[0]))
+                self.rival_finals.append(float(r[1]))
                 fr = self.obs[i][1]["farms"][1]
-                # OJO: al cerrar la partida los peones ya se han limpiado, asi
-                # que contarlos aqui da 1 siempre y parece que el rival juega
-                # mutilado. Verificado midiendo aparte: contrata 87 veces y
-                # sostiene 3.78 unidades de media. Sexta vez hoy que la hora
-                # muerde; se usa el maximo visto durante la partida.
-                self.riv_uds.append(max(1, self._riv_uds_max[i]))
+                # CAREFUL: at the close the hands have already been cleared,
+                # so counting them here always gives 1 and makes it look as if
+                # the opponent plays crippled. Verified by measuring
+                # separately: it hires 87 times and sustains 3.78 units on
+                # average. The same hour-boundary trap bites repeatedly; the
+                # maximum seen during the episode is used instead.
+                self.rival_units.append(max(1, self._riv_uds_max[i]))
                 self._riv_uds_max[i] = 1
                 self.riv_cult.append(sum(1 for fl in fr["tiles"] for t in fl
                                          if isinstance(t, dict) and t.get("kind") == "PLANT"))
@@ -458,9 +452,9 @@ class DayEnv:
         return rec, fin
 
     def masks(self):
-        """(n, 1+N_OPS, B, B): que dimensiones del micro decidieron hoy.
+        """(n, 1+N_OPS, B, B): which micro dimensions decided today.
 
-        Fuera del modo "ops" no hay nada que enmascarar y se devuelve None.
+        None when there is nothing to mask.
         """
         from .symbolic import tasks as _Tm
         if _Tm.MICRO_MODE != "ops":
@@ -469,16 +463,16 @@ class DayEnv:
         return np.stack([m if m is not None else z for m in self._masks])
 
     def mean_money(self, ultimos=50):
-        return float(np.mean(self.finales[-ultimos:])) if self.finales else float("nan")
+        return float(np.mean(self.finals[-ultimos:])) if self.finals else float("nan")
 
     def rival_stats(self, ultimos=50):
         m = lambda v: float(np.mean(v[-ultimos:])) if v else float("nan")
-        return {"dinero": m(self.riv_fin), "cultivos": m(self.riv_cult),
-                "animales": m(self.riv_anim), "unidades": m(self.riv_uds)}
+        return {"dinero": m(self.rival_finals), "cultivos": m(self.riv_cult),
+                "animales": m(self.riv_anim), "unidades": m(self.rival_units)}
 
     def mean_unsold(self, ultimos=50):
-        """Unidades que quedaron en el cobertizo al cerrar. Deben ser 0."""
-        v = self.sin_liquidar[-ultimos:]
+        """Units left in the shed at the close. They should be 0."""
+        v = self.unsold[-ultimos:]
         return float(np.mean(v)) if v else float("nan")
 
     def mean_useful(self, ultimos=400):
