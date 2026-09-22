@@ -145,7 +145,7 @@ def shrink_macro_head(sd: dict, macro_fields=None) -> list:
 # Attributes renamed when the code moved to English. `state_dict` keys are
 # ATTRIBUTE paths, so renaming a submodule invalidates every earlier
 # checkpoint. They are translated on load, the same way growing heads are.
-RENAMES = {"mundo.": "world."}
+RENAMES = {"mundo.": "world.", "critico.": "critic."}
 
 
 def migrate_keys(sd: dict) -> list[str]:

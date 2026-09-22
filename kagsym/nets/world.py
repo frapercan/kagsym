@@ -234,8 +234,8 @@ class E2EAgent(nn.Module):
         # championship scale, with a real opponent and a shared market, is
         # where it is expected to break -there the opponent's liquidation
         # accounts for 99.1% of the daily variance-.
-        self.critico = nn.Sequential(nn.Linear(hid, hid), nn.SiLU(),
-                                     nn.Linear(hid, 1))
+        self.critic = nn.Sequential(nn.Linear(hid, hid), nn.SiLU(),
+                                    nn.Linear(hid, 1))
         # AUXILIARY HEAD, back with a NEW TARGET. The previous one predicted
         # the opponent's products, which are already in the input -their board
         # is encoded in full- so it was a trivial task that forced the encoder
@@ -314,7 +314,7 @@ class E2EAgent(nn.Module):
             "jepa_z": self.jepa_proy(z),
             "micro": (self.micro(self.micro_ctx(h)) if self.n_ops
                       else self.micro(self.micro_ctx(h)).squeeze(1)),
-            "valor": self.critico(z).squeeze(-1),
+            "valor": self.critic(z).squeeze(-1),
         }
 
     def macro_from(self, out, eps):

@@ -227,7 +227,7 @@ class DayEnv:
         self.envs, self.agents, self.counter, self.obs = [None] * n, [None] * n, [None] * n, [None] * n
         self._rival = [None] * n
         self.ep = 0
-        self.finals, self.utiles = [], []
+        self.finals, self.useful_frac = [], []
         self._micro = [None] * n
         for i in range(n):
             self._reset(i)
@@ -324,8 +324,8 @@ class DayEnv:
         self.results.clear()
         return LADDER[self.level]
 
-    def win_rate(self, ultimos=60):
-        r = self.results[-ultimos:]
+    def win_rate(self, last=60):
+        r = self.results[-last:]
         return float(np.mean(r)) if r else float("nan")
 
     def encode(self):
@@ -344,14 +344,14 @@ class DayEnv:
             Hf[i] = O.rival_flow(o[0])
         return G, B, Hf
 
-    def step_day(self, mapas=None, macros=None):
+    def step_day(self, maps=None, macros=None):
         """Play 24 turns. `maps` (n,1+N_OPS,10,10) is the day's micro output."""
         from kaggle_environments.envs.kaggriculture import kaggriculture as E
         rec = np.zeros(self.n, dtype=np.float32)
         fin = np.zeros(self.n, dtype=np.float32)
         for i in range(self.n):
-            if mapas is not None:
-                self._micro[i] = np.asarray(mapas[i], dtype=np.float32)
+            if maps is not None:
+                self._micro[i] = np.asarray(maps[i], dtype=np.float32)
             if macros is not None:
                 self.agents[i].macro = Macro.from_vector(macros[i])
             env, counter = self.envs[i], self.counter[i]
@@ -399,7 +399,7 @@ class DayEnv:
                     break
             self._masks[i] = _Tm.collect_mask()
             if total:
-                self.utiles.append(util / total)
+                self.useful_frac.append(util / total)
             if self.potential and not env.done:
                 nuevo = self._compute_phi(i)
                 rec[i] += self.gamma * nuevo - self._phi[i]
@@ -458,18 +458,18 @@ class DayEnv:
         z = np.zeros((1 + _Tm.N_OPS, spec.BOARD, spec.BOARD), dtype=np.float32)
         return np.stack([m if m is not None else z for m in self._masks])
 
-    def mean_money(self, ultimos=50):
-        return float(np.mean(self.finals[-ultimos:])) if self.finals else float("nan")
+    def mean_money(self, last=50):
+        return float(np.mean(self.finals[-last:])) if self.finals else float("nan")
 
-    def rival_stats(self, ultimos=50):
-        m = lambda v: float(np.mean(v[-ultimos:])) if v else float("nan")
+    def rival_stats(self, last=50):
+        m = lambda v: float(np.mean(v[-last:])) if v else float("nan")
         return {"dinero": m(self.rival_finals), "cultivos": m(self.riv_cult),
                 "animales": m(self.riv_anim), "unidades": m(self.rival_units)}
 
-    def mean_unsold(self, ultimos=50):
+    def mean_unsold(self, last=50):
         """Units left in the shed at the close. They should be 0."""
-        v = self.unsold[-ultimos:]
+        v = self.unsold[-last:]
         return float(np.mean(v)) if v else float("nan")
 
-    def mean_useful(self, ultimos=400):
-        return float(np.mean(self.utiles[-ultimos:])) if self.utiles else float("nan")
+    def mean_useful(self, last=400):
+        return float(np.mean(self.useful_frac[-last:])) if self.useful_frac else float("nan")

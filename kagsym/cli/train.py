@@ -148,7 +148,7 @@ BASE_PER_HORIZON = {
 # the heuristic's margin is NEGATIVE (cap 8: -14,973; uncapped: -102,106), so
 # there the objective is simply TO WIN -margin 0- which is achievable by
 # definition because the opponent achieves it.
-LIGAS = [
+LEAGUES = [
     ( 6,  6,    3,   3088,  1.03),   # L0  minima viable
     ( 8,  8,    3,   3291,  1.10),   # L1
     (10, 10,    3,   3602,  1.20),   # L2
@@ -160,8 +160,8 @@ LIGAS = [
     (24, 30,   11,      0, 11.00),   # L8
     (24, 30, None,      0, 10.70),   # L9  competicion completa
 ]
-FRAC_TECHO = 0.90
-ASCENSO, DESCENSO, PERMANENCIA = 0.60, 0.30, 12
+CEILING_FRAC = 0.90
+PROMOTION, RELEGATION, STAY = 0.60, 0.30, 12
 
 
 def main():
@@ -319,7 +319,7 @@ def main():
     # The critic predicts NORMALISED and is denormalised for GAE, which needs
     # raw units because `ret = adv + Vn` bootstraps from V.
     _vmu, _vsd, _vn = 0.0, 1.0, 0
-    _n_reusados = _n_total = 0
+    _n_reused = _n_total = 0
     d0 = {}
     if a.resume:
         # CONTINUE, do not restart. Each run used to start from the supervised
@@ -329,10 +329,10 @@ def main():
         # the shapes do not fit. What fits is loaded and the reuse reported.
         d0 = torch.load(a.resume, map_location="cpu", weights_only=False)
         from kagsym.migrate_ckpt import load_tolerant
-        _n_reusados, _n_total, _azar = load_tolerant(
+        _n_reused, _n_total, _random_ = load_tolerant(
             net, d0["sd"], a.resume, macro_fields=d0.get("macro_fields"))
         net.to(dev)
-        print(f"reanudado desde {a.resume}: {_n_reusados}/{_n_total} tensores "
+        print(f"reanudado desde {a.resume}: {_n_reused}/{_n_total} tensores "
               f"reusados (update {d0.get('upd','?')}, "
               f"retorno {d0.get('ret', float('nan')):.2f})", flush=True)
     elif a.init_net:
@@ -372,35 +372,35 @@ def main():
     #
     # Group 3 (critic, auxiliaries) is not policy: it generates no KL and is
     # not controlled by KL.
-    _g_macro, _g_micro, _g_otros, _tronco = [], [], [], []
+    _g_macro, _g_micro, _g_otros, _trunk = [], [], [], []
     for _n, _p in net.named_parameters():
         _b = _n.split(".")[0]
         if _b in ("macro_mu", "log_sigma"):
             _g_macro.append(_p)
         elif _b in ("micro", "micro_ctx", "log_sigma_micro"):
             _g_micro.append(_p)
-        elif _b in ("critico", "aux_rival", "jepa_proy", "jepa_pred"):
+        elif _b in ("critic", "aux_rival", "jepa_proy", "jepa_pred"):
             _g_otros.append(_p)
         else:
-            _tronco.append(_p)
-    _cabezas = _g_macro + _g_micro + _g_otros
-    _rm_actual = None
+            _trunk.append(_p)
+    _heads = _g_macro + _g_micro + _g_otros
+    _rm_now = None
     # SELF-PLAY RUNGS WITH THE FULL NETWORK. The opponent's identity lives in
     # the RUNG, not in the worker: the curriculum reassigns workers and without
     # this the frozen opponent would be lost on the first reallocation.
-    _pool_red = set()
-    _red_congelada = None
-    _pool, _pool_p, _asig = [], [], []
-    _niveles = ([int(x) for x in a.levels.split(',')] if a.levels else None)
-    if _niveles:
-        from kagsym.environment import LADDER as _ESC
+    _pool_net = set()
+    _frozen_net = None
+    _pool, _pool_p, _assign = [], [], []
+    _levels = ([int(x) for x in a.levels.split(',')] if a.levels else None)
+    if _levels:
+        from kagsym.environment import LADDER as _LADDER
         print('opponents per worker: ' + ', '.join(
-            str(_ESC[min(n, len(_ESC)-1)]) for n in _niveles), flush=True)
+            str(_LADDER[min(n, len(_LADDER)-1)]) for n in _levels), flush=True)
     if a.lr is None:
         a.lr = 3e-4
-        _lr_explicito = False
+        _lr_explicit = False
     else:
-        _lr_explicito = True
+        _lr_explicit = True
     _lrc = a.lr_heads if a.lr_heads is not None else a.lr
     # `--lr-heads` ALONE also overrides. Without this, `_lr_explicit` was only
     # was activated by `--lr`, so on resume both lrs from the checkpoint were
@@ -409,14 +409,14 @@ def main():
     # What matters here is the heads/trunk RATIO: the KL controller rescales
     # both groups together, so the ratio is the only thing that survives.
     if a.lr_heads is not None:
-        _lr_explicito = True
+        _lr_explicit = True
     # 0 tronco | 1 macro | 2 micro | 3 critico+auxiliares
-    opt = torch.optim.Adam([{"params": _tronco, "lr": a.lr},
+    opt = torch.optim.Adam([{"params": _trunk, "lr": a.lr},
                             {"params": _g_macro, "lr": _lrc},
                             {"params": _g_micro, "lr": _lrc},
                             {"params": _g_otros, "lr": _lrc}])
-    print(f"lr tronco {a.lr:.1e} ({len(_tronco)} tensores) | "
-          f"lr cabezas {_lrc:.1e} ({len(_cabezas)} tensores)", flush=True)
+    print(f"lr tronco {a.lr:.1e} ({len(_trunk)} tensores) | "
+          f"lr cabezas {_lrc:.1e} ({len(_heads)} tensores)", flush=True)
     # OPTIMIZER STATE, not just the weights. Without this every resume starts
     # with Adam's moments at zero and the factory lr, so the first step is
     # enormous: measured, a resume from $20,957 fell to $4,717 in five updates,
@@ -427,8 +427,8 @@ def main():
     # and blows up later, inside the first step(), with "size of tensor a (124)
     # must match b (126)". If `--resume` could not reuse ALL tensors, the
     # network is a different one and the moments are worthless.
-    _arq_igual = (not a.resume) or (_n_reusados == _n_total)
-    if a.resume and "opt" in d0 and _arq_igual:
+    _same_arch = (not a.resume) or (_n_reused == _n_total)
+    if a.resume and "opt" in d0 and _same_arch:
         try:
             # MOMENTS PER TENSOR, not all-or-nothing. When a new constant is
             # exposed the macro vector grows, and with it the head:
@@ -443,11 +443,11 @@ def main():
             # they are filtered BEFORE, comparing against the parameter they
             # belong to. Whatever is dropped, Adam reinitialises on its first
             # step.
-            _est = dict(d0["opt"])
+            _state = dict(d0["opt"])
             _ps = [q for g in opt.param_groups for q in g["params"]]
-            _fuera = []
-            _nuevo_est = {}
-            for _i, _v in (_est.get("state") or {}).items():
+            _outside = []
+            _new_state = {}
+            for _i, _v in (_state.get("state") or {}).items():
                 _j = int(_i)
                 _ok = _j < len(_ps)
                 if _ok:
@@ -456,20 +456,20 @@ def main():
                         if _t is not None and tuple(_t.shape) != tuple(_ps[_j].shape):
                             _ok = False
                 if _ok:
-                    _nuevo_est[_i] = _v
+                    _new_state[_i] = _v
                 else:
-                    _fuera.append(_j)
-            _est["state"] = _nuevo_est
-            opt.load_state_dict(_est)
-            if _fuera:
-                print(f"  momentos reiniciados en {len(_fuera)} de {len(_ps)} "
+                    _outside.append(_j)
+            _state["state"] = _new_state
+            opt.load_state_dict(_state)
+            if _outside:
+                print(f"  momentos reiniciados en {len(_outside)} de {len(_ps)} "
                       f"tensores (cambiaron de forma); el resto conserva Adam",
                       flush=True)
             # Adam's MOMENTS are always restored -they are what prevents the
             # huge first step- but an explicitly requested lr OVERRIDES the
             # checkpoint's. Without this, restoring the optimizer silently
             # clobbered the lr change the operator came to make.
-            if _lr_explicito:
+            if _lr_explicit:
                 opt.param_groups[0]["lr"] = a.lr
                 opt.param_groups[1]["lr"] = _lrc
                 print(f"  lr EXPLICITO ({a.lr:.1e} / {_lrc:.1e}, ratio "
@@ -483,8 +483,8 @@ def main():
                   f"continuing with factory lrs", flush=True)
     elif a.resume and "opt" in d0:
         print(f"  optimizador NO restaurado: la arquitectura cambio "
-              f"({_n_reusados}/{_n_total} tensores). Momentos a cero.", flush=True)
-    if a.resume and _n_reusados < _n_total and getattr(net, "n_ops", 0):
+              f"({_n_reused}/{_n_total} tensores). Momentos a cero.", flush=True)
+    if a.resume and _n_reused < _n_total and getattr(net, "n_ops", 0):
         # INACTION RESCUE. If the architecture changed, the reinitialised
         # input layers send noise into the value head, which emits negatives;
         # the Hungarian prefers its dummy column and ALL units PASS. And
@@ -514,7 +514,7 @@ def main():
         # probaba lo que yo creia y nada avisaba.
         net.init_macro_at(vec0)
         print(f"macro FORZADO a {a.init}", flush=True)
-    _pasos = a.steps
+    _steps = a.steps
     if a.mix:
         # MIXED, not sequential. In sequence the policy trains at one horizon
         # only and forgets the previous one -measured twice: real margin from
@@ -522,11 +522,11 @@ def main():
         # at 5 days doing nothing gives $3,000 and our heuristic $2,920, i.e.
         # that acting DESTROYS value and the lesson learned there is "do
         # hagas nada".
-        _dias = [int(x) for x in a.mix.split(",")]
-        _pasos = [d * 24 for d in _dias]
-        a.days = max(_dias)
-        print(f"MIXED horizons: {_dias} days -> {_pasos} steps", flush=True)
-    _horas = None
+        _days = [int(x) for x in a.mix.split(",")]
+        _steps = [d * 24 for d in _days]
+        a.days = max(_days)
+        print(f"MIXED horizons: {_days} days -> {_steps} steps", flush=True)
+    _hours = None
     if a.grid:
         # MIXED FIBONACCI GRID. All three axes at once, one rung per worker,
         # all in the same batch. What makes it possible: `spec` and `HAND_CAP`
@@ -544,29 +544,29 @@ def main():
         # up AND down (mixing 15/20/30 gave 1.22x at 10 days and 2.66x at 13,
         # neither seen in training, and also won at 30 days: 12.78x against
         # 10.65x for the one trained only there).
-        _rej = []
+        _grid = []
         for t in a.grid.split(";"):
             h, d, tp = (int(x) for x in t.split(","))
-            _rej.append((h, d, tp))
-        _pasos = [h * d for h, d, _ in _rej]
-        _horas = [h for h, _, _ in _rej]
+            _grid.append((h, d, tp))
+        _steps = [h * d for h, d, _ in _grid]
+        _hours = [h for h, _, _ in _grid]
         # THIRD AXIS = THE OPPONENT'S CAP, not ours. `--hand-cap` limits OUR
         # hands (a constraint on our own action space); the ladder's difficulty
         # axis was always the opponent. That is also how the rungs were
         # calibrated, so they have to mean the same thing or the measured
         # ceilings do not apply. 0 = uncapped (opponent at full power).
-        _rivtope = [(tp if tp > 0 else None) for _, _, tp in _rej]
-        a.days = max(d for _, d, _ in _rej)
-        print(f"MIXED GRID, {len(_rej)} rungs:", flush=True)
-        for h, d, tp in _rej:
+        _rival_cap = [(tp if tp > 0 else None) for _, _, tp in _grid]
+        a.days = max(d for _, d, _ in _grid)
+        print(f"MIXED GRID, {len(_grid)} rungs:", flush=True)
+        for h, d, tp in _grid:
             print(f"   {h:>3}h x {d:>3}d = {h*d:>4} turns, cap {tp}", flush=True)
-    env = ParallelEnv(a.envs, n_procs=a.procs, steps=_pasos,
+    env = ParallelEnv(a.envs, n_procs=a.procs, steps=_steps,
                           macro=Macro.from_vector(vec0),
-                          level=(_niveles if _niveles else a.level),
-                          tope_peones=a.hand_cap, hours=_horas)
+                          level=(_levels if _levels else a.level),
+                          hand_cap=a.hand_cap, hours=_hours)
     if a.grid:
-        env.set_rival_cap(_rivtope)
-        print(f"OPPONENT cap per rung: {_rivtope}", flush=True)
+        env.set_rival_cap(_rival_cap)
+        print(f"OPPONENT cap per rung: {_rival_cap}", flush=True)
         if a.own_rival:
             # A real opponent on every rung. Measured: v48 makes $60,426 at
             # 24h x 30d and $0-30 at any other scale, because its tape is
@@ -579,82 +579,82 @@ def main():
             # agent DOES play -$60,426 measured- and it is the only rung where
             # winning means anything. The substitution is for rungs where the
             # public agent is dead, not a way to avoid the real opponent.
-            _COMPET = (24, 30)
+            _COMPETITIVE = (24, 30)
             _riv = []
-            for _h, _d, _ in _rej:
+            for _h, _d, _ in _grid:
                 _f = f"runs/ligas/macro_{_h}h{_d}d.npy"
-                if (_h, _d) == _COMPET or not os.path.exists(_f):
+                if (_h, _d) == _COMPETITIVE or not os.path.exists(_f):
                     _riv.append(None)
                 else:
                     _riv.append(list(np.load(_f)))
             env.set_rival_macro(_riv)
             _n = sum(1 for v in _riv if v is not None)
-            print(f"rival = NUESTRO ejecutor calibrado en {_n}/{len(_rej)} "
+            print(f"rival = NUESTRO ejecutor calibrado en {_n}/{len(_grid)} "
                   f"rungs; public agent on the rest", flush=True)
-            for (_h, _d, _), _v in zip(_rej, _riv):
+            for (_h, _d, _), _v in zip(_grid, _riv):
                 print(f"   {_h}h x {_d}d: "
                       + ("executor with calibrated macro" if _v is not None
                          else "v48-fast-routes"), flush=True)
     # Ranges of env indices belonging to each worker, i.e. to each rung of the
     # grid. The parallel env hands out envs in order, `per_proc[k]`
     # consecutively per worker.
-    _GRUPOS = None
+    _GROUPS = None
     if a.grid and len(set(env.steps_proc)) > 1:
-        _GRUPOS, _o = [], 0
-        for _m in env.por_proc:
-            _GRUPOS.append((_o, _o + _m))
+        _GROUPS, _o = [], 0
+        for _m in env.envs_per_proc:
+            _GROUPS.append((_o, _o + _m))
             _o += _m
-        print(f"advantage normalised per rung: {len(_GRUPOS)} groups "
-              f"{[b - a_ for a_, b in _GRUPOS]}", flush=True)
+        print(f"advantage normalised per rung: {len(_GROUPS)} groups "
+              f"{[b - a_ for a_, b in _GROUPS]}", flush=True)
     if a.rival_macros:
         _rm = []
         for _t in a.rival_macros.split(","):
             _t = _t.strip()
             _rm.append(None if _t in ("-", "") else list(np.load(_t)))
         env.set_rival_macro(_rm)
-        _rm_actual = list(_rm)
+        _rm_now = list(_rm)
         # The POOL of rungs: (level, cap, macro). It starts with the initial
         # assignment and the automatic curriculum redistributes workers among
         # them according to how much information each one gives.
-        if _niveles:
-            _pool = [(_niveles[i % len(_niveles)],
-                      _rivtope[i % len(_rivtope)],
+        if _levels:
+            _pool = [(_levels[i % len(_levels)],
+                      _rival_cap[i % len(_rival_cap)],
                       _rm[i % len(_rm)]) for i in range(len(_rm))]
             _pool_p = [None] * len(_pool)
-            _asig = list(range(len(_pool)))
+            _assign = list(range(len(_pool)))
         print("opponents per worker (macro): " + ", ".join(
             ("publico" if x is None else "NUESTRO") for x in _rm), flush=True)
     elif a.rival_macro:
         env.set_rival_macro(list(np.load(a.rival_macro)))
         print(f"opponent = our executor with {a.rival_macro}", flush=True)
-    _liga = a.league0
-    _en_liga = 0
+    _league = a.league0
+    _in_league = 0
     _RIV_ULT = [0.0]
 
-    def _monta_liga(idx):
+    def _build_league(idx):
         """Build the environment for league `idx`: hours, days and opponent cap.
 
         Changing hours or days forces recreating the workers, because
         `spec.TURNS_PER_DAY` y `spec.EPISODE_STEPS` son globales POR PROCESO.
         """
-        hours, days, cap, _marg, _techo = LIGAS[idx]
+        hours, days, cap, _margin, _ceiling = LEAGUES[idx]
         spec.set_turns_per_day(hours)
         steps = days * hours
         spec.set_episode_steps(steps)
         a.steps, a.days = steps, days
         e = ParallelEnv(a.envs, n_procs=a.procs, steps=steps,
                             macro=Macro.from_vector(vec0), level=4,
-                            tope_peones=a.hand_cap,
+                            hand_cap=a.hand_cap,
                             hours=hours)
         e.set_rival_cap(cap)
-        print(f"LIGA {idx}/{len(LIGAS)-1}: {hours}h x {days}d, rival v48 "
+        print(f"LIGA {idx}/{len(LEAGUES)-1}: {hours}h x {days}d, rival v48 "
               f"tope {cap if cap is not None else 'sin tope'} "
               f"({steps} pasos)", flush=True)
         return e
 
     if a.leagues:
-        env.cerrar()
-        env = _monta_liga(_liga)
+        env.close_()
+        env = _build_league(_league)
 
     try:
         import mlflow
@@ -672,16 +672,16 @@ def main():
             "ref_v48_tope5": 34905,
             "ref_experto_2945_vs_v48": 82382,
         })
-        usar_ml = True
+        use_mlflow = True
     except Exception:
-        usar_ml = False
+        use_mlflow = False
 
     # PERTURBATION PER EPISODE, not per day. Measured: resampling every day
     # costs 54% of the return ($40,972 fixed -> $18,967 sampled), because 30
     # days of random jitter destroy the farm's coherence.
     eps = torch.randn(a.envs, N_MACRO, device=dev)
     _NC = 1 + getattr(net, "n_ops", 0)
-    _FORMA_U = (10, 10) if _NC == 1 else (_NC, 10, 10)
+    _U_SHAPE = (10, 10) if _NC == 1 else (_NC, 10, 10)
     # One sigma per channel: value and verbs live on different scales.
     # The MICRO head's sigma is no longer a config constant: it is an
     # `nn.Parameter` of the network learned by PPO, like the macro's. It is
@@ -690,17 +690,17 @@ def main():
     # update, a graph that no longer corresponds.
     def SIG():
         return net.log_sigma_micro.exp()
-    eps_u = torch.randn(a.envs, *_FORMA_U, device=dev)
+    eps_u = torch.randn(a.envs, *_U_SHAPE, device=dev)
     best = -1e18
     # SAFETY NET against collapse. Measured: one update with kl 25.7 took the
     # cash from $34,900 to $3 in fifteen updates and the controller reacted too
     # late. It keeps the last GOOD state and restores it if the return
     # collapses, also halving the pace.
-    _salvavidas = {"ret": None, "sd": None, "opt": None, "rescates": 0}
-    _grad_normas = []
-    _ultima_promo = -10**9
+    _lifeline = {"ret": None, "sd": None, "opt": None, "rescates": 0}
+    _grad_norms = []
+    _last_promo = -10**9
     ret_ep = []          # returns of CLOSED EPISODES, not per-update sums
-    acum = np.zeros(a.envs, dtype=np.float64)
+    accum = np.zeros(a.envs, dtype=np.float64)
 
     if a.selfplay:
         # Against a full-power public agent we lose 100%: the terminal is -1
@@ -765,19 +765,19 @@ def main():
             # identical turns.
             _pool = (([("macro", "diversos", None)] if _seed_vectors else [])
                      + [("foto", f"auto{i}", sd) for i, sd in enumerate(bank)])
-            _tipo, _nom, _obj = _pool[(upd // a.refresh) % len(_pool)]
-            if _tipo == "macro":
+            _kind, _name, _target = _pool[(upd // a.refresh) % len(_pool)]
+            if _kind == "macro":
                 # All diverse opponents AT ONCE, one per worker:
                 # `set_rival_macro` accepts that natively. Rotating one at a
                 # time makes the gradient see them in series, which is how it
                 # forgets to beat what it already knew how to beat.
                 env.set_rival_macro([v for _, v in _seed_vectors])
-                _nom = f"{len(_seed_vectors)} diversos a la vez"
+                _name = f"{len(_seed_vectors)} diversos a la vez"
             else:
                 rival = E2EAgent(cfg)
-                rival.load_state_dict(_obj)
+                rival.load_state_dict(_target)
                 env.set_selfplay(rival)
-            print(f"  [upd {upd}] rival -> {_nom} ({_tipo}), poblacion de "
+            print(f"  [upd {upd}] rival -> {_name} ({_kind}), poblacion de "
                   f"{len(_pool)}", flush=True)
         G, B, H, AM, AU, LP, V, R, D, MS = [], [], [], [], [], [], [], [], [], []
         LPMA, LPMI = [], []          # log-prob per head, for the factored ratio
@@ -806,7 +806,7 @@ def main():
                 _lp_mi = _lpu.flatten(1).sum(-1)
                 if a.jepa_weight > 0:
                     JZ.append(s["jepa_z"].detach())
-            rec, fin = env.step_day(mapas=au.cpu().numpy(), macros=am.cpu().numpy())
+            rec, fin = env.step_day(maps=au.cpu().numpy(), macros=am.cpu().numpy())
             # The mask is only known AFTER playing the day: it says which
             # dimensions genuinely influenced some decision. The log-prob is
             # recomputed with it so PPO's ratio ignores the rest.
@@ -817,13 +817,13 @@ def main():
                 _lp_mi = (_lpu * mt).flatten(1).sum(-1)
                 MS.append(mt)
             # return per closed episode, which IS comparable across updates
-            acum += rec
+            accum += rec
             for k in np.nonzero(fin)[0]:
-                ret_ep.append(float(acum[k])); acum[k] = 0.0
+                ret_ep.append(float(accum[k])); accum[k] = 0.0
             if fin.any():
                 idx = torch.from_numpy(np.nonzero(fin)[0]).to(dev)
                 eps[idx] = torch.randn(len(idx), N_MACRO, device=dev)
-                eps_u[idx] = torch.randn(len(idx), *_FORMA_U, device=dev)
+                eps_u[idx] = torch.randn(len(idx), *_U_SHAPE, device=dev)
             G.append(g); B.append(b); H.append(h)
             AM.append(am); AU.append(au); LP.append(lp)
             LPMA.append(lp_m); LPMI.append(_lp_mi)
@@ -867,8 +867,8 @@ def main():
         # Normalising per rung puts all rungs on equal footing. It is standard
         # practice in multi-task RL and it does not change the sign of any
         # advantage, only its relative scale across tasks.
-        if _GRUPOS is not None:
-            for _a, _b in _GRUPOS:
+        if _GROUPS is not None:
+            for _a, _b in _GROUPS:
                 _sl = adv[:, _a:_b]
                 if _sl.size:
                     adv[:, _a:_b] = (_sl - _sl.mean()) / (_sl.std() + 1e-8)
@@ -904,10 +904,10 @@ def main():
             from kagsym.obs import AUX_HORIZONS, RIVAL_WINDOWS
             _nd = len(HF)
             # from (days, envs, 4*P) to the first window: what is READY today
-            _listo = [x.reshape(x.shape[0], len(RIVAL_WINDOWS), -1)[:, 0, :]
+            _ready = [x.reshape(x.shape[0], len(RIVAL_WINDOWS), -1)[:, 0, :]
                       for x in HF]
             _fhf = torch.cat([
-                torch.cat([_listo[min(t + k, _nd - 1)] for k in AUX_HORIZONS],
+                torch.cat([_ready[min(t + k, _nd - 1)] for k in AUX_HORIZONS],
                           dim=-1)
                 for t in range(_nd)])
         fms = torch.cat(MS) if MS else None
@@ -935,12 +935,12 @@ def main():
         # The POLICY always at full batch: splitting it multiplies its KL by 24
         # (measured) and the controller would have to undo it by cutting the lr.
         # `--minilotes` afecta SOLO al critico, mas abajo.
-        _nm, _tam = 1, _N
+        _nm, _size = 1, _N
         for _ep in range(a.epochs):
-            _orden = torch.randperm(_N, device=dev) if _nm > 1 else None
+            _order = torch.randperm(_N, device=dev) if _nm > 1 else None
             for _j in range(_nm):
                 if _nm > 1:
-                    _sel = _orden[_j * _tam:(_j + 1) * _tam]
+                    _sel = _order[_j * _size:(_j + 1) * _size]
                     if len(_sel) == 0:
                         continue
                     _fg, _fb, _fh = fg[_sel], fb[_sel], fh[_sel]
@@ -1020,11 +1020,11 @@ def main():
                     #
                     # The value head IS trained: it is what the policy will
                     # need on day one and costs nothing to have ready.
-                    perdida = a.value_weight * l_v + a.jepa_weight * l_jepa
+                    loss = a.value_weight * l_v + a.jepa_weight * l_jepa
                 else:
-                    perdida = (l_pi + a.value_weight * l_v + a.aux_weight * l_aux
+                    loss = (l_pi + a.value_weight * l_v + a.aux_weight * l_aux
                                + a.jepa_weight * l_jepa)
-                opt.zero_grad(); perdida.backward()
+                opt.zero_grad(); loss.backward()
                 if a.jepa_warmup < upd <= a.jepa_warmup + a.freeze_trunk:
                     # MIND THE INTERVAL: it freezes AFTER the warmup, not
                     # during. During the warmup the trunk is precisely what has
@@ -1034,7 +1034,7 @@ def main():
                     #
                     # The gradient is zeroed rather than removing the tensors
                     # from the optimizer, so Adam's state is not lost.
-                    for _p in _tronco:
+                    for _p in _trunk:
                         if _p.grad is not None:
                             _p.grad = None
                 # The norm BEFORE clipping, which is what the function
@@ -1045,7 +1045,7 @@ def main():
                 # rollout column does not move", which took 5,456 episodes to
                 # read-.
                 _gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 0.5)
-                _grad_normas.append(float(_gn))
+                _grad_norms.append(float(_gn))
                 opt.step()
                 if a.sigma_floor > 0:
                     with torch.no_grad():
@@ -1182,12 +1182,12 @@ def main():
         # and does not enter the importance ratio, so more small steps
         # only help it. Its R2 sits at 0.80 with a measured ceiling of 0.900.
         _nmv = max(1, int(a.minibatches))
-        _tamv = max(1, _N // _nmv)
+        _size_v = max(1, _N // _nmv)
         for _ in range(a.value_epochs):
-          _ordv = torch.randperm(_N, device=dev) if _nmv > 1 else None
+          _order_v = torch.randperm(_N, device=dev) if _nmv > 1 else None
           for _jv in range(_nmv):
             if _nmv > 1:
-                _sv = _ordv[_jv * _tamv:(_jv + 1) * _tamv]
+                _sv = _order_v[_jv * _size_v:(_jv + 1) * _size_v]
                 if len(_sv) == 0:
                     continue
                 _g, _b, _h, _r = fg[_sv], fb[_sv], fh[_sv], fret[_sv]
@@ -1197,7 +1197,7 @@ def main():
             l = torch.nn.functional.smooth_l1_loss(v_pred, (_r - _vmu) / _vsd)
             opt.zero_grad(); l.backward()
             _gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 0.5)
-            _grad_normas.append(float(_gn))
+            _grad_norms.append(float(_gn))
             opt.step()
 
         # SELF-PLAY BY MERIT, not by schedule. Each "ours" rung carries a
@@ -1225,24 +1225,24 @@ def main():
         _wpp_ref = None
         if upd % max(1, a.refresh) == 0:
             _wpp_ref = env.win_rate_per_rung()
-        if _rm_actual and upd % max(1, a.refresh) == 0:
+        if _rm_now and upd % max(1, a.refresh) == 0:
             try:
                 _wpp3 = list(_wpp_ref)
-                _mios = [i for i, v in enumerate(_rm_actual) if v is not None]
+                _ours = [i for i, v in enumerate(_rm_now) if v is not None]
                 # THRESHOLD 0.5, and it is not a hand-set constant: it is the
                 # definition of "we are better than that version". It used to
                 # use `a.slide`, which defaults to 0, so `0% >= 0` was true and
                 # it relieved precisely the versions that were BEATING us
                 # 100%.
-                _dominados = [i for i in _mios
+                _dominated = [i for i in _ours
                               if i < len(_wpp3) and _wpp3[i] == _wpp3[i]
                               and _wpp3[i] > 0.5]
-                if _dominados:
-                    _nuevo = fam.mean(0).detach().cpu().numpy().tolist()
+                if _dominated:
+                    _new = fam.mean(0).detach().cpu().numpy().tolist()
                     # the most dominated of all gives up its slot
-                    _k_ref = max(_dominados, key=lambda i: _wpp3[i])
-                    _rm_actual[_k_ref] = _nuevo
-                    env.set_rival_macro(_rm_actual)
+                    _k_ref = max(_dominated, key=lambda i: _wpp3[i])
+                    _rm_now[_k_ref] = _new
+                    env.set_rival_macro(_rm_now)
                     # THE WHOLE NETWORK, not the macro vector.
                     # `set_rival_macro` sends a vector, i.e. OUR EXECUTOR WITH
                     # THE BOARD HEURISTIC and no micro head; that removes
@@ -1254,15 +1254,15 @@ def main():
                     # relief replaced it 105 times in one night without it ever
                     # ceasing to lose: it could not win, it was missing half
                     # the agent.
-                    _red_congelada = E2EAgent(cfg)
-                    _red_congelada.load_state_dict(
+                    _frozen_net = E2EAgent(cfg)
+                    _frozen_net.load_state_dict(
                         {k: v.detach().cpu().clone()
                          for k, v in net.state_dict().items()})
-                    _j_ref = _asig[_k_ref] if _asig and _k_ref < len(_asig) else _k_ref
-                    _pool_red.add(_j_ref)
+                    _j_ref = _assign[_k_ref] if _assign and _k_ref < len(_assign) else _k_ref
+                    _pool_net.add(_j_ref)
                     env.set_selfplay_on(
-                        [k for k, j in enumerate(_asig or [])
-                         if j == _j_ref] or [_k_ref], _red_congelada)
+                        [k for k, j in enumerate(_assign or [])
+                         if j == _j_ref] or [_k_ref], _frozen_net)
                     env.forget_results()
                     print(f"  [upd {upd}] rung {_k_ref} was being won at "
                           f"{_wpp3[_k_ref]:.0%}: relieved by OUR current policy. "
@@ -1272,7 +1272,7 @@ def main():
                 print(f"  warning: could not relieve self-play ({_e})",
                       flush=True)
         # ------- AUTOMATIC CURRICULUM -------
-        if a.auto_curriculum and upd % max(1, a.refresh) == 0 and _niveles:
+        if a.auto_curriculum and upd % max(1, a.refresh) == 0 and _levels:
             try:
                 # the measurement from BEFORE the relief; see `_wpp_ref` above.
                 _w4 = list(_wpp_ref) if _wpp_ref is not None else env.win_rate_per_rung()
@@ -1280,9 +1280,9 @@ def main():
                 # worker changes rung, its history stays with the rung it was
                 # playing.
                 for _k4, _v4 in enumerate(_w4):
-                    if _v4 == _v4 and _k4 < len(_asig):
-                        _p4 = _pool_p[_asig[_k4]]
-                        _pool_p[_asig[_k4]] = (0.7 * _p4 + 0.3 * _v4
+                    if _v4 == _v4 and _k4 < len(_assign):
+                        _p4 = _pool_p[_assign[_k4]]
+                        _pool_p[_assign[_k4]] = (0.7 * _p4 + 0.3 * _v4
                                                if _p4 is not None else _v4)
                 _info = [( (p4 * (1.0 - p4)) if p4 is not None else 0.25 )
                          for p4 in _pool_p]          # sin medir -> p=0.5
@@ -1301,50 +1301,50 @@ def main():
                 # Measured against a passive opponent: us $72,796, median of 63
                 # public agents $186,594. The exam distribution is them, not
                 # our own copy.
-                _n = len(_asig)
-                _es_auto = [j for j in range(len(_pool)) if _pool[j][2] is not None]
-                _es_obj = [j for j in range(len(_pool))
+                _n = len(_assign)
+                _is_self = [j for j in range(len(_pool)) if _pool[j][2] is not None]
+                _is_target = [j for j in range(len(_pool))
                            if _pool[j][1] is None and _pool[j][2] is None]
-                _qa = min(max(0, a.selfplay_quota), len(_es_auto), _n)
-                _qo = min(max(0, a.target_quota), len(_es_obj), _n - _qa)
-                _fijos = ([_es_auto[i % len(_es_auto)] for i in range(_qa)]
-                          + [_es_obj[i % len(_es_obj)] for i in range(_qo)])
-                _libres = _n - len(_fijos)
+                _qa = min(max(0, a.selfplay_quota), len(_is_self), _n)
+                _qo = min(max(0, a.target_quota), len(_is_target), _n - _qa)
+                _fixed = ([_is_self[i % len(_is_self)] for i in range(_qa)]
+                          + [_is_target[i % len(_is_target)] for i in range(_qo)])
+                _free = _n - len(_fixed)
                 # the rest by information, and ONLY over the rungs that do
                 # not have a quota of their own
-                _resto = [j for j in range(len(_pool))
-                          if j not in set(_es_auto) | set(_es_obj)]
-                _tot = sum(_info[j] for j in _resto) if _resto else 0.0
-                if _libres > 0 and _tot > 1e-9:
-                    _nuevo_asig = list(_fijos)
-                    for _j4 in _resto:
-                        _nuevo_asig += [_j4] * max(0, int(round(_libres * _info[_j4] / _tot)))
-                    _mejor = max(_resto, key=lambda j: _info[j])
-                    _nuevo_asig = (_nuevo_asig[:len(_fijos)]
-                                   + _nuevo_asig[len(_fijos):][:_libres])
-                    _nuevo_asig += [_mejor] * (_n - len(_nuevo_asig))
-                    _nuevo_asig = _nuevo_asig[:_n]
-                elif _libres > 0:
-                    _nuevo_asig = list(_fijos) + [_fijos[-1] if _fijos else 0] * _libres
+                _rest = [j for j in range(len(_pool))
+                          if j not in set(_is_self) | set(_is_target)]
+                _total = sum(_info[j] for j in _rest) if _rest else 0.0
+                if _free > 0 and _total > 1e-9:
+                    _new_assign = list(_fixed)
+                    for _j4 in _rest:
+                        _new_assign += [_j4] * max(0, int(round(_free * _info[_j4] / _total)))
+                    _best = max(_rest, key=lambda j: _info[j])
+                    _new_assign = (_new_assign[:len(_fixed)]
+                                   + _new_assign[len(_fixed):][:_free])
+                    _new_assign += [_best] * (_n - len(_new_assign))
+                    _new_assign = _new_assign[:_n]
+                elif _free > 0:
+                    _new_assign = list(_fixed) + [_fixed[-1] if _fixed else 0] * _free
                 else:
-                    _nuevo_asig = list(_fijos)[:_n]
+                    _new_assign = list(_fixed)[:_n]
                 if True:
-                    if _nuevo_asig != _asig:
-                        _asig = _nuevo_asig
-                        env.set_rival_cap([_pool[j][1] for j in _asig])
-                        env.raise_level([_pool[j][0] for j in _asig])
-                        env.set_rival_macro([_pool[j][2] for j in _asig])
+                    if _new_assign != _assign:
+                        _assign = _new_assign
+                        env.set_rival_cap([_pool[j][1] for j in _assign])
+                        env.raise_level([_pool[j][0] for j in _assign])
+                        env.set_rival_macro([_pool[j][2] for j in _assign])
                         # Self-play rungs carry a NETWORK, not a vector, and
                         # `set_rival_macro` has just overwritten it everywhere.
                         # It is restored to the workers that land on one.
-                        if _pool_red and _red_congelada is not None:
-                            _vuelven = [k for k, j in enumerate(_asig)
-                                        if j in _pool_red]
-                            if _vuelven:
-                                env.set_selfplay_on(_vuelven, _red_congelada)
+                        if _pool_net and _frozen_net is not None:
+                            _returning = [k for k, j in enumerate(_assign)
+                                        if j in _pool_net]
+                            if _returning:
+                                env.set_selfplay_on(_returning, _frozen_net)
                         env.forget_results()
                         _res = {}
-                        for j in _asig:
+                        for j in _assign:
                             _res[j] = _res.get(j, 0) + 1
                         print(f"  [upd {upd}] CURRICULUM: split by information "
                               f"-> " + ", ".join(
@@ -1352,7 +1352,7 @@ def main():
                               flush=True)
             except Exception as _e:
                 print(f"  aviso: curriculo automatico ({_e})", flush=True)
-        if a.slide > 0 and upd % 25 == 0 and _niveles:
+        if a.slide > 0 and upd % 25 == 0 and _levels:
             try:
                 _wpp = env.win_rate_per_rung()
                 # the easiest rung is the first in the list
@@ -1362,21 +1362,21 @@ def main():
                     # all eleven rungs would end up being the same opponent and
                     # we would lose the variety that is the reason for having
                     # eleven.
-                    _estilos = sorted(set(_niveles))
-                    _sig = _estilos[(_estilos.index(_niveles[-1]) + 1)
-                                    % len(_estilos)]
-                    _rivtope = _rivtope[1:] + [_rivtope[-1]]
-                    _niveles = _niveles[1:] + [_sig]
-                    env.set_rival_cap(_rivtope)
-                    env.raise_level(_niveles)
+                    _styles = sorted(set(_levels))
+                    _sig = _styles[(_styles.index(_levels[-1]) + 1)
+                                    % len(_styles)]
+                    _rival_cap = _rival_cap[1:] + [_rival_cap[-1]]
+                    _levels = _levels[1:] + [_sig]
+                    env.set_rival_cap(_rival_cap)
+                    env.raise_level(_levels)
                     env.forget_results()
                     print(f"  [upd {upd}] LADDER SLID: the easiest rung "
                           f"easiest was won at {_wpp[0]:.0%}; dropped from sampling. "
-                          f"topes ahora {_rivtope}", flush=True)
+                          f"topes ahora {_rival_cap}", flush=True)
             except Exception as _e:
                 print(f"  warning: could not slide the ladder ({_e})", flush=True)
         if (a.promote_rival > 0 and upd % 5 == 0
-                and upd - _ultima_promo >= a.refresh):
+                and upd - _last_promo >= a.refresh):
             # The minimum separation is `--refresh`. Without it promotion
             # cascades: clearing the history is not enough because five updates
             # later the new window has very few episodes and, winning, gives
@@ -1388,14 +1388,14 @@ def main():
                 # so the next stretch is played against an adversary that
                 # already knows what we knew, and the binary signal regains
                 # variance.
-                _nuevo = E2EAgent(cfg)
-                _nuevo.load_state_dict({k: v.detach().cpu().clone()
+                _new = E2EAgent(cfg)
+                _new.load_state_dict({k: v.detach().cpu().clone()
                                         for k, v in net.state_dict().items()})
-                env.set_selfplay(_nuevo)
+                env.set_selfplay(_new)
                 # Without this promotion cascades: the 60-episode window is
                 # still full of wins against the old opponent.
                 env.forget_results()
-                _ultima_promo = upd
+                _last_promo = upd
                 print(f"  [upd {upd}] RIVAL PROMOCIONADO (win={_wr:.3f} >= "
                       f"{a.promote_rival}): pasa a ser una copia de la "
                       f"politica actual", flush=True)
@@ -1419,15 +1419,15 @@ def main():
             # `TENURE` prevents churn: a league is judged over at least
             # ese numero de updates dentro.
             if a.leagues:
-                _en_liga += 1
-                if _en_liga >= PERMANENCIA:
+                _in_league += 1
+                if _in_league >= STAY:
                     # DESCENSO POR INACCION, no por victoria. La victoria no
                     # detects collapse: measured, a self-play league climbed
                     # four rungs at win=1.00 while money stayed
                     # en 3.000 $ -la caja inicial- y el margen real caia a
                     # -98.3%. `x_inaction` does detect it, at ANY scale:
                     # 1.0 means the policy is doing nothing.
-                    _inac = env.mean_money() / 3000.0
+                    _inaction = env.mean_money() / 3000.0
                     _RIV_ULT[0] = float((env.rival_stats() or {}).get("dinero", 0.0) or 0.0)
                     # AND NO PROMOTION WHILE INERT. A rung is passed by
                     # PRODUCING value, not by outliving an even worse opponent:
@@ -1453,25 +1453,25 @@ def main():
                     #     una politica inerte.
                     # What must be demanded is 90% of the LEARNABLE margin,
                     # que es lo que hay por encima de no hacer nada.
-                    _techo_l = LIGAS[_liga][4]
-                    _obj_inac = 1.0 + FRAC_TECHO * max(0.0, _techo_l - 1.0)
-                    _marg_actual = _din - _RIV_ULT[0]
-                    if _inac >= _obj_inac and _liga < len(LIGAS) - 1:
-                        _liga += 1
-                        print(f"  [upd {upd}] ASCIENDE: x_inaccion {_inac:.3f} "
-                              f">= {_obj_inac:.3f} (techo {_techo_l:.2f}), "
-                              f"margen {_marg_actual:.0f} ->", flush=True)
-                    elif _inac < 0.35 * LIGAS[_liga][4] and _liga > 0:
-                        _liga -= 1
+                    _ceiling_l = LEAGUES[_league][4]
+                    _target_inaction = 1.0 + CEILING_FRAC * max(0.0, _ceiling_l - 1.0)
+                    _margin_now = _money - _RIV_ULT[0]
+                    if _inaction >= _target_inaction and _league < len(LEAGUES) - 1:
+                        _league += 1
+                        print(f"  [upd {upd}] ASCIENDE: x_inaccion {_inaction:.3f} "
+                              f">= {_target_inaction:.3f} (techo {_ceiling_l:.2f}), "
+                              f"margen {_margin_now:.0f} ->", flush=True)
+                    elif _inaction < 0.35 * LEAGUES[_league][4] and _league > 0:
+                        _league -= 1
                         print(f"  [upd {upd}] DESCIENDE: politica inerte "
-                              f"(x_inaccion {_inac:.2f}) ->", flush=True)
+                              f"(x_inaccion {_inaction:.2f}) ->", flush=True)
                     else:
-                        _en_liga = PERMANENCIA - 1   # sigue midiendo
-                        _liga = _liga
-                    if _en_liga >= PERMANENCIA:
-                        env.cerrar(); env = _monta_liga(_liga); _en_liga = 0
-                        acum[:] = 0.0; ret_ep.clear()
-            if usar_ml:
+                        _in_league = STAY - 1   # sigue midiendo
+                        _league = _league
+                    if _in_league >= STAY:
+                        env.close_(); env = _build_league(_league); _in_league = 0
+                        accum[:] = 0.0; ret_ep.clear()
+            if use_mlflow:
                 try:
                     import mlflow
                     # WHAT IS LOGGED AND WHY. Through a whole debugging
@@ -1490,17 +1490,17 @@ def main():
                     # la instantanea congelada hacia 2.588, o sea PEOR que la
                     # inaction, and beating it required doing nothing. `win` said
                     # 1,00 y el margen real era -98,3 %.
-                    _din = env.mean_money()
-                    _inercia = _din / float(
+                    _money = env.mean_money()
+                    _inertia = _money / float(
                         spec.DEFAULT_CONFIG.get("startingMoney", 3000) or 3000)
                     # Only when the horizon is SINGLE. When mixed, `league` is
                     # constante y sobra, y el dinero promediado entre 15/20/30
                     # days means nothing: it is broken down.
                     _extra = {}
                     if a.leagues:
-                        _extra["league"] = float(_liga)
-                    _porh = getattr(env, "money_by_horizon", lambda: {})()
-                    if len(_porh) > 1:
+                        _extra["league"] = float(_league)
+                    _by_horizon = getattr(env, "money_by_horizon", lambda: {})()
+                    if len(_by_horizon) > 1:
                         # PER RUNG, and in multiples of inaction as well as in
                         # dollars. Inaction is $3,000 at ANY scale -not spending
                         # leaves the cash still- so x_inaction IS comparable
@@ -1508,28 +1508,28 @@ def main():
                         # cannot earn what a 720-turn one does, and averaging
                         # them hides exactly what must be watched, which is
                         # whether SOME rung has gone inert.
-                        for _d, _v in _porh.items():
+                        for _d, _v in _by_horizon.items():
                             _extra[f"money_{_d}"] = float(_v)
                             _extra[f"x_inaction_{_d}"] = float(_v) / 3000.0
-                        _xs = [v / 3000.0 for v in _porh.values()]
+                        _xs = [v / 3000.0 for v in _by_horizon.values()]
                         _extra["x_inaction_min"] = float(min(_xs))
                         _extra["inert_rungs"] = float(
                             sum(1 for x in _xs if x < 1.02))
                     else:
-                        _extra["over_inaction"] = float(_inercia)
-                    if len(_porh) > 1:
+                        _extra["over_inaction"] = float(_inertia)
+                    if len(_by_horizon) > 1:
                         # With a grid the average is useless as a warning: it
                         # mixes 24-turn and 720-turn rungs. Warn per rung.
-                        _inertes = [k for k, v in _porh.items()
+                        _inert = [k for k, v in _by_horizon.items()
                                     if v / 3000.0 < 1.02]
-                        if _inertes and upd > 20:
-                            print(f"  AVISO upd {upd}: INERTES {len(_inertes)}/"
-                                  f"{len(_porh)} -> " + ", ".join(
-                                      f"{k} {_porh[k]/3000.0:.2f}x"
-                                      for k in _inertes), flush=True)
-                    elif _inercia < 1.05 and upd > 20:
-                        print(f"  AVISO upd {upd}: dinero {_din:.0f} ~ "
-                              f"no-hacer-nada ({_inercia:.2f}x). Politica inerte.",
+                        if _inert and upd > 20:
+                            print(f"  AVISO upd {upd}: INERTES {len(_inert)}/"
+                                  f"{len(_by_horizon)} -> " + ", ".join(
+                                      f"{k} {_by_horizon[k]/3000.0:.2f}x"
+                                      for k in _inert), flush=True)
+                    elif _inertia < 1.05 and upd > 20:
+                        print(f"  AVISO upd {upd}: dinero {_money:.0f} ~ "
+                              f"no-hacer-nada ({_inertia:.2f}x). Politica inerte.",
                               flush=True)
                     # DASHBOARD EN CUATRO GRUPOS. Antes eran 19 metricas
                     # planas mezclando "voy ganando" con "la maquinaria esta
@@ -1540,13 +1540,13 @@ def main():
                     _m = {
                         # 1_RESULT: the only thing that says whether we are winning.
                         "1_result/win_rate": float(wr),
-                        "1_result/margin_pct": (100.0 * (_din - _RIV) / _RIV
+                        "1_result/margin_pct": (100.0 * (_money - _RIV) / _RIV
                                                    if _RIV > 0 else 0.0),
                         # x1 = no hacer nada. MEDIDO: la inaccion deja los
                         # 3.000 $ iniciales a CUALQUIER horizonte. (El "245 $"
                         # que se cito antes era otra cosa: unidades quietas
                         # but the market layer buying, which loses.)
-                        "1_result/x_inaction": _din / 3000.0,
+                        "1_result/x_inaction": _money / 3000.0,
                         # 2_SALUD: si la maquinaria aprende.
                         "2_health/critic_r2": float(_r2),
                         "2_health/kl_per_dim": float(kl),
@@ -1562,20 +1562,20 @@ def main():
                         "4_diag/reward": float(R.sum(0).mean()),
                     }
                     if not a.mix:
-                        _m["1_result/money"] = _din
+                        _m["1_result/money"] = _money
                     # DAMAGE PER HORIZON: how much we take from the opponent
                     # relative to what it makes against a PASSIVE player at THAT
                     # SAME horizon. It is the only competitive signal that moves
                     # while we lose every episode. The 30-day baseline applied
                     # to 15-day games used to lie: it read "thrashing" when all
                     # that happened was that the game was short.
-                    _rporh = getattr(env, "rival_by_horizon", lambda: {})()
-                    for _d, _rv_d in _rporh.items():
+                    _riv_by_horizon = getattr(env, "rival_by_horizon", lambda: {})()
+                    for _d, _rv_d in _riv_by_horizon.items():
                         _b = BASE_PER_HORIZON.get(_d, {}).get(a.level, 0.0)
                         if _b > 0:
                             _m[f"3_context/damage_{_d}d_pct"] = 100.0 * (1.0 - _rv_d / _b)
                     # Scenario: always present, so the run can be followed.
-                    _m["3_context/league"] = float(_liga) if a.leagues else -1.0
+                    _m["3_context/league"] = float(_league) if a.leagues else -1.0
                     _m["3_context/rival_level"] = float(a.level)
                     for _k, _v in _extra.items():
                         _m[("1_result/" if _k.startswith("money")
@@ -1593,8 +1593,8 @@ def main():
                         # rest
                         # parece normal. El sintoma indirecto -"el despliegue
                         # no se mueve"- tardo 5.456 episodios en leerse.
-                        if _grad_normas:
-                            _gg = _grad_normas[-50:]
+                        if _grad_norms:
+                            _gg = _grad_norms[-50:]
                             _m["2_health/grad_norm"] = float(np.mean(_gg))
                             _m["2_health/grad_zero_pct"] = 100.0 * float(
                                 np.mean([g < 1e-9 for g in _gg]))
@@ -1625,7 +1625,7 @@ def main():
                             # not even being played.
                             _wpp2 = env.win_rate_per_rung()
                             _rpp2 = env.rival_per_rung()
-                            _map = (_asig if _asig else list(range(len(_wpp2))))
+                            _map = (_assign if _assign else list(range(len(_wpp2))))
                             for _i2, _v2 in enumerate(_wpp2):
                                 if _v2 == _v2 and _i2 < len(_map):
                                     _m[f"5_rung/win_{_map[_i2]:02d}"] = float(_v2)
@@ -1646,7 +1646,7 @@ def main():
                         _m["2_health/sigma_floor"] = float(a.sigma_floor)
                         # x_inaccion: 1.0 = la politica esta INERTE. Cuatro
                         # different collapses would have been visible at a glance.
-                        _m["1_result/x_inaction"] = float(_din) / 3000.0
+                        _m["1_result/x_inaction"] = float(_money) / 3000.0
                         # how much of the macro depends on the STATE. If it is
                         # ~0 the head emits a constant and conditions nothing.
                         _m["2_health/macro_w_norm"] = float(net.macro_mu.weight.norm())
@@ -1673,29 +1673,29 @@ def main():
         # --- red de seguridad: comprobar y, si toca, rescatar ---
         if ret_ep and len(ret_ep) >= 40:
             _r80 = float(np.mean(ret_ep[-80:]))
-            _prev = _salvavidas["ret"]
+            _prev = _lifeline["ret"]
             # DROP RELATIVE TO MAGNITUDE, not a fraction of the value: with
             # retornos NEGATIVOS `r < 0.5*prev` se invierte -de -0,8 a -0,7 es
             # an IMPROVEMENT and fired the rescue-. This works for both signs.
-            _umbral = _prev - 0.5 * abs(_prev) if _prev is not None else None
-            if _prev is not None and _r80 < _umbral and _salvavidas["sd"] is not None:
-                net.load_state_dict(_salvavidas["sd"])
+            _threshold = _prev - 0.5 * abs(_prev) if _prev is not None else None
+            if _prev is not None and _r80 < _threshold and _lifeline["sd"] is not None:
+                net.load_state_dict(_lifeline["sd"])
                 try:
-                    opt.load_state_dict(_salvavidas["opt"])
+                    opt.load_state_dict(_lifeline["opt"])
                 except Exception:
                     pass
                 for _gr in opt.param_groups:
                     _gr["lr"] = max(1e-6, _gr["lr"] * 0.5)
-                _salvavidas["rescates"] += 1
+                _lifeline["rescates"] += 1
                 ret_ep.clear()
-                print(f"  [upd {upd}] RESCATE {_salvavidas['rescates']}: el retorno "
+                print(f"  [upd {upd}] RESCATE {_lifeline['rescates']}: el retorno "
                       f"fell from {_prev:.1f} to {_r80:.1f}; restoring the last "
                       f"good state and halving the pace", flush=True)
             elif _prev is None or _r80 > _prev:
-                _salvavidas["ret"] = _r80
-                _salvavidas["sd"] = {k: v.detach().cpu().clone()
+                _lifeline["ret"] = _r80
+                _lifeline["sd"] = {k: v.detach().cpu().clone()
                                      for k, v in net.state_dict().items()}
-                _salvavidas["opt"] = opt.state_dict()
+                _lifeline["opt"] = opt.state_dict()
 
         if ret_ep and len(ret_ep) >= 20:
             r80 = float(np.mean(ret_ep[-80:]))

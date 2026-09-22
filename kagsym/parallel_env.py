@@ -22,7 +22,7 @@ import numpy as np
 
 
 def _worker(conn, n_envs, steps, seed0, macro_vec, level,
-                tope_peones=None, hours=None, idx0=0, n_total=None):
+                hand_cap=None, hours=None, idx0=0, n_total=None):
     import os
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -44,9 +44,9 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
     # The cap lives in a module global and workers are separate PROCESSES:
     # setting it in the parent does not reach here. It must be passed
     # explicitly.
-    if tope_peones is not None:
+    if hand_cap is not None:
         from . import macro as _M
-        _M.HAND_CAP = tope_peones
+        _M.HAND_CAP = hand_cap
     from kagsym.environment import DayEnv
     from kagsym.macro import Macro
 
@@ -54,12 +54,12 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
                      macro=Macro.from_vector(macro_vec), level=level,
                      idx0=idx0, n_total=n_total)
     while True:
-        cmd, datos = conn.recv()
+        cmd, data = conn.recv()
         if cmd == "codifica":
             conn.send(env.encode())
         elif cmd == "paso":
-            mapas, macros = datos
-            rec, fin = env.step_day(mapas=mapas, macros=macros)
+            maps, macros = data
+            rec, fin = env.step_day(maps=maps, macros=macros)
             conn.send((rec, fin, env.win_rate(), env.mean_money(),
                        env.mean_useful(), env.rival_stats(),
                        env.mean_unsold(), env.masks()))
@@ -73,7 +73,7 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
             from kagsym.macro import Macro as _Mac, N_MACRO
             from kagsym.nets.world import E2EAgent, WorldConfig
             from kagsym import obs as _O
-            sd, cfgd = datos
+            sd, cfgd = data
             _net = E2EAgent(WorldConfig(**{k: v for k, v in cfgd.items()
                                             if k in WorldConfig.__dataclass_fields__}))
             _net.load_state_dict(sd)
@@ -139,10 +139,10 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
             from .environment import public_with_cap as _pct, load_public as _cp
             _n = "v48-fast-routes"
             env.set_rival_policy(
-                (lambda: _cp(_n)) if datos is None else (lambda t=datos: _pct(_n, t)))
+                (lambda: _cp(_n)) if data is None else (lambda t=data: _pct(_n, t)))
             conn.send(True)
         elif cmd == "rival_macro":
-            env.set_rival_macro(datos)
+            env.set_rival_macro(data)
             conn.send(True)
         elif cmd == "olvida_resultados":
             # Clears the win history. Needed when PROMOTING the opponent:
@@ -152,7 +152,7 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
             env.results.clear()
             conn.send(True)
         elif cmd == "nivel":
-            env.level = datos
+            env.level = data
             conn.send(True)
         elif cmd == "cerrar":
             conn.close()
@@ -163,7 +163,7 @@ class ParallelEnv:
     """The same interface as `DayEnv`, spread across processes."""
 
     def __init__(self, n_envs, n_procs=8, steps=720, seed0=1, macro=None, level=2,
-                 tope_peones=None, hours=None):
+                 hand_cap=None, hours=None):
         self.n_procs = min(n_procs, n_envs)
         self.n = n_envs
         # HORIZON PER WORKER. `steps` may be a list: each process plays
@@ -189,7 +189,7 @@ class ParallelEnv:
 
         self.steps_proc = [int(x) for x in _split_envs(steps)]
         self.hours_proc = _split_envs(hours)
-        self.tope_proc = _split_envs(tope_peones)
+        self.cap_per_proc = _split_envs(hand_cap)
 
         # SPLIT BY COST, not per head. With a heterogeneous grid a 720-turn
         # rung costs 30 times a 24-turn one, and splitting episodes evenly
@@ -198,31 +198,31 @@ class ParallelEnv:
         # takes roughly the same time and the batch still sums to `n_envs`.
         # Minimum one per worker: a rung with no episodes contributes no
         # gradient and the network would stop seeing that scale.
-        peso = [1.0 / p for p in self.steps_proc]
-        total = sum(peso)
-        self.por_proc = [max(1, int(n_envs * w / total)) for w in peso]
-        sobran = n_envs - sum(self.por_proc)
+        weight = [1.0 / p for p in self.steps_proc]
+        total = sum(weight)
+        self.envs_per_proc = [max(1, int(n_envs * w / total)) for w in weight]
+        sobran = n_envs - sum(self.envs_per_proc)
         i = 0
         while sobran != 0:                     # hand out the remainder by weight
-            k = max(range(self.n_procs), key=lambda j: peso[j] / self.por_proc[j])
+            k = max(range(self.n_procs), key=lambda j: weight[j] / self.envs_per_proc[j])
             if sobran > 0:
-                self.por_proc[k] += 1; sobran -= 1
+                self.envs_per_proc[k] += 1; sobran -= 1
             else:
-                k = min((j for j in range(self.n_procs) if self.por_proc[j] > 1),
-                        key=lambda j: peso[j], default=None)
+                k = min((j for j in range(self.n_procs) if self.envs_per_proc[j] > 1),
+                        key=lambda j: weight[j], default=None)
                 if k is None:
-                    self.n = sum(self.por_proc)
+                    self.n = sum(self.envs_per_proc)
                     break
-                self.por_proc[k] -= 1; sobran += 1
+                self.envs_per_proc[k] -= 1; sobran += 1
             i += 1
             if i > 10 * n_envs:
                 break
-        self.n = sum(self.por_proc)
+        self.n = sum(self.envs_per_proc)
         ctx = mp.get_context("fork")
         self.conns, self.procs = [], []
         off = 0
         vec = list(macro.to_vector()) if hasattr(macro, "to_vector") else list(macro)
-        for k, m in enumerate(self.por_proc):
+        for k, m in enumerate(self.envs_per_proc):
             padre, hijo = ctx.Pipe()
             # DISJOINT seeds per worker: if they overlap, several processes
             # play the same episode and the batch stops being independent.
@@ -230,7 +230,7 @@ class ParallelEnv:
                             args=(hijo, m, self.steps_proc[k], seed0, vec,
                                   (level[k % len(level)]
                                    if isinstance(level, (list, tuple)) else level),
-                                  self.tope_proc[k],
+                                  self.cap_per_proc[k],
                                   self.hours_proc[k], off, n_envs),
                             daemon=True)
             p.start()
@@ -251,10 +251,10 @@ class ParallelEnv:
                 np.concatenate([p[1] for p in partes]),
                 np.concatenate([p[2] for p in partes]))
 
-    def step_day(self, mapas=None, macros=None):
+    def step_day(self, maps=None, macros=None):
         off = 0
-        for c, m in zip(self.conns, self.por_proc):
-            c.send(("paso", (None if mapas is None else mapas[off:off + m],
+        for c, m in zip(self.conns, self.envs_per_proc):
+            c.send(("paso", (None if maps is None else maps[off:off + m],
                              None if macros is None else macros[off:off + m])))
             off += m
         rec, fin, masks_ = [], [], []
@@ -450,23 +450,23 @@ class ParallelEnv:
         """
         return list(self._wr)
 
-    def win_rate(self, ultimos=60):
+    def win_rate(self, last=60):
         return self._media(self._wr)
 
-    def mean_money(self, ultimos=50):
+    def mean_money(self, last=50):
         return self._media(self._din)
 
-    def mean_useful(self, ultimos=400):
+    def mean_useful(self, last=400):
         return self._media(self._util)
 
-    def rival_stats(self, ultimos=50):
+    def rival_stats(self, last=50):
         vs = [r for r in self._riv if r]
         if not vs:
             return {"dinero": float("nan"), "cultivos": float("nan"),
                     "animales": float("nan"), "unidades": float("nan")}
         return {k: self._media([r[k] for r in vs]) for k in vs[0]}
 
-    def mean_unsold(self, ultimos=50):
+    def mean_unsold(self, last=50):
         return self._media(self._sinliq)
 
     def cerrar(self):
