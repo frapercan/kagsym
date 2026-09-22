@@ -38,6 +38,33 @@ from .symbolic.market_ops import marginal_prices
 import os
 
 FIRST_PRODUCT_BONUS = float(os.environ.get("KAG_BONUS", "0.2"))
+# WEIGHT OF THE DENSE TERM AGAINST THE SHAPING. Measured over a real episode,
+# the return decomposes as 54.6% dense sales, 41.9% potential shaping, 1.9%
+# first-product bonus and 1.6% the win itself. Selling is the act that closes
+# the SHORTEST cycle in the game, and it is the majority of what the policy is
+# paid for; a five-day play -buy an animal, build, place, feed daily, harvest-
+# is paid only through the potential.
+#
+# `SCALE` cannot express this: it divides the dense term and the potential
+# alike, so it moves the size of the reward and not its balance. This is the
+# knob that moves the balance, and at 0 the objective becomes "maximise what
+# has time to turn into cash", with selling paid only through the value it
+# realises.
+#
+# It belongs to the exam, so it is set from OUTSIDE and never learned: a
+# policy that could weigh its own reward would choose the easy one.
+DENSE_WEIGHT = float(os.environ.get("KAG_DENSO", "1.0"))
+# WEIGHT OF THE WIN ITSELF. Measured over a real episode, the +-1 for winning
+# is 1.6% of the return: the objective is already almost entirely "make money",
+# and the competitive part is a rounding error that nonetheless makes the
+# objective RELATIVE -- which matters, because what has been measured four
+# times is a policy improving against its training opponents while getting
+# worse against a fixed one.
+#
+# At 0 the objective stops referring to the opponent at all and becomes "the
+# money I end with". Like the other two, it belongs to the exam and is set
+# from outside.
+WIN_WEIGHT = float(os.environ.get("KAG_PESO_WIN", "1.0"))
 SCALE = float(os.environ.get("KAG_ESCALA", "2000.0"))
 
 # COMPETITIVE TERM, continuous in the MARGIN.

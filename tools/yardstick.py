@@ -16,6 +16,12 @@ import numpy as np, torch
 
 H, D, CASH = 24, 30, 3000
 SEEDS = list(range(601, 609))        # fixed: comparable across checkpoints
+# The opponent is v48 at full power by default -- the external thermometer.
+# With KAG_VARA_PASIVO=1 it is the passive agent instead, which measures
+# ABSOLUTE production with the market uncontested. The references there are
+# known: inaction $3,000, us $72,796, the median of 63 public agents $186,594
+# and the relaxed upper bound $195,532.
+PASSIVE = bool(int(os.environ.get("KAG_VARA_PASIVO", "0")))
 
 
 def evaluate(ckpt):
@@ -43,7 +49,11 @@ def evaluate(ckpt):
                                      "startingMoney": CASH}, seed=s)
         o = env.reset()
         ag = Agent(episode_steps=H * D, macro=Macro.from_vector([0.5] * N_MACRO))
-        rv = public_with_cap("v48-fast-routes", 10**6)
+        if PASSIVE:
+            from kaggle_environments.envs.kaggriculture import kaggriculture as _E
+            rv = _E.pass_agent
+        else:
+            rv = public_with_cap("v48-fast-routes", 10**6)
         day = None
         with torch.no_grad():
             while not env.done:
@@ -71,7 +81,8 @@ def evaluate(ckpt):
 
 
 if __name__ == "__main__":
-    print(f"external yardstick: {H}h x {D}d, cash {CASH}, against v48, "
+    print(f"external yardstick: {H}h x {D}d, cash {CASH}, against "
+          f"{'the PASSIVE agent' if PASSIVE else 'v48'}, "
           f"{len(SEEDS)} fixed seeds\n")
     print(f"  {'checkpoint':>34} {'upd':>5} {'money':>9} {'v48':>9} "
           f"{'margin%':>8} {'wins':>6} {'s':>5}")

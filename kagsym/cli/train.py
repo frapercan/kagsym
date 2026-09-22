@@ -267,6 +267,15 @@ def main():
                          "trunk keeps what is relevant. Watch "
                          "`2_health/jepa_sd`: if it falls to zero, "
                          "the representation has collapsed")
+    ap.add_argument("--outer-every", type=int, default=0,
+                    help="updates between OUTER checks: the kl target is "
+                         "raised or lowered by a PAIRED comparison of the "
+                         "policy against itself N updates ago, on fixed "
+                         "seeds against a fixed opponent. 0 = off, and the "
+                         "target stays the hand-picked constant")
+    ap.add_argument("--outer-seeds", type=int, default=24,
+                    help="seeds per outer check; paired, so the scenario "
+                         "variance cancels and a few dozen suffice")
     ap.add_argument("--keys", type=int, default=4,
                     help="K assignment keys and K queries per tile: the term "
                          "that lets the network prefer a tile FOR A UNIT. "
@@ -679,6 +688,14 @@ def main():
         mlflow.set_experiment("kaggriculture-world-model")
         mlflow.start_run(run_name=a.run_name)
         mlflow.log_params(vars(a))
+        # The exam itself. It is set from outside through the environment, so
+        # without this a run could not be told apart from another trained on a
+        # different objective.
+        from kagsym import reward as _Rw
+        mlflow.log_params({"peso_denso": _Rw.DENSE_WEIGHT,
+                           "peso_win": _Rw.WIN_WEIGHT,
+                           "bonus_producto": _Rw.FIRST_PRODUCT_BONUS,
+                           "escala": _Rw.SCALE})
         # REFERENCES. A money curve cannot be read without its baselines.
         mlflow.log_params({
             "ref_inaction": 3000,            # measured, at any horizon
@@ -727,6 +744,8 @@ def main():
     _lifeline = {"ret": None, "sd": None, "opt": None, "rescates": 0}
     _grad_norms = []
     _sig_grads = []
+    _prev_sd = None
+    _outer_last = None
     _last_promo = -10**9
     ret_ep = []          # returns of CLOSED EPISODES, not per-update sums
     accum = np.zeros(a.envs, dtype=np.float64)
@@ -1794,6 +1813,10 @@ def main():
                         try:
                             if _explore == _explore:
                                 _m["2_health/verb_explore_pct"] = 100.0 * _explore
+                            _m["2_health/kl_target"] = float(a.kl_target)
+                            if _outer_last and _outer_last[0] is not None:
+                                _m["1_result/outer_paired_diff"] = float(_outer_last[0])
+                                _m["1_result/outer_money"] = float(_outer_last[2])
                             _m["2_health/kl_macro"] = float(kl_ma)
                             _m["2_health/kl_micro"] = float(kl_mi)
                             _m["4_diag/lr_macro"] = float(opt.param_groups[1]["lr"])
@@ -1861,6 +1884,28 @@ def main():
                         "upd": upd, "fingerprint": fingerprint(),
                         "model_fingerprint": model_fingerprint(),
                         "opt": opt.state_dict()}, a.out + ".ultimo")
+        # --- OUTER LEVEL: the kl target, set by measured money ---
+        if a.outer_every > 0 and upd % a.outer_every == 0:
+            try:
+                from kagsym import outer as _out
+                import os as _os
+                _sds = list(range(9301, 9301 + int(a.outer_seeds)))
+                _pas = bool(int(_os.environ.get("KAG_VARA_PASIVO", "0")))
+                _dif, _se, _now = _out.check(
+                    net, _prev_sd, cfg, _sds, spec.TURNS_PER_DAY,
+                    spec.EPISODE_STEPS // spec.TURNS_PER_DAY, 3000, _pas)
+                _new, _why = _out.new_target(a.kl_target, _dif, _se)
+                if _new != a.kl_target:
+                    print(f"  [upd {upd}] OBJETIVO KL {a.kl_target:.4f} -> "
+                          f"{_new:.4f} ({_why}: {_dif:+,.0f} +- {_se:,.0f})",
+                          flush=True)
+                a.kl_target = _new
+                _prev_sd = {k: v.detach().cpu().clone()
+                            for k, v in net.state_dict().items()}
+                _outer_last = (_dif, _se, _now)
+            except Exception as _e:
+                print(f"  warning: outer check failed ({_e})", flush=True)
+
         # --- safety net: check and, if due, rescue ---
         if ret_ep and len(ret_ep) >= 40:
             _r80 = float(np.mean(ret_ep[-80:]))

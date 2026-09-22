@@ -22,6 +22,8 @@ from .macro import Macro
 from .reward import ProductionLedger
 from .reward import RIVAL_WEIGHT as _RIVAL_W
 from .reward import ILLEGAL_WEIGHT as _ILLEGAL_W
+from .reward import DENSE_WEIGHT as _DENSE_W
+from .reward import WIN_WEIGHT as _WIN_W
 
 # spec.TURNS_PER_DAY is read at call time (see spec.set_turns_per_day): as a
 # module alias it froze at import and stopped following `turnsPerDay`, silently
@@ -393,7 +395,7 @@ class DayEnv:
                                 rec[i] -= _ILLEGAL_W / self.scale
                 counter.harvested(ob, acc, 0)
                 income, bonus = counter.sold(ob, acc)
-                rec[i] += income / self.scale + bonus
+                rec[i] += _DENSE_W * (income / self.scale) + bonus
                 try:
                     rival = self._rival[i](self.obs[i][1])
                 except Exception:
@@ -443,7 +445,7 @@ class DayEnv:
                 if _RIVAL_W:
                     rec[i] -= _RIVAL_W * float(r[1]) / self.scale
                 res = 1.0 if r[0] > r[1] else (0.5 if r[0] == r[1] else 0.0)
-                rec[i] += 2.0 * res - 1.0
+                rec[i] += _WIN_W * (2.0 * res - 1.0)
                 self.results.append(res)
                 self.finals.append(float(r[0]))
                 self.rival_finals.append(float(r[1]))

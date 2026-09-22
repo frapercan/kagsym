@@ -518,6 +518,10 @@ CARE_VALUE = 0.5            # caring for an animal
 # unit in flight never keeps its destination, which is how the assignment
 # behaved before this existed. Learned (`f_commit`).
 COMMIT_FRACTION = 2.0
+# What a CHAINED errand is worth against a task the unit can do right now.
+# 0 drops the pair, which is how the matrix behaved before chains existed.
+# Learned (`f_chain`).
+CHAIN_VALUE = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -915,8 +919,36 @@ def _can_do(inv, op) -> bool:
 # LEARNED like the others, not set by hand.
 
 
+def _chain_for(pos, tile, op, inv, ctx):
+    """(shed tile, item, quantity, total distance) to fetch what `op` needs.
+
+    None when the operation needs nothing this unit lacks, or when the shed
+    does not hold it -- in which case the pair is dropped as before.
+    """
+    if not ctx or not ctx.get("access"):
+        return None
+    item = REQUIRES.get(op[0])
+    if item is None and op[0] == "PLACE" and len(op) > 1:
+        item = op[1]
+    if item is None or int(inv.get(item, 0)) > 0:
+        return None
+    if int((ctx.get("shed") or {}).get(item, 0)) <= 0:
+        return None
+    # The nearest shed access tile, by the total path: going to the far side
+    # of the shed to save one step on the way out is a real trade-off and the
+    # engine settles it, not a preference.
+    best = None
+    for acc in ctx["access"]:
+        d = dist(pos, acc) + dist(acc, tile)
+        if best is None or d < best[1]:
+            best = (acc, d)
+    if best is None:
+        return None
+    return best[0], item, 1, best[1]
+
+
 def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
-                      key_map=None, query_map=None) -> list:
+                      key_map=None, query_map=None, chain_ctx=None) -> list:
     """Minimum-cost assignment: maximises the TOTAL discounted value.
 
     The greedy fails in a specific and frequent way: the first unit takes a
@@ -942,6 +974,7 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
     # loop of the executor -- which is 94% of the cost of a turn. Measured, it
     # took the trainer from 7.5 to 3.0 updates a minute. One matmul per turn
     # instead: (n_units, K) x (K, n_tiles).
+    _chain = {}
     _EZ = None
     if key_map is not None and query_map is not None and tiles and units:
         _ks = np.asarray(key_map, dtype=np.float64)
@@ -959,7 +992,34 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
             if not _can_do(inv, op):
                 if PASS_ACC is not None:
                     PASS_ACC["blocked"] += 1
-                continue                  # stays 0: loses to the dummy
+                # CHAINED ERRAND. Dropping the pair here is what makes
+                # multi-step play impossible: a unit that is not carrying
+                # wheat never sees the hungry animal, so "fetch it, then feed
+                # it" is a decision nobody can take. Measured on a real
+                # episode: we pick up as much wheat as v48 -232 against 238-
+                # and convert it into 0.83 feedings against their 1.46, and we
+                # pick an animal out of the shed 158 times to place it 12.
+                #
+                # If the shed holds what the operation consumes, the pair
+                # stays, valued by the END of the chain and discounted by the
+                # WHOLE path -- unit to shed, shed to tile. The route is
+                # mechanics, exactly like the Manhattan distance already here;
+                # what the task is worth is still the network's.
+                if CHAIN_VALUE <= 0.0:
+                    continue              # stays 0: loses to the dummy
+                _ch = _chain_for(pos, tile, op, inv, chain_ctx)
+                if _ch is None:
+                    continue
+                _acc, _item, _qty, _dtot = _ch
+                row[j] = CHAIN_VALUE * v * (STEP_DISCOUNT ** _dtot)
+                _chain[(i, j)] = (_acc, _item, _qty)
+                if PASS_ACC is not None:
+                    PASS_ACC["offers"] += 1
+                if _EZ is not None:
+                    row[j] *= float(_EZ[i, j])
+                if stickiness and previous is not None and previous.get(i) == tile:
+                    row[j] *= (1.0 + stickiness)
+                continue
             if PASS_ACC is not None:
                 PASS_ACC["offers"] += 1
             row[j] = v * (STEP_DISCOUNT ** dist(pos, tile))
@@ -1053,7 +1113,19 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
             if previous is not None:
                 previous[i] = None
         else:
-            actions.append(_action_for(units[i], tiles[j], tasks))
+            _cj = _chain.get((i, j))
+            if _cj is not None:
+                # First leg of the errand: reach the shed and pick the item
+                # up. The DESTINATION recorded is still the tile, so the
+                # stickiness bonus and the commitment reservation keep the
+                # unit on the errand instead of re-deciding next turn.
+                _acc, _item, _qty = _cj
+                if units[i] == _acc:
+                    actions.append(["PICKUP", _item, int(_qty)])
+                else:
+                    actions.append([step_toward(units[i], _acc)])
+            else:
+                actions.append(_action_for(units[i], tiles[j], tasks))
             if previous is not None:
                 previous[i] = tiles[j]
     return actions
@@ -1080,9 +1152,15 @@ def assign_units(obs, free_capacity: int,
     if not tasks:
         return [["PASS"] for _ in units]
     invs = obs["private"].get("inventories", [])
+    # CONTEXT FOR THE CHAINS: what the shed holds and where it can be reached.
+    # Without this a unit that is not carrying what an operation consumes
+    # simply never sees that tile, and "fetch it, then use it" is not a
+    # decision anybody can take.
+    _chain_ctx = {"shed": obs["private"].get("shed", {}) or {},
+                  "access": sorted(_shed_access_set())}
     adh = 0.0
     if macro is not None:
         from ..macro import assignment_stickiness
         adh = assignment_stickiness(macro)
     return _assign_hungarian(units, tasks, invs, previous, adh,
-                             key_map, query_map)
+                             key_map, query_map, _chain_ctx)

@@ -27,7 +27,7 @@ from . import spec
 N_LEVELS = 8         # how much of each thing
 CATEGORIES = ["land", "feed", "animal", "sell", "seed", "hand"]
 N_PRIORITIES = len(CATEGORIES)
-N_EXPOSED = 38       # the hand-set ones; see the block in `Macro`
+N_EXPOSED = 39       # the hand-set ones; see the block in `Macro`
 N_MARKET = 9         # one learned value multiplier per product
 N_TURN = 5           # coefficients of the PER-TURN selling rule
 N_MACRO = N_LEVELS + N_PRIORITIES + N_EXPOSED + N_MARKET + N_TURN
@@ -240,6 +240,21 @@ class Macro:
     # share of the slots. Default 0.05 rounds back to the full quota, so
     # nothing changes until learning raises it.
     f_priority_split: float = 0.05
+    # CHAINED ERRANDS. When a unit is not carrying what an operation consumes,
+    # the pair used to be dropped from the matrix, so "fetch the wheat, then
+    # feed the animal" was not a decision anybody could take. Measured: we pick
+    # up as much wheat as v48 -232 against 238- and turn it into 0.83 feedings
+    # against their 1.46, and we take an animal out of the shed 158 times to
+    # place it 12.
+    #
+    # The chain is offered now, valued by the END of the errand and discounted
+    # over the WHOLE path. This is how much that chained value is worth against
+    # a task the unit can do right now: at 0 the entry stays at zero and the
+    # pair is dropped, which is the behaviour of always. Forced to 1 on a
+    # policy trained without it, the chains do happen -PLACE 12 -> 21, FEED
+    # 192 -> 268- and cost 14% of the money, which is what a freedom the policy
+    # has never learned to price looks like.
+    f_chain: float = 0.02
 
     @staticmethod
     def default() -> "Macro":
@@ -339,6 +354,7 @@ PARAM_TABLE = [
     ("care_value",        0.50,  "positive"),
     ("commit",            2.00,  "positive"),
     ("priority_split",    0.05,  "fraction"),
+    ("chain",             0.02,  "fraction"),
 ]
 
 # Coefficients of the per-turn selling rule. They are NOT in PARAM_TABLE
@@ -444,6 +460,7 @@ def apply_params(macro: Macro) -> None:
     _T.CARE_VALUE              = p["care_value"]
     _T.COMMIT_FRACTION         = p["commit"]
     _E.PRIORITY_SPLIT          = p["priority_split"]
+    _T.CHAIN_VALUE             = p["chain"]
     global PRIORITY_TEMP
     PRIORITY_TEMP = p["priority_temp"]
     global ACTIONS_PER_ANIMAL
