@@ -30,6 +30,8 @@ kagsym/*
 !kagsym/obs.py
 # lazo exterior sobre el objetivo de KL
 !kagsym/outer.py
+# busqueda de horizonte deslizante sobre el motor exacto
+!kagsym/search.py
 # memoria episodica no parametrica del valor
 !kagsym/memory.py
 # el vector aprendido y sus 30 parametros
