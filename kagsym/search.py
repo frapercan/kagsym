@@ -17,14 +17,26 @@ the search explores exactly the uncertainty the policy already declares. That
 is also what makes the result distillable -- it is a better sample from a
 distribution the network already represents.
 
-THE BUDGET, TIMED DIRECTLY -- not estimated, because an earlier arithmetic
-estimate of it was wrong by a factor of six. Kaggle allows 1 s per turn and the
-policy decides once a day, so 24 s accrue per decision. Day 0 is the worst case,
-since every rollout is a full 720 turns: 16 of them take 11.67 s on one thread.
+THE BUDGET -- READ FROM THE ENGINE, after estimating it wrong twice. The
+configuration says `actTimeout` 1 s and the reset observation carries
+`remainingOverageTime` 60. So the agent gets ONE SECOND PER CALL, and it is
+called every turn -- 720 times -- plus a single 60 s pool for the whole episode.
+Unused per-turn time does NOT accumulate; only the pool carries.
 
-    K=16 on day 0    11.67 s of 24 s     2.06x inside the budget
-    K that fits      32
-    K=48             does NOT fit
+Timed on one thread, K=16 costs 11.67 s on day 0, where every rollout is a full
+720 turns, and less as the horizon shortens: ~181 s over an episode.
+
+    available at the 30 day boundaries    30 s   (1 s each)
+    needed from the pool                 ~151 s
+    the pool                               60 s
+    -> AS WRITTEN IT DOES NOT FIT
+
+That does not touch the measurements below, which are facts about the game. It
+means the search is not deployable in this shape. The way in is to spread it
+across the 24 calls of a day, ~1 s each, choosing the NEXT day's vector: that
+buys 24 s per decision without touching the pool, at the cost of starting the
+rollout from a state one day old -- so it stops being exact, and how much that
+approximation costs is itself measurable.
 
 MEASURED, paired seeds. The opponent is part of the result, so both regimes are
 reported -- and the search is the same size in each, which is what says the gain
