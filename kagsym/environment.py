@@ -194,7 +194,15 @@ def _split_micro(m):
 class DayEnv:
     def __init__(self, n, steps=720, seed0=1, scale=None, macro=None,
                  idx0=0, n_total=None,
-                 rival_fn=None, level=0, potential=None, gamma=0.995):
+                 rival_fn=None, level=0, potential=None, gamma=None):
+        # THE SHAPING GAMMA FOLLOWS THE TRAINER'S. It was pinned at 0.995
+        # while `--gamma` moved the one used by GAE, so the two disagreed the
+        # moment anybody touched it -- and `--grid` and `--leagues` change the
+        # horizon, which is exactly when one would. A potential shaped with a
+        # different gamma than the return is no longer policy-invariant.
+        if gamma is None:
+            import os as _os
+            gamma = float(_os.environ.get("KAG_GAMMA", "0.995"))
         from .reward import SCALE as _ESC
         self.n, self.steps, self.seed0 = n, steps, seed0
         self.scale = float(_ESC if scale is None else scale)

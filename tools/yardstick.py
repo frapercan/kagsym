@@ -85,13 +85,18 @@ if __name__ == "__main__":
           f"{'the PASSIVE agent' if PASSIVE else 'v48'}, "
           f"{len(SEEDS)} fixed seeds\n")
     print(f"  {'checkpoint':>34} {'upd':>5} {'money':>9} {'v48':>9} "
-          f"{'margin%':>8} {'wins':>6} {'s':>5}")
+          f"{'margin%':>8} {'+-se':>6} {'wins':>6} {'s':>5}")
     for c in sys.argv[1:]:
         t1 = time.time()
         try:
             m, v, dm, se, g, upd = evaluate(c)
         except Exception as e:
             print(f"  {c[-34:]:>34}  failed: {str(e)[:50]}", flush=True); continue
+        # THE STANDARD ERROR IS PRINTED, having been computed and thrown away.
+        # This is the cheap yardstick that picks a checkpoint, and without it a
+        # six-point gap between two of them reads as a difference when eight
+        # seeds at this dispersion cannot tell them apart.
         print(f"  {c[-34:]:>34} {upd:>5} {m:>9.0f} {v:>9.0f} "
-              f"{100*dm/v:>+7.1f}% {g:>3}/{len(SEEDS)} {time.time()-t1:>5.0f}",
+              f"{100*dm/v:>+7.1f}% +-{100*se/v:>4.1f} {g:>3}/{len(SEEDS)} "
+              f"{time.time()-t1:>5.0f}",
               flush=True)

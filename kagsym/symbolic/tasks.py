@@ -499,7 +499,13 @@ DIG_VALUE = 0.9             # clearing, as a fraction of the planting value
 # 4 parameters: perhaps 4 were not enough, the transform was limiting their
 # effect.
 MAP_GAIN = 1.0              # how much the network's emission weighs
-MAP_CAP = 20.0              # clip inside expm1
+# CLIP INSIDE expm1, ON BOTH SIDES. It used to read
+# `abs(min(MAP_CAP, gain * r))`, which caps only the positive tail: for a very
+# negative `r` the min passes it straight through and the abs then makes it
+# large, so expm1 can overflow exactly the way `priorities()` did before it was
+# fixed. `min(MAP_CAP, abs(gain * r))` caps both. At the operating point
+# measured this changes nothing; it is insurance against a worker dying.
+MAP_CAP = 20.0
 FERTILIZER_HORIZON = 3      # days counted towards the fertiliser bonus
 FERT_PER_TRIP = 4.0         # fertiliser picked up in one trip. Learned.
 # WHAT EACH OPERATION IS WORTH, where the engine does not say it. A trip to the
@@ -729,6 +735,21 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
         if tile.get("fertilized_until_day", -1) < day:
             out.append((OPS_IX["FERTILIZE"], ["FERTILIZE"]))
         if tile.get("yield_units", 0) > 0 and age >= cd["first_yield_day"]:
+            # NOT IMPLEMENTED, written down so the same wrong calculation is
+            # not derived again. Harvesting before `max_yield_day` looks
+            # strictly dominated: a non-ongoing crop keeps accumulating, so
+            # picking it early throws away `max_yield - yield_units` units.
+            # Measured on the 8h x 5d checkpoint, 8 episodes: 80 harvests land
+            # on a planted tile, 64 of them in green (80%), holding 2.30 units
+            # of a possible 4.2 -- 17 units an episode, $425 at base price
+            # against a net of $275.
+            #
+            # Withdrawing the option was measured on 48 paired seeds and it
+            # LOSES: 8h x 5d, $3,276 -> $3,229, -$46 with se 2, worse on 48 of
+            # 48; at 24h x 30d it is null, +$277 +- 284. The gross-yield
+            # arithmetic ignores what collecting those extra units costs: the
+            # tile has to be watered every day until it fills, and unit-turns
+            # are the binding resource, not fruit.
             out.append((OPS_IX["HARVEST"], ["HARVEST"]))
         return out
 
@@ -811,7 +832,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                             MASK_ACC[1 + _k, y, x] = 1.0   # there was a choice
                 r = float(value_map[y][x]) if value_map is not None else 0.0
                 v = math.copysign(
-                    math.expm1(abs(min(MAP_CAP, MAP_GAIN * r))), r)
+                    math.expm1(min(MAP_CAP, abs(MAP_GAIN * r))), r)
                 tasks[(x, y)] = (v, op)
                 if op[0] == "PLANT":
                     free -= 1
@@ -841,7 +862,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                     # it is undone to get back to dollars.
                     r = float(value_map[y][x])
                     t = (math.copysign(math.expm1(
-                        abs(min(MAP_CAP, MAP_GAIN * r))), r), t[1])
+                        min(MAP_CAP, abs(MAP_GAIN * r))), r), t[1])
                 tasks[(x, y)] = t
                 if t[1][0] == "PLANT":
                     free -= 1
@@ -866,7 +887,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
         _k2, _o2 = _ex[_sel]
         _r2 = float(value_map[_y][_x])
         _v2 = math.copysign(
-            math.expm1(abs(min(MAP_CAP, MAP_GAIN * _r2))), _r2)
+            math.expm1(min(MAP_CAP, abs(MAP_GAIN * _r2))), _r2)
         _v2 -= EXTRA_TILE_THRESHOLD
         if _v2 <= 0.0:
             continue
