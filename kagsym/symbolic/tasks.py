@@ -675,6 +675,20 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
             # `seed_orders`. It is weighted by the LEARNED factor of the
             # product the animal gives, which already lives in the macro
             # vector (see `animal_value`).
+            # TAKING AN ANIMAL WITH NOWHERE TO PUT IT IS NOT WASTE.
+            # Measured on one episode: 110 cows out of the shed for 14
+            # placements, and six of ten units carrying something at any
+            # moment. Restricting the pickup to when an empty structure of the
+            # right kind exists LOSES $4,644 on 200 paired seeds against v48
+            # (se 767, t -6.1). Carrying the animal is PRE-POSITIONING: the
+            # trip to the shed is paid in advance so the placement is instant
+            # when a structure frees up.
+            #
+            # It is the fourth of its kind. Withdrawing the green harvest loses
+            # on 48 of 48 seeds; relaxing `plantable` loses $1,813; forcing the
+            # destination commitment loses $6,890. What looks like waste in
+            # this layer has been tuned into a configuration where it carries
+            # weight, and measuring is the only way to tell.
             best = max(in_shed, key=lambda a: animal_value(ctx, a, macro))
             out.append((OPS_IX["PICKUP_ANIMAL"], ["PICKUP", best, 1]))
         # QUANTITY, not just the verb. `OPS_VOCAB` has `PICKUP_WHEAT` as a
@@ -1101,7 +1115,16 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
     # outbid it. With the fraction at its default of 2.0 nothing is ever
     # reserved -the destination is one of the alternatives, so it cannot be
     # twice the best of them- and the matching is the one of always.
-    if COMMIT_FRACTION < 1.0 and previous is not None:
+    # OVERRIDE FOR MEASUREMENT. `COMMIT_FRACTION` comes from the macro, which
+    # has never been trained with it, so at inference it sits at its 2.0
+    # default and commitment is off. KAG_COMMIT forces a value so the dial can
+    # be A/B'd without retraining. Why it matters: 23.8% of destinations are
+    # changed EN ROUTE, and against the top replays we spend 63% of our
+    # operations walking where they spend 31-38%.
+    import os as _os
+    _cf = _os.environ.get("KAG_COMMIT", "")
+    _COM = float(_cf) if _cf else COMMIT_FRACTION
+    if _COM < 1.0 and previous is not None:
         for i, pos in enumerate(units):
             t = previous.get(i)
             if t is None or t not in tasks or t == pos:
@@ -1110,7 +1133,7 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
             if value[i][j] <= 0.0:
                 continue
             _best = max(value[i][:len(tiles)])
-            if value[i][j] >= COMMIT_FRACTION * _best:
+            if value[i][j] >= _COM * _best:
                 for i2 in range(n):           # the tile is reserved
                     if i2 != i:
                         value[i2][j] = 0.0
