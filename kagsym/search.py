@@ -32,11 +32,23 @@ Timed on one thread, K=16 costs 11.67 s on day 0, where every rollout is a full
     -> AS WRITTEN IT DOES NOT FIT
 
 That does not touch the measurements below, which are facts about the game. It
-means the search is not deployable in this shape. The way in is to spread it
-across the 24 calls of a day, ~1 s each, choosing the NEXT day's vector: that
-buys 24 s per decision without touching the pool, at the cost of starting the
-rollout from a state one day old -- so it stops being exact, and how much that
-approximation costs is itself measurable.
+means this shape is not deployable, and the way in was measured rather than
+guessed. Spreading the work across a day's 24 calls, ~1 s each, buys 24 s per
+decision without touching the pool -- but what gets chosen is then TOMORROW's
+vector from rollouts that start a day earlier, and that costs most of the gain:
+
+    immediate, does not fit   41,246 -> 65,180   +23,934 +- 1,857  t +12.9
+    lagged one day, fits      41,246 -> 48,843   + 7,597 +- 1,980  t  +3.8
+    hybrid, fits              41,246 -> 55,071   +13,825 +- 2,341  t  +5.9
+
+A day-old state is worth 68% less for choosing a macro. The hybrid spends the
+60 s pool on the first five days -- whose choices have the most game left to act
+on -- and lags the other twenty-five, which recovers 38% of what the lag costs.
+That is the deployable configuration: +33.5% over the policy alone against v48.
+
+Worth noting for later: the pool was spent on the earliest days by argument, not
+by measurement. The shadow price of a unit-turn peaks around days 9 and 12 and
+is NEGATIVE on days 6 to 10, so spending it there instead is a live question.
 
 MEASURED, paired seeds. The opponent is part of the result, so both regimes are
 reported -- and the search is the same size in each, which is what says the gain
