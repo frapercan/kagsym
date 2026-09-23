@@ -609,7 +609,18 @@ def priorities(macro: Macro) -> dict:
     """
     import math
     vals = [getattr(macro, "p_" + c) for c in CATEGORIES]
-    e = [math.exp(PRIORITY_TEMP * v) for v in vals]
+    # SHIFTED BEFORE THE EXPONENTIAL. `PRIORITY_TEMP` is a learned dial of the
+    # `positive` kind -default * exp(logit(f))-, so a sample near f = 1 sends it
+    # to hundreds and `math.exp` raises OverflowError and takes the worker with
+    # it. Found by a CEM search over the 67 dials, which reached that corner in
+    # seconds; the policy reaches it too, only rarely.
+    #
+    # Subtracting the maximum is the standard stable form and changes NOTHING:
+    # the softmax is shift-invariant, and on top of that the only thing read
+    # from it is the ORDER of the categories, which the temperature cannot move.
+    z = [PRIORITY_TEMP * v for v in vals]
+    m = max(z)
+    e = [math.exp(x - m) for x in z]
     total = sum(e) or 1.0
     return {c: x / total for c, x in zip(CATEGORIES, e)}
 

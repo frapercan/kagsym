@@ -194,7 +194,7 @@ def _split_micro(m):
 class DayEnv:
     def __init__(self, n, steps=720, seed0=1, scale=None, macro=None,
                  idx0=0, n_total=None,
-                 rival_fn=None, level=0, potential=True, gamma=0.995):
+                 rival_fn=None, level=0, potential=None, gamma=0.995):
         from .reward import SCALE as _ESC
         self.n, self.steps, self.seed0 = n, steps, seed0
         self.scale = float(_ESC if scale is None else scale)
@@ -232,6 +232,14 @@ class DayEnv:
         # uses it so the importance ratio ignores the ~1,570 Gaussian
         # dimensions that cannot change any action.
         self._masks = [None] * n
+        # SHAPING SWITCH, from the environment for the same reason the reward
+        # weights are: the parallel env spawns child processes and threading a
+        # flag through three layers of signatures would be more invasive. With
+        # KAG_POTENCIAL=0 the reward is money and nothing else, which is the
+        # only way to measure what the shaping is actually buying.
+        if potential is None:
+            import os as _os
+            potential = _os.environ.get("KAG_POTENCIAL", "1") != "0"
         self.potential = potential
         self.gamma = gamma
         self._phi = [0.0] * n

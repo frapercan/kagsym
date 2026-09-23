@@ -52,8 +52,22 @@ import torch.nn.functional as F
 
 # Search ranges. See the note above: the argmin is what acts, and landing on an
 # endpoint is reported as `edge` so it can never silently become a constant.
-KS = (1, 2, 4, 8, 16, 32, 64)
+#
+# The k ladder is NOT a fixed range: it grows with the memory, up to half of it.
+# A fixed ceiling of 64 sat pinned at its top from the first updates of the
+# first real run (EDGE:k at n=1,760 and again at n=3,960), which is the range
+# acting as the constant it is not supposed to be. Tied to `n`, `edge` now says
+# something worth reading: it wants more than half of everything stored, i.e.
+# the keys carry no local signal and the best estimate is the global mean.
 HALF_LIVES = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, float("inf"))
+
+
+def _ks(n):
+    out, k = [], 1
+    while k <= max(1, n // 2):
+        out.append(k)
+        k *= 2
+    return out or [1]
 
 
 class EpisodicValue:
@@ -140,7 +154,8 @@ class EpisodicValue:
             half = torch.zeros_like(valid)
             half[::2] = True
         fit_s, ev_s = valid & half, valid & (~half)
-        kmax = min(max(KS), self.n)
+        ks = _ks(self.n)
+        kmax = min(max(ks), self.n)
         # 2 coefficients are fitted; asking for 32 points on each side is the
         # loosest bar that still makes the least squares mean anything.
         if self.n < 2 or kmax < 1 or int(fit_s.sum()) < 32 or int(ev_s.sum()) < 32:
@@ -154,8 +169,8 @@ class EpisodicValue:
         gf = g[fit_s]
         ge, te = g[ev_s], v_theta[ev_s]
         mse_t = float(((te - ge) ** 2).mean())           # the critic, held out
-        best, bk, bhl = None, KS[0], HALF_LIVES[0]
-        for k in KS:
+        best, bk, bhl = None, ks[0], HALF_LIVES[0]
+        for k in ks:
             if k > kmax:
                 break
             for hl in HALF_LIVES:
@@ -165,7 +180,7 @@ class EpisodicValue:
                     best, bk, bhl = e, k, hl
         info["k"], info["hl"] = bk, (bhl if math.isfinite(bhl) else -1.0)
         edge = []
-        if bk == KS[-1] and kmax >= KS[-1]:
+        if bk == ks[-1]:
             edge.append("k")
         if bhl == HALF_LIVES[0]:
             edge.append("hl-")
