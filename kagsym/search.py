@@ -46,9 +46,25 @@ A day-old state is worth 68% less for choosing a macro. The hybrid spends the
 on -- and lags the other twenty-five, which recovers 38% of what the lag costs.
 That is the deployable configuration: +33.5% over the policy alone against v48.
 
-Worth noting for later: the pool was spent on the earliest days by argument, not
-by measurement. The shadow price of a unit-turn peaks around days 9 and 12 and
-is NEGATIVE on days 6 to 10, so spending it there instead is a live question.
+WHERE THE POOL GOES, MEASURED. Spending it on the earliest days was an
+argument, and the argument was worth $6,592 less than the measurement. The
+regret of deciding with a day-old state was measured per day, and so was the
+cost of buying immediacy, which falls with the horizon left -- day 0 costs
+11.7 s and day 28 costs 0.8 s. So the pool buys one expensive decision or
+fifteen cheap ones, and the criterion is dollars PER SECOND, not dollars:
+
+    pool on days 0-4, by argument     55,071   +13,825
+    pool by dollars per second        61,664   +20,417   t +8.2   12/12
+
+The second is 85% of what the immediate search gets while staying inside the
+budget, and it takes the agent from +33.5% to +49.5% over the policy alone.
+The days it buys are {0, 6, 12, 13, 14, 15, 16, 20, 22, 28}: day 0, whose
+regret is the largest at $10,848, plus a cluster in the middle of the game.
+
+Per-day regret also says something about the macro itself: a day-old state
+changes WHICH candidate wins between 50% and 100% of the time, against 6.25%
+for chance at K=16. The macro is not a robust choice that gets refined, it is
+one that gets remade with every day of information.
 
 MEASURED, paired seeds. The opponent is part of the result, so both regimes are
 reported -- and the search is the same size in each, which is what says the gain
