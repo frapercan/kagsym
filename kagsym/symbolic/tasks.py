@@ -520,6 +520,9 @@ MAP_GAIN = 1.0              # how much the network's emission weighs
 # large, so expm1 can overflow exactly the way `priorities()` did before it was
 # fixed. `min(MAP_CAP, abs(gain * r))` caps both. At the operating point
 # measured this changes nothing; it is insurance against a worker dying.
+import os as _os_v
+_VALOR = _os_v.environ.get("KAG_VALOR", "mapa")   # mapa | heuristica
+
 MAP_CAP = 20.0
 FERTILIZER_HORIZON = 3      # days counted towards the fertiliser bonus
 FERT_PER_TRIP = 4.0         # fertiliser picked up in one trip. Learned.
@@ -862,6 +865,25 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                 r = float(value_map[y][x]) if value_map is not None else 0.0
                 v = math.copysign(
                     math.expm1(min(MAP_CAP, abs(MAP_GAIN * r))), r)
+                # WHOSE DOLLARS DECIDE. The map REPLACES whatever the symbolic
+                # layer computed, so `tile_task` only ever supplies the verb.
+                # Instrumented on a real episode: on the 251 turns with a plant
+                # that dies tonight, the rescue enters the matrix at 0.3 --
+                # against the $472 the heuristic computes for it -- with the
+                # nearest unit 1.02 steps away. Not capacity, not distance, not
+                # the discount: the valuation says it is worth nothing.
+                # And handing them back LOSES $11,420 on 200 paired seeds
+                # against v48 (se 740, t -15.4, better on 27 of 200). So the
+                # 0.3 is not a bug: relative to everything else on the board,
+                # the network is saying that saving that plant is not worth a
+                # unit-turn -- and its relative scale beats the heuristic's
+                # dollars by eleven thousand. The heuristic's figures are not
+                # commensurable across task types; the map's are.
+                # KAG_VALOR=heuristica keeps the A/B available.
+                if _VALOR == "heuristica":
+                    _th = tile_task(obs, farm, x, y, free, ctx, macro)
+                    if _th is not None:
+                        v = _th[0]
                 tasks[(x, y)] = (v, op)
                 if op[0] == "PLANT":
                     free -= 1
@@ -889,9 +911,10 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                     # heuristic fallback that used to live here never fired.
                     # The network emits in symlog space (where it was fitted);
                     # it is undone to get back to dollars.
-                    r = float(value_map[y][x])
-                    t = (math.copysign(math.expm1(
-                        min(MAP_CAP, abs(MAP_GAIN * r))), r), t[1])
+                    if _VALOR != "heuristica":
+                        r = float(value_map[y][x])
+                        t = (math.copysign(math.expm1(
+                            min(MAP_CAP, abs(MAP_GAIN * r))), r), t[1])
                 tasks[(x, y)] = t
                 if t[1][0] == "PLANT":
                     free -= 1
