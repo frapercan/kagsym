@@ -91,7 +91,22 @@ def days_left(obs) -> int:
 
 
 def plantable(obs, crop: str) -> bool:
-    """There is no point planting what there will be no time to harvest."""
+    """There is no point planting what there will be no time to harvest.
+
+    THE FULL CYCLE, AND IT IS NOT A MISREADING -- it was measured. An audit
+    pointed out that the engine starts yielding at `first_yield_day` and keeps
+    accumulating until `max_yield_day`, so asking for the whole cycle to fit
+    refuses a melon sown with eleven days left even though it would yield on
+    day ten. Correct about the engine, wrong about the game: on 200 paired
+    seeds against v48, relaxing the test to `first_yield_day` LOSES $1,813
+    (se 301, t -6.0, better on only 63 of 200).
+
+    Why: what binds is unit-turns, not tiles. A crop that yields once and never
+    fills still occupies a tile and eats the waterings that a crop which
+    completes would have used. The test was never a yield guard, it is a
+    LABOUR guard -- the comment above it had the mechanism wrong and the
+    outcome right.
+    """
     return cycle_days(crop) < days_left(obs)
 
 

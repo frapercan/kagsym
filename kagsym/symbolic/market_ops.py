@@ -382,7 +382,14 @@ def land_orders(obs, macro=None) -> list:
     """
     farm = obs["farms"][int(obs["player"])]
     n = len(farm["unlocked_quadrants"]) - 1
-    if n >= len(spec.LAND_PRICES) or obs["hour"] != 0:
+    # THE HOUR TEST WAS OURS AND IT IS GONE. The engine handles BUY_LAND as an
+    # atomic order in the market phase with no reference to the hour, so
+    # `obs["hour"] != 0` was an invented rule: 24 chances a day cut to one,
+    # competing for the turn's ten market orders. Measured on 200 paired seeds
+    # against v48 it is worth nothing either way -- -$247, se 393, t -0.6 --
+    # so it goes on principle rather than for money: a condition that does not
+    # come from the engine and cannot be learned has no business deciding.
+    if n >= len(spec.LAND_PRICES):
         return []
     cost = spec.LAND_PRICES[n]
     money = float(farm["money"])
