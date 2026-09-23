@@ -127,8 +127,8 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
                             estado["mapa"] = (s_["micro"][0]
                                               + _sg * eps_u).numpy()
                         ag.macro = _Mac.from_vector(am[0].numpy())
-                        from .environment import _parte_micro
-                        ag.micro = lambda o2: _parte_micro(estado["mapa"])
+                        from .environment import _split_micro
+                        ag.micro = lambda o2: _split_micro(estado["mapa"])
                         estado["dia"] = d_
                     return ag(ob)
                 return jugar
@@ -205,6 +205,18 @@ class ParallelEnv:
         # let it condition on instead of average over.
         def _split_envs(v):
             if isinstance(v, (list, tuple)):
+                # LOUD, because silent was expensive. The modulo only wraps
+                # when the list is SHORTER than n_procs; when it is longer the
+                # tail is dropped without a word, and a run then trains on a
+                # grid nobody asked for. Measured cost of that: an overnight
+                # campaign with 11 rungs and 5 processes trained on the first
+                # two horizons against a passive agent, and its logs looked
+                # right because the printout echoed the grid REQUESTED.
+                if len(v) > self.n_procs:
+                    raise SystemExit(
+                        f"{len(v)} rungs asked for and only {self.n_procs} "
+                        f"processes: rungs {list(v)[self.n_procs:]} would be "
+                        f"dropped in silence. Raise --procs or shorten --grid.")
                 return [v[i % len(v)] for i in range(self.n_procs)]
             return [v] * self.n_procs
 

@@ -692,7 +692,7 @@ def main():
         return e
 
     if a.leagues:
-        env.close_()
+        env.cerrar()
         env = _build_league(_league)
 
     try:
@@ -1727,7 +1727,7 @@ def main():
                         _in_league = STAY - 1   # keep measuring
                         _league = _league
                     if _in_league >= STAY:
-                        env.close_(); env = _build_league(_league); _in_league = 0
+                        env.cerrar(); env = _build_league(_league); _in_league = 0
                         accum[:] = 0.0; ret_ep.clear()
             if use_mlflow:
                 try:
