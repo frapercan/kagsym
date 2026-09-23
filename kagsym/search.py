@@ -17,14 +17,36 @@ the search explores exactly the uncertainty the policy already declares. That
 is also what makes the result distillable -- it is a better sample from a
 distribution the network already represents.
 
-THE BUDGET, MEASURED. A simulated turn costs 1.13 ms and Kaggle allows 1 s per
-turn, but the policy only decides once a day, so ~24 s accrue per decision:
-about 21,000 simulated turns. At 24h x 30d the search spends ~1.3 s per daily
-decision with K=16, which is 18x inside the budget.
+THE BUDGET, TIMED DIRECTLY -- not estimated, because an earlier arithmetic
+estimate of it was wrong by a factor of six. Kaggle allows 1 s per turn and the
+policy decides once a day, so 24 s accrue per decision. Day 0 is the worst case,
+since every rollout is a full 720 turns: 16 of them take 11.67 s on one thread.
 
-MEASURED, paired seeds, passive opponent:
-    8h x 14d   K=16   19,294 -> 19,697   +403 +- 27      t +14.8   24/24
-    24h x 30d  K=16   63,996 -> 87,944   +23,948 +- 2,606 t +9.2   12/12
+    K=16 on day 0    11.67 s of 24 s     2.06x inside the budget
+    K that fits      32
+    K=48             does NOT fit
+
+MEASURED, paired seeds. The opponent is part of the result, so both regimes are
+reported -- and the search is the same size in each, which is what says the gain
+is not an artefact of a passive market:
+
+    8h x 14d   K=16  passive  19,294 -> 19,697  +403 +- 27       t +14.8  24/24
+    24h x 30d  K=16  passive  63,996 -> 87,944  +23,948 +- 2,606 t  +9.2  12/12
+    24h x 30d  K=48  passive  70,214 -> 99,125  +28,911 +- 3,331 t  +8.7  12/12
+    24h x 30d  K=16  v48      41,246 -> 65,180  +23,934 +- 1,857 t +12.9  12/12
+
+Against v48 the rollouts carry v48 too, so they stay exact. That run moves the
+margin against v48 from -64.9% to about -46%.
+
+WHAT DOES NOT WORK, so it is not tried again. Distilling the search into
+`macro_mu` does not: with honest held-out validation the head cannot improve on
+its prediction of the search's choices at all (early stopping fired at epoch 90
+with the validation mse unchanged), the mean displacement of those choices from
+the policy's own mean is 0.017 sigmas -- noise -- and random one-sigma
+perturbations of the head's bias lost 10 times out of 10. One unvalidated fit
+did gain +4,745 against a passive opponent, but it lost -1,753 against v48
+(t -2.02): it had specialised to a market nobody competes for. The search wins
+by LOOKING, not by knowing where to look, so it is executed and not learned.
 
 AND THE TRAP THAT ALMOST BURIED IT. The first measurement came out at -342
 with t -2.5 and looked like a clean negative. The rollout was starting from a
