@@ -61,6 +61,28 @@ budget, and it takes the agent from +33.5% to +49.5% over the policy alone.
 The days it buys are {0, 6, 12, 13, 14, 15, 16, 20, 22, 28}: day 0, whose
 regret is the largest at $10,848, plus a cluster in the middle of the game.
 
+WHICH SURFACE TO SEARCH, all at K=16 against v48, paired, same checkpoint.
+`board_tasks` takes every task's dollars from the micro map, not from the
+symbolic valuation, so the map looked like the surface that matters -- it is
+~2,800 numbers against the 67 dials, and the search had never touched it:
+
+    dials, random shooting      +23,934
+    dials, CEM 4 rounds         +24,087
+    map,   random shooting      +17,108
+    map,   CEM 4 rounds         +18,213
+    both at once                +23,510
+
+They all land in the same band, and searching both together adds nothing over
+the dials alone. CEM is worth +4,928 on the dials and only +1,105 on the map,
+which is the dimensional reason: refitting to the elite needs the elite to
+carry direction, and the best of four samples in 2,800 dimensions carries
+almost none.
+
+So the binding constraint is the EVALUATION BUDGET, not the space. What moved
+the number was how the budget is spent -- placing the pool by dollars per
+second (+6,592) and refining inside it with CEM (+4,928) -- and changing the
+surface moved nothing.
+
 Per-day regret also says something about the macro itself: a day-old state
 changes WHICH candidate wins between 50% and 100% of the time, against 6.25%
 for chance at K=16. The macro is not a robust choice that gets refined, it is

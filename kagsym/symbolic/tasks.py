@@ -1078,13 +1078,23 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
                 # WHOLE path -- unit to shed, shed to tile. The route is
                 # mechanics, exactly like the Manhattan distance already here;
                 # what the task is worth is still the network's.
-                if CHAIN_VALUE <= 0.0:
+                # OVERRIDE PARA MEDIR. `CHAIN_VALUE` viene del macro, que nunca
+                # se entreno con el, asi que en inferencia esta en su defecto
+                # 0,0004 -- apagado. KAG_CADENA lo fuerza para poder medir el
+                # mecanismo sin reentrenar. Lo que arregla: sin el, la casilla
+                # que pide FEED desaparece cuando nadie lleva trigo, y entonces
+                # nadie va a buscar trigo; la accion previa que habilita la
+                # siguiente se vuelve invisible.
+                import os as _os_c
+                _cv = _os_c.environ.get("KAG_CADENA", "")
+                _CV = float(_cv) if _cv else CHAIN_VALUE
+                if _CV <= 0.0:
                     continue              # stays 0: loses to the dummy
                 _ch = _chain_for(pos, tile, op, inv, chain_ctx)
                 if _ch is None:
                     continue
                 _acc, _item, _qty, _dtot = _ch
-                row[j] = CHAIN_VALUE * v * (STEP_DISCOUNT ** _dtot)
+                row[j] = _CV * v * (STEP_DISCOUNT ** _dtot)
                 _chain[(i, j)] = (_acc, _item, _qty)
                 if PASS_ACC is not None:
                     PASS_ACC["offers"] += 1
