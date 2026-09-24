@@ -36,6 +36,10 @@ def grid(days: int):
     tiles = [0, 10, 15, 20, 25, 30, 35, 40, 50, 60, 75]
     hands = list(range(0, 9))
     land = [0, 1, 2]
+    if not crops:                          # nothing yields in time: idle plans only
+        for h in hands:
+            yield dict(crop="CARROT", tiles=0, hands=h, land=0, load=12)
+        return
     for c, t, h, l in itertools.product(crops, tiles, hands, land):
         if t > 25 * (1 + l):
             continue
@@ -103,6 +107,9 @@ def schedule_search(start: dict, seeds, days: int, hours: int, procs: int, round
     every value with the rest fixed, keep the best, repeat until no gain."""
     from kagsym import spec
     crops = [c for c in spec.CROP_LIST if spec.CROPS[c]["first_yield_day"] < days]
+    # A mix inside the day: every pair of viable crops at 50/50 (the executor
+    # buys and plants both; the shares are of `tiles`).
+    crops = crops + [{a: 0.5, b: 0.5} for i, a in enumerate(crops) for b in crops[i + 1:]]
     max_tiles = 25 * (1 + int(start.get("land", 0)))
     values = values or {"hands": list(range(0, 9)),
                         "tiles": [t for t in (0, 5, 10, 15, 20, 25, 30, 40, 50, 75) if t <= max_tiles],
@@ -110,7 +117,7 @@ def schedule_search(start: dict, seeds, days: int, hours: int, procs: int, round
                         "load": [0, 3, 6, 9, 12, 15], "water_last": [0, 1]}
     cur = dict(start)
     for f in fields:
-        v = cur[f]
+        v = cur.get(f, getattr(Plan(), f))     # a field the start did not set: the Plan default
         cur[f] = tuple(v) if isinstance(v, (list, tuple)) else tuple([v] * days)
     best = _eval_plan(cur, seeds, days, hours)
     print(f"start {best:,.0f}  {cur}", flush=True)

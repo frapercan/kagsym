@@ -590,8 +590,8 @@ def target_crop(obs, macro: Macro):
         # so seed bought by it for the last cycle was never planted (measured
         # 2026-09-25: 50 wheat seeds, $500, idle from day 4 of 8).
         from .symbolic.tasks import plantable
-        c = pl.crop_on(int(obs["day"]))
-        return c if plantable(obs, c) else None
+        cs = [c for c in pl.crop_targets(int(obs["day"])) if plantable(obs, c)]
+        return cs[0] if cs else None
     if macro.crop <= 0.0:
         return min(viable, key=lambda c: cycle_days(c))
     by_value = sorted(viable, key=lambda c: cycle_profit(obs, c) / max(1, cycle_days(c)))

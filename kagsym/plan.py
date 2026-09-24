@@ -12,7 +12,7 @@ can be searched exhaustively on the exact engine and, later, learned.
 
 Fields (per game, for the reduced solitaire; a schedule of plans per day is
 the next step):
-  crop     what to plant
+  crop     what to plant: a name, or {crop: share} for a mix inside the day
   tiles    planted tiles to keep (replanted as they are harvested)
   hands    hands hired every day
   land     quadrants to buy at the start (0-3)
@@ -52,8 +52,18 @@ class Plan:
     def load_on(self, day: int) -> int:
         return int(_by_day(self.load, day))
 
-    def crop_on(self, day: int) -> str:
-        return str(_by_day(self.crop, day))
+    def crop_on(self, day: int):
+        """The day's crop: a name, or a dict {crop: share of `tiles`}."""
+        return _by_day(self.crop, day)
+
+    def crop_targets(self, day: int) -> dict:
+        """Tiles per crop for the day, from a name or a share dict."""
+        c = self.crop_on(day)
+        total = self.tiles_on(day)
+        if isinstance(c, dict):
+            out = {k: int(round(total * float(v))) for k, v in c.items() if v > 0}
+            return out
+        return {str(c): total}
 
     def tiles_on(self, day: int) -> int:
         return int(_by_day(self.tiles, day))

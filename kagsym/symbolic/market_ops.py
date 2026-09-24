@@ -549,12 +549,20 @@ def seed_orders(obs, tile_target: int, macro=None) -> list:
     n_units = 1 + len(farm["hands"])
     from ..plan import get_plan as _get_plan
     _pl = _get_plan()
-    if _pl is not None:                 # the plan: one crop, the tiles it asks, all the cash
-        planted_now = sum(planted_by_crop.values())
-        missing = _pl.tiles_on(int(obs["day"])) - planted_now - int(obs["private"].get("seeds", {}).get(c, 0))
-        price = max(1, spec.CROPS[c]["seed"])
-        n_take = min(missing, int(float(farm["money"]) // price))
-        return [["BUY_SEED", c, n_take]] if n_take > 0 else []
+    if _pl is not None:                 # the plan: its crops, the tiles it asks, all the cash
+        from .tasks import plantable as _plantable
+        cash = float(farm["money"])
+        out = []
+        for crop_, want in _pl.crop_targets(int(obs["day"])).items():
+            if not _plantable(obs, crop_):
+                continue
+            missing = want - planted_by_crop.get(crop_, 0) - int(obs["private"].get("seeds", {}).get(crop_, 0))
+            price = max(1, spec.CROPS[crop_]["seed"])
+            n_take = min(missing, int(cash // price))
+            if n_take > 0:
+                out.append(["BUY_SEED", crop_, n_take])
+                cash -= n_take * price
+        return out
     # LEARNED. This `return []` ABORTS the whole seed purchase, and with 8.4
     # units the threshold came out at 16.8 while we carried 25.1 seeds on
     # average: for much of the episode nothing was bought.
