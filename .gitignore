@@ -11,6 +11,8 @@
 !LICENSE
 # el motor derivado exactamente: acciones, precondiciones, recompensa
 !SPECIFICATION.md
+# de pesos aleatorios a batir al mejor medido, con puertas y trampas
+!PROCEDIMIENTO.md
 !pyproject.toml
 
 # ---- measurement tools and ladder construction ----
