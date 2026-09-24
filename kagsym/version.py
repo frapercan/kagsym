@@ -21,6 +21,9 @@ import os
 # The files that determine HOW THE GAME IS PLAYED. Changing any of them
 # invalidates comparisons between results obtained before and after.
 GAME_FILES = [
+    "kagsym/spec.py",
+    "kagsym/fastenv.py",
+    "kagsym/policy.py",
     "kagsym/symbolic/tasks.py",
     "kagsym/symbolic/market_ops.py",
     "kagsym/symbolic/executor.py",

@@ -1,91 +1,27 @@
-# LISTA BLANCA. Se ignora todo y se rescata SOLO lo que corre en produccion:
-# el agente que se envia y el lazo que lo entrena. El historial de medidas, los
-# checkpoints, los agentes de terceros y los datos viven en el disco de trabajo
-# pero NO en el repositorio.
-#
-# OJO: en .gitignore un comentario al final de linea NO se separa del patron,
-# asi que cada regla va sola.
-*
-!.gitignore
-!README.md
-!LICENSE
-# el motor derivado exactamente: acciones, precondiciones, recompensa
-!SPECIFICATION.md
-# de pesos aleatorios a batir al mejor medido, con puertas y trampas
-!PROCEDIMIENTO.md
-!pyproject.toml
+# Working disk, never in the repository: checkpoints, measurements, third-party
+# agents, downloaded data and everything archived from earlier iterations.
+runs/
+data/
+agents_pub/
+archivo/
+docs/env_src/
+mlruns/
+*.pt
+*.npy
+*.db
+*.tar.gz
+*.log
 
-# ---- measurement tools and ladder construction ----
-!tools/
-tools/*
-!tools/*.py
+# Python and tooling
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv*/
+*.egg-info/
+build/
+dist/
 
-# ---- el paquete ----
-!kagsym/
-kagsym/*
-!kagsym/__init__.py
-# hechos del motor
-!kagsym/spec.py
-# clon exacto del motor
-!kagsym/fastenv.py
-# codificacion de la observacion
-!kagsym/obs.py
-# lazo exterior sobre el objetivo de KL
-!kagsym/outer.py
-# busqueda de horizonte deslizante sobre el motor exacto
-!kagsym/search.py
-# memoria episodica no parametrica del valor
-!kagsym/memory.py
-# el vector aprendido y sus 30 parametros
-!kagsym/macro.py
-# conformacion de recompensa
-!kagsym/potential.py
-# el desplazamiento del macro, UNA sola definicion: la comparten la
-# busqueda, el validador y el agente que se sube
-!kagsym/rampa.py
-# la recompensa
-!kagsym/reward.py
-# un paso = un dia
-!kagsym/environment.py
-# N partidas en paralelo
-!kagsym/parallel_env.py
-# migracion de checkpoints
-!kagsym/migrate_ckpt.py
-# registro de metricas
-!kagsym/tracking.py
-# huella del codigo
-!kagsym/version.py
-
-!kagsym/symbolic/
-kagsym/symbolic/*
-!kagsym/symbolic/__init__.py
-
-!kagsym/nets/
-kagsym/nets/*
-!kagsym/nets/__init__.py
-
-!kagsym/cli/
-kagsym/cli/*
-!kagsym/cli/__init__.py
-!kagsym/cli/train.py
-
-!kagsym/tests/
-kagsym/tests/*
-!kagsym/tests/__init__.py
-!kagsym/tests/test_assignment.py
-!kagsym/tests/test_fastenv.py
-
-# nunca, aunque encajen arriba
+# Editor backups: the history lives in git
 *.bak
 *.bak_*
-*.pyc
-__pycache__/
-
-# ---- el agente que se SUBE ----
-# Estaba SIN VERSIONAR pese a ser lo unico que juega de verdad: la lista
-# blanca dice "se rescata solo lo que corre en produccion" y precisamente
-# eso se habia quedado fuera. El checkpoint no entra -pesa 31 MB y vive en
-# el disco de trabajo-, pero el envoltorio si.
-!submit_kagsym/
-submit_kagsym/*
-!submit_kagsym/main.py
+*~

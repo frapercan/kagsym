@@ -1,24 +1,26 @@
 """FastEnv must be indistinguishable from the real engine, turn by turn.
 
-If this test fails, everything built on top is learning against the wrong
-dynamics. This is the test that cannot be skipped.
+If this fails, everything built on top plays against the wrong dynamics.
+Both engines are driven by our own executor (deterministic) on one seat and a
+seeded random walker on the other, so every action is reproducible.
 """
 from __future__ import annotations
 
 import json
-import random
 import os
+import random
 import sys
 
-from kaggle_environments import make
-from kaggle_environments.envs.kaggriculture import kaggriculture as _eng
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from kagsym.fastenv import FastEnv, _fast_copy
+from kagsym.fastenv import FastEnv, _fast_copy  # noqa: E402
+
+kaggle_environments = pytest.importorskip("kaggle_environments")
+from kaggle_environments import make  # noqa: E402
 
 
 def _plain(x):
-    """Normalise Struct/dict/list into something json-comparable."""
     if isinstance(x, dict):
         return {k: _plain(v) for k, v in sorted(x.items())}
     if isinstance(x, list):
@@ -37,60 +39,43 @@ def _snapshot(obs_list):
     })
 
 
-# The engine's random_agent uses random.Random() with no seed, so it is not
-# reproducible. We use our deterministic policies to compare the two engines.
-from kagworld.policies import make_random_policy, make_scripted_policy
+def _walker(seed: int):
+    rng = random.Random(seed)
+    moves = ["NORTH", "SOUTH", "EAST", "WEST", "PASS"]
+
+    def act(obs):
+        return {"farmer": [rng.choice(moves)], "hands": [], "market": []}
+    return act
 
 
-def test_equivalence(n_steps=240, seed=1234, verbose=True):
+def _executor(steps: int):
+    from kagsym.symbolic.executor import Agent
+    ag = Agent(episode_steps=steps)
+    return lambda obs: ag(obs)
+
+
+@pytest.mark.parametrize("seed", [1234, 99, 20260919])
+def test_equivalence(seed, n_steps=240):
     cfg = {"episodeSteps": n_steps + 2, "seed": seed}
-
     real = make("kaggriculture", configuration=cfg, debug=False)
     real.reset()
     real_obs = [s.observation for s in real.state]
-
     fast = FastEnv(configuration={"episodeSteps": n_steps + 2}, seed=seed)
     fast_obs = fast.reset()
+    assert real.info.get("seed") == fast.info["seed"]
+    assert _snapshot(real_obs) == _snapshot(fast_obs), "initial state differs"
 
-    # The resolved seed must match; otherwise the weeds diverge.
-    assert real.info.get("seed") == fast.info["seed"], (
-        f"seed real={real.info.get('seed')} fast={fast.info['seed']}")
-
-    a = _snapshot(real_obs)
-    b = _snapshot(fast_obs)
-    assert a == b, "el estado inicial ya difiere"
-
-    pol_real = [make_random_policy(seed=11), make_scripted_policy(seed=12, crop="WHEAT", ranch=True)]
-    pol_fast = [make_random_policy(seed=11), make_scripted_policy(seed=12, crop="WHEAT", ranch=True)]
-
+    pol_real = [_executor(n_steps + 2), _walker(11)]
+    pol_fast = [_executor(n_steps + 2), _walker(11)]
     for t in range(n_steps):
         acts_real = [pol_real[i](real_obs[i]) for i in range(2)]
         acts_fast = [pol_fast[i](fast_obs[i]) for i in range(2)]
         assert _plain(acts_real) == _plain(acts_fast), f"actions diverge at t={t}"
-
         real.step([_fast_copy(x) for x in acts_real])
         real_obs = [s.observation for s in real.state]
         fast_obs, _ = fast.step([_fast_copy(x) for x in acts_fast])
-
         a, b = _snapshot(real_obs), _snapshot(fast_obs)
         if a != b:
-            ka = json.dumps(a, sort_keys=True)
-            kb = json.dumps(b, sort_keys=True)
-            for key in a:
-                if a[key] != b[key]:
-                    print(f"  diverging field: {key}")
-                    print(f"    real: {json.dumps(a[key])[:400]}")
-                    print(f"    fast: {json.dumps(b[key])[:400]}")
-            raise AssertionError(f"state diverges at t={t} (len {len(ka)} vs {len(kb)})")
-
-    if verbose:
-        print(f"OK: {n_steps} turns identical bit for bit (seed={seed})")
-        print(f"    final money real={[f['money'] for f in real_obs[0]['farms']]}")
-        print(f"    final money fast={[f['money'] for f in fast_obs[0]['farms']]}")
-    return True
-
-
-if __name__ == "__main__":
-    for s in (1234, 99, 20260919):
-        test_equivalence(n_steps=240, seed=s)
-    print("\nALL SEEDS OK")
+            bad = [k for k in a if a[k] != b[k]]
+            raise AssertionError(f"state diverges at t={t} in {bad}: "
+                                 f"{json.dumps(a[bad[0]])[:300]} vs {json.dumps(b[bad[0]])[:300]}")
