@@ -37,7 +37,9 @@ INTERRUPTORES = [
     ("KAG_PHI_W", "1.0", "0.3", "peso del shaping", "entrenamiento"),
 ]
 SEEDS = [int(x) for x in os.environ.get("KSEEDS", "9001,9002,9003").split(",")]
-CK = os.environ.get("KCK", "runs/prod.pt.ultimo")
+# El default apuntaba a `runs/prod.pt.ultimo`, de hace dos dias: un
+# interruptor se declaraba inerte sobre una politica que ya no jugamos.
+CK = os.environ.get("KCK", "runs/partida_v4.pt")
 
 
 def _juega(seed):
@@ -68,9 +70,13 @@ def _juega(seed):
         while not env.done:
             ob = o[0]
             if day != ob["day"]:
-                gr, b = O.encode_obs(ob)
+                gr, b = O.encode_obs(ob, getattr(ag, '_destinations', None))
+                # HISTORICO REAL, como el agente que se sube. Con ceros el
+                # mismo episodio pasa de 76.607 $ a 25.335: un interruptor
+                # medido asi se prueba sobre un agente mutilado.
+                _hf = torch.from_numpy(np.asarray(O.rival_flow(ob), dtype=np.float32)).unsqueeze(0)
                 out = net(torch.from_numpy(gr).unsqueeze(0),
-                          torch.from_numpy(b).unsqueeze(0), torch.zeros(1, Mw.N_HIST))
+                          torch.from_numpy(b).unsqueeze(0), _hf)
                 ag.macro = Macro.from_vector(torch.sigmoid(out["macro_mu"])[0].numpy())
                 mp = out["micro"][0].numpy()
                 ag.micro = (lambda _o, m=_sm(mp): m)

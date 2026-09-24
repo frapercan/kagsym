@@ -22,6 +22,10 @@ H, D, CASH = 24, 30, 3000
 _BASE = int(os.environ.get("KAG_SEED0", "9001"))
 SEEDS = list(range(_BASE, _BASE + 200))
 SEEDS = SEEDS[:int(os.environ.get("KAG_NSEEDS", len(SEEDS)))]
+# Contador POR PROCESO de fallos del rival. Igual que `_RIV_FALLOS` en
+# `environment.py`: con fork cada worker lleva el suyo, y lo que importa no es
+# el total exacto sino que deje de ser invisible.
+_RIV_FALLOS = [0]
 PROCS = int(os.environ.get("KAG_PROCS", "6"))                            # training uses 11; do not choke it
 # la cadencia se pide por lado con el sufijo "@turno" en la ruta
 
@@ -75,8 +79,25 @@ def _one(args):
         net, ops = _CACHE[ckpt]
     except Exception:
         d = torch.load(ckpt, map_location="cpu", weights_only=False)
-        ops = bool((d.get("cfg") or {}).get("con_ops", True))
-        net = E2EAgent(WorldConfig(device="cpu", con_ops=ops))
+        # LA CONFIG DEL CHECKPOINT, no los defaults de hoy. `main.py`:106 hace
+        # `WorldConfig(**d["cfg"])` y evalua.py tambien; aqui se reconstruia
+        # desde la dataclass arrastrando solo `con_ops`. Para los campos que
+        # cambian formas el fallo es ruidoso (load_strict revienta), pero para
+        # los que no lo es NO: un checkpoint sin `log_sigma_micro` se rellena
+        # con sigma_micro=0,15 por defecto en vez de la suya, que es justo la
+        # sigma del modo @ruido. Hoy es inocuo -los cuatro checkpoints vivos
+        # traen cfg igual al default y log_sigma_micro-, pero deja de serlo en
+        # cuanto se mida uno de otra arquitectura, que es cuando mas importa.
+        _c = d.get("cfg")
+        if isinstance(_c, dict):
+            _c = dict(_c); _c["device"] = "cpu"
+            cfg = WorldConfig(**_c)
+        elif _c is not None:
+            cfg = _c
+        else:
+            cfg = WorldConfig(device="cpu", con_ops=True)
+        net = E2EAgent(cfg)
+        ops = bool(getattr(cfg, "con_ops", True))
         load_strict(net, d["sd"], ckpt, macro_fields=d.get("macro_fields"))
         net.eval()
         try:
@@ -172,6 +193,17 @@ def _one(args):
             try:
                 act_r = rv(o[1])
             except Exception:
+                # NUNCA EN SILENCIO. `environment.py`:563 ya decidio esto:
+                # un rival roto se vuelve un rival debil, indistinguible de uno
+                # al que ganamos, y el pareado no lo cancela porque afecta a
+                # los dos lados por igual solo si falla igual en los dos.
+                # Medido hoy: v48 lanza CERO veces en 3.595 turnos, asi que
+                # esto es un seguro, no un parche. Si salta, la medida NO vale.
+                import traceback
+                _RIV_FALLOS[0] += 1
+                if _RIV_FALLOS[0] <= 3:
+                    print(f"[vara] RIVAL LANZO (fallo {_RIV_FALLOS[0]}):", file=sys.stderr)
+                    traceback.print_exc()
                 act_r = {"farmer": ["PASS"], "hands": [], "market": []}
             o, _ = env.step([ag(ob), act_r])
     r = env.rewards()

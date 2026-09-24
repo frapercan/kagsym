@@ -90,6 +90,12 @@ def _duelo(args):
         mb = m[1] if asiento == 0 else m[0]
         return ca, cb, float(ma), float(mb), None
     except Exception as e:
+        # Ruidoso a proposito: un duelo que revienta por un bug nuestro salia
+        # como una celda vacia de la matriz, indistinguible de un duelo que no
+        # se pidio. Ver el mismo arreglo en banda.py.
+        import traceback
+        print(f"[matriz] FALLO en {ca} vs {cb}:", file=sys.stderr)
+        traceback.print_exc()
         return ca, cb, float("nan"), float("nan"), f"{type(e).__name__}: {e}"
 
 

@@ -72,7 +72,19 @@ def _uno(args):
         m = env.rewards()
         return rival, float(m[yo]), float(m[otro]), None
     except Exception as e:
-        return rival, float("nan"), float("nan"), f"{type(e).__name__}: {e}"
+        # DE QUIEN ES EL FALLO. Este `try` envuelve TODO -checkpoint, rival,
+        # 720 turnos, encode_obs, red y ejecutor-, y su salida se imprimia
+        # entera bajo "rivales no cargaron (se ignoran)": un fallo NUESTRO se
+        # reetiquetaba como problema del rival y se caia del denominador. Esa
+        # es exactamente la forma del fallo que costo una noche: la medida
+        # sale, parece sana, y describe otra cosa.
+        import traceback
+        _nuestro = not isinstance(e, (ImportError, ModuleNotFoundError, FileNotFoundError, KeyError))
+        _et = "NUESTRO" if _nuestro else "carga del rival"
+        if _nuestro:
+            print(f"[banda] FALLO {_et} con {rival}:", file=sys.stderr)
+            traceback.print_exc()
+        return rival, float("nan"), float("nan"), f"[{_et}] {type(e).__name__}: {e}"
 
 
 def main():
