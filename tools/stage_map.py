@@ -30,13 +30,29 @@ CASH = 3000
 _G = {}
 
 
+def _rival():
+    """The opponent for rollouts: a fresh public agent per rollout, so its
+    module state does not leak between counterfactuals; PASS when none."""
+    name = _G.get("opponent")
+    if not name:
+        return lambda obs: dict(E.PASS_ACTION)
+    from kagsym.environment import load_public
+    return load_public(name)
+
+
 def _rollout(pol, env, first_macro):
     env2, pol2 = env.clone(), copy.deepcopy(pol)
+    rival = _rival()
     forced = first_macro
     while not env2.done:
-        a = pol2.act(env2.observations()[0], macro_override=forced)
+        o = env2.observations()
+        a = pol2.act(o[0], macro_override=forced)
         forced = None
-        env2.step([a, dict(E.PASS_ACTION)])
+        try:
+            b = rival(o[1])
+        except Exception:
+            b = dict(E.PASS_ACTION)
+        env2.step([a, b])
     return float(env2.rewards()[0])
 
 
@@ -56,7 +72,10 @@ def main():
     p.add_argument("--delta", type=float, default=0.15)
     p.add_argument("--procs", type=int, default=8)
     p.add_argument("--out", default=None)
+    p.add_argument("--opponent", default=None, help="public agent for the trajectory and the rollouts (default: passive)")
+    p.add_argument("--objective", choices=["money", "margin"], default="money")
     a = p.parse_args()
+    _G["opponent"] = a.opponent
     import multiprocessing as mp
     names = [f.name for f in Macro.__dataclass_fields__.values()][:N_MACRO]
     cfg = {"episodeSteps": 24 * a.days, "turnsPerDay": 24, "startingMoney": CASH}
@@ -66,6 +85,7 @@ def main():
     env = FastEnv(configuration=cfg, seed=a.seed)
     obs = env.reset()
     rows = []
+    rival = _rival()
     while not env.done:
         ob = obs[0]
         if ob["hour"] == 0:
@@ -80,9 +100,13 @@ def main():
             print(f"  day {best[0]:2d}  base {_G['base']:8,.0f} $   best single change "
                   f"{names[best[1]]}{'+' if best[2] > 0 else '-'}{a.delta}: {best[3]:+,.0f} $", flush=True)
         a_ = pol.act(ob)
-        obs, _ = env.step([a_, dict(E.PASS_ACTION)])
+        try:
+            b_ = rival(obs[1])
+        except Exception:
+            b_ = dict(E.PASS_ACTION)
+        obs, _ = env.step([a_, b_])
     final = float(env.rewards()[0])
-    out = a.out or os.path.join("runs", "ablation", f"stage_map_{a.days}d_{a.seed}.csv")
+    out = a.out or os.path.join("runs", "ablation", f"stage_map_{a.days}d_{a.seed}_{a.opponent or 'passive'}.csv")
     with open(out, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()
