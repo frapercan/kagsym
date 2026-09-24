@@ -231,8 +231,10 @@ class Policy:
         return _split_micro(self._map)
 
     # -- acting ---------------------------------------------------------------
-    def plan_day(self, obs) -> None:
-        """Run the network once for today's plan."""
+    def plan_day(self, obs, macro_override=None) -> None:
+        """Run the network once for today's plan. `macro_override` (a vector
+        in [0,1]^N) replaces today's macro: the counterfactual a rollout
+        search or a probe wants, with the micro map still the network's."""
         import torch
         from . import obs as O
         from . import macro as M
@@ -248,7 +250,8 @@ class Policy:
             off = self.offset_for(day)
             if off is not None:
                 mu = mu + torch.from_numpy(off.vector(day / self.days, M.N_MACRO))
-            self._agent.macro = M.Macro.from_vector(torch.sigmoid(mu).numpy())
+            vec = torch.sigmoid(mu).numpy() if macro_override is None else np.asarray(macro_override, dtype=np.float32)
+            self._agent.macro = M.Macro.from_vector(vec)
             self._map = out["micro"][0].numpy()
 
     def offset_for(self, day: int) -> "Offset | None":
@@ -267,14 +270,37 @@ class Policy:
                 return off
         return None
 
-    def act(self, obs) -> dict:
+    def act(self, obs, macro_override=None) -> dict:
         if self._agent is None:
             self.reset()
         day = int(obs["day"])
         if self._day != day:
-            self.plan_day(obs)
+            self.plan_day(obs, macro_override)
             self._day = day
         return self._agent(obs)
+
+    def macro_candidates(self, obs, k: int, generator=None) -> list:
+        """Today's mean macro plus k-1 draws from the policy's own Gaussian,
+        as vectors in [0,1]^N: the candidates of a rollout search. Index 0 is
+        always the mean, so 'index != 0' counts how often the search won."""
+        import torch
+        from . import obs as O
+        from . import macro as M
+        g, b = O.encode_obs(obs, self._agent._destinations)
+        hf = np.asarray(O.rival_flow(obs), dtype=np.float32)
+        with torch.no_grad():
+            out = self.net(torch.from_numpy(g).unsqueeze(0), torch.from_numpy(b).unsqueeze(0),
+                           torch.from_numpy(hf).unsqueeze(0))
+            mu = out["macro_mu"]
+            off = self.offset_for(int(obs["day"]))
+            if off is not None:
+                mu = mu + torch.from_numpy(off.vector(int(obs["day"]) / self.days, M.N_MACRO))
+            sigma = self.net.log_sigma.exp()
+            cands = [torch.sigmoid(mu)[0].numpy()]
+            for _ in range(max(0, k - 1)):
+                e = torch.randn(mu.shape, generator=generator)
+                cands.append(torch.sigmoid(mu + sigma * e)[0].numpy())
+        return cands
 
     __call__ = act
 

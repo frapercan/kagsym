@@ -66,11 +66,76 @@ def scenario_idle(policy_path: str, days: int, seeds):
     return rows
 
 
+def _rollout_from(pol, env, first_macro):
+    """Play a cloned game to the end: today with `first_macro`, then the
+    policy as it is. The policy is deep-copied WITH its executor state
+    (destinations, turns-per-tile): a fresh executor once made the null case
+    miss by $389 at day 7 and every seed collapse to the same number."""
+    import copy
+    env2 = env.clone()
+    pol2 = copy.deepcopy(pol)
+    forced = first_macro
+    while not env2.done:
+        ob = env2.observations()[0]
+        a = pol2.act(ob, macro_override=forced)
+        forced = None
+        env2.step([a, dict(E.PASS_ACTION)])
+    return float(env2.rewards()[0])
+
+
+def oracle_solitaire(policy_path: str, days: int, seed: int, k: int = 16, hours: int = 24):
+    """The policy improved by exact rollout search over its own macro
+    Gaussian at every day boundary (k candidates, index 0 = the mean). With
+    the exact engine and a passive opponent a rollout is not a prediction.
+    Returns (oracle money, plain money, days on which the search won,
+    null-case error). The null case is the mean's rollout on day 0, which
+    must equal the plain policy's final money exactly."""
+    import torch
+    cfg = {"episodeSteps": hours * days, "turnsPerDay": hours, "startingMoney": CASH}
+    plain, _, _ = play_solitaire(policy_path, days, seed, hours)
+    pol = Policy.from_checkpoint(policy_path)
+    pol.configure(cfg)
+    pol.reset()
+    env = FastEnv(configuration=cfg, seed=seed)
+    obs = env.reset()
+    gen = torch.Generator().manual_seed(seed)
+    wins, null_err, forced = [], None, None
+    while not env.done:
+        ob = obs[0]
+        if ob["hour"] == 0:
+            cands = pol.macro_candidates(ob, k, gen)
+            vals = [_rollout_from(pol, env, c) for c in cands]
+            if ob["day"] == 0:
+                null_err = vals[0] - plain
+            i = max(range(len(vals)), key=lambda j: vals[j])
+            if i != 0:
+                wins.append((int(ob["day"]), vals[i] - vals[0]))
+            forced = cands[i]
+        a = pol.act(ob, macro_override=forced)
+        forced = None
+        obs, _ = env.step([a, dict(E.PASS_ACTION)])
+    return float(env.rewards()[0]), plain, wins, null_err
+
+
+def scenario_oracle(policy_path: str, days: int, seeds, k: int = 16):
+    rows = []
+    for s in seeds:
+        oracle, plain, wins, null_err = oracle_solitaire(policy_path, days, s, k)
+        rows.append({"seed": s, "final": plain, "optimum": oracle, "regret": oracle - plain,
+                     "consistency": {}, "orders": {"search_won_on_days": [d for d, _ in wins],
+                                                   "null_error": null_err}})
+    return rows
+
+
 # Idle worlds: nothing can pay. Carrot needs 3 days and wheat 4 (plant, grow,
 # harvest, sell), the fastest animal produces on day 4; with k <= 3 the
 # optimum is the starting cash. From k = 5 on, a plan pays and the yardstick
 # must be a planner's, not 3,000 $.
 SCENARIOS = {f"idle-{k}": (scenario_idle, k) for k in (1, 2, 3)}
+# Worlds where a plan pays: the yardstick is the policy improved by rollout
+# search on the exact engine (a lower bound on the optimum, and the same
+# search that was worth +37% in the full game before the time budget).
+SCENARIOS.update({f"oracle-{k}": (scenario_oracle, k) for k in (5, 8, 14, 30)})
 
 
 def main():
@@ -86,8 +151,9 @@ def main():
         rows = fn(os.path.abspath(a.checkpoint), arg, seeds)
         reg = [r["regret"] for r in rows]
         worst = max(worst, max(reg))
-        print(f"[{name}] regret mean {sum(reg) / len(reg):,.0f} $  max {max(reg):,.0f} $   "
-              f"orders {rows[0]['orders']}   potential-final at day 0: {rows[0]['consistency'].get(0, 0):+,.0f}")
+        print(f"[{name}] policy {sum(r['final'] for r in rows) / len(rows):,.0f} $  optimum "
+              f"{sum(r['optimum'] for r in rows) / len(rows):,.0f} $  regret mean {sum(reg) / len(reg):,.0f} $  "
+              f"max {max(reg):,.0f} $   {rows[0]['orders']}", flush=True)
     sys.exit(0 if worst == 0 else 1)
 
 
