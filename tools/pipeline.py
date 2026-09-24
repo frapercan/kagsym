@@ -9,7 +9,8 @@ next gate, on a clean tree, in a single command.
 
 Stages:
   0 tests            pytest kagsym/tests; refuses KAG_* game env variables
-  1 train            kagsym.cli.train from random init, seeded
+  1 train            kagsym.cli.train from random init, seeded, on a reduced
+                     calendar (24h x 8d smoke, 24h x 14d full) against itself
   2 gate             tools/check_submission.py on the trained checkpoint
   3 live-dials       tools/live_dials.py
   4 search           tools/search.py (constant offset, margin objective)
@@ -36,12 +37,21 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 PY = sys.executable
 
-SMOKE = dict(train_updates=6, envs=4, procs=4, days=30, dials_n=1, search_gens=2, search_pop=6,
-             search_elite=2, search_seeds=2, band_sample=2, validate_n=6, validate_band_n=1,
-             band_n=1, band_limit=6, package_turns=48)
-FULL = dict(train_updates=400, envs=11, procs=11, days=30, dials_n=3, search_gens=40, search_pop=32,
-            search_elite=8, search_seeds=16, band_sample=6, validate_n=200, validate_band_n=6,
-            band_n=6, band_limit=0, package_turns=48)
+# Training runs on a REDUCED CALENDAR against itself: fewer days (never fewer
+# hours per day: the engine's day structure is what the executor plays),
+# two-seat self-play on most workers (win rate 0.5 by construction, from
+# random weights to 68% of a trained policy in minutes), one worker against
+# the public anchor so the log keeps an absolute reference. Measurement
+# stages stay at full scale: the public agents die outside 24h x 30d, and a
+# number measured in the reduced world describes another game.
+SMOKE = dict(train_updates=8, envs=4, procs=4, hours=24, days=8, two_seat=3,
+             dials_n=1, search_gens=2, search_pop=6, search_elite=2, search_seeds=2,
+             band_sample=2, validate_n=6, validate_band_n=1, band_n=1, band_limit=6,
+             package_turns=48)
+FULL = dict(train_updates=300, envs=11, procs=11, hours=24, days=14, two_seat=8,
+            dials_n=3, search_gens=40, search_pop=32, search_elite=8, search_seeds=16,
+            band_sample=6, validate_n=200, validate_band_n=6, band_n=6, band_limit=0,
+            package_turns=48)
 
 
 class Stage:
@@ -109,6 +119,7 @@ def main():
         st.run("tests", [PY, "-m", "pytest", "kagsym/tests", "-q", "-p", "no:warnings"])
     st.run("train", [PY, "-m", "kagsym.cli.train", "--envs", str(P["envs"]), "--procs", str(P["procs"]),
                      "--updates", str(P["train_updates"]), "--days", str(P["days"]),
+                     "--steps", str(P["hours"] * P["days"]), "--dos-asientos", str(P["two_seat"]),
                      "--seed", str(a.seed), "--run-name", f"pipeline-{run_name}", "--out", trained],
            must_exist=[trained + ".ultimo"], env=env)
     if not os.path.exists(trained):

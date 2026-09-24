@@ -41,3 +41,34 @@ partida_v5 with ramp    win 0.064   beaten 5 of 74   money 51,304 +- 614
 ## Result
 
 (filled in after the run)
+
+## Result: stopped at generation 7 of 40 (deviation from rule 1, 2026-09-24 13:15)
+
+```
+generation   base      centre - base   population mean - base
+    0      -80,409         +689             -18,595
+    1      -15,581       -2,918             -14,432
+    2      -37,991         -965             -12,090
+    3      -52,323          -31              -8,185
+    4      -81,724       +5,608              -7,411
+    5      -67,391      -12,636             -12,676
+    6      -48,863      -12,221              -9,846
+mean centre - base   -3,210 +- 2,574   (t -1.25)
+```
+
+Why it was stopped, against the preregistration's rule 1: a power reading,
+not a result reading. The base varies by 22,000 $ between generations from
+the opponent sample alone (6 opponents x 4 seeds), the population mean sits
+12,000 $ below the base in every generation (the initial sigma of 0.6 is too
+wide for a checkpoint already at a validated optimum), and after 40
+generations the standard error on centre - base would be about 1,000 $ of
+margin. The decision rule needs +0.02 of band win rate; with a 60,000-80,000 $
+gap per board, a margin gain of a few thousand dollars cannot buy it. The run
+also predates the minesweeper fixes (candidates with failed episodes were
+averaged, artefacts had no identity), so it would have needed re-validation
+in any case. Verdict: null at the power available; the offset space cannot
+buy wins at this scale. Next: the executor (tiles under crop, the opening),
+via the reduced-calendar self-play pipeline.
+
+Artefacts: `runs/search/exp001_margin_history.json` (imported to MLflow as
+`kagsym/search / exp001_margin (stopped)`).

@@ -108,9 +108,19 @@ parameter with no Adam state in the optimiser has never had a gradient.
 ## What is next
 
 The gap is production (10 tiles under crop against 42) and the opening (day 0-1
-capital goes to staff and livestock instead of seed, which compounds). The next
-experiments go there. [EXP-001 result to be added: a search on the strategy
-offset with the opponent's margin as objective, validated on the win rate.]
+capital goes to staff and livestock instead of seed, which compounds).
+
+I tried the cheap thing first: a search on the strategy offset with the
+opponent's **margin** as objective (ours minus theirs against samples of the
+public band, both seats), preregistered as EXP-001. Seven generations in, the
+centre of the search sat 3,200 +- 2,600 $ below its starting point and the
+population 12,000 $ below it in every generation; the opponent sample alone
+moved the baseline by 22,000 $ between generations. With a 60,000-80,000 $ gap
+per board, a margin gain of a few thousand dollars cannot buy a win, so I
+stopped it on a power reading and wrote that down as a deviation from its own
+rule. The offset space cannot buy wins at this scale. The next experiments go
+to the executor, trained fast on a reduced calendar (24 hours a day, fewer
+days) against itself, and measured at full scale against the band.
 
 Repository state: `main` is the rebuilt tree (one policy, one evaluator, seed
 families, English docs, tests). The earlier Spanish state documents are in
