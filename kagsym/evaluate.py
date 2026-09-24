@@ -194,6 +194,11 @@ class Episode:
     # better game. NaN when not requested.
     value: float = float("nan")
     opp_value: float = float("nan")
+    # The world the episode was played in: a number without its calendar is
+    # another game's number (an 8-day evaluation was once recorded as 30).
+    hours: int = HOURS
+    days: int = DAYS
+    agent_horizon_days: int | None = None
 
 
 def play(spec: PolicySpec, opp: Opponent, seed: int, seat: int = 0,
@@ -249,7 +254,8 @@ def play(spec: PolicySpec, opp: Opponent, seed: int, seat: int = 0,
     money = env.rewards()
     mine, theirs = float(money[me]), float(money[other])
     win = 1.0 if mine > theirs else (0.5 if mine == theirs else 0.0)
-    ep = Episode(opp.label, int(seed), int(seat), mine, theirs, win, failures)
+    ep = Episode(opp.label, int(seed), int(seat), mine, theirs, win, failures,
+                 hours=int(hours), days=int(days), agent_horizon_days=agent_horizon_days)
     if value_horizon_days is not None:
         ep.value, ep.opp_value = position_value(obs, me, other, hours, value_horizon_days)
     return ep
@@ -447,6 +453,8 @@ def record(kind: str, spec: PolicySpec, opponents: Sequence[Opponent],
         "offset": spec.label.split("@")[1] if "@" in spec.label else "checkpoint",
         "opponents": [o.label for o in opponents] if len(opponents) <= 8 else f"{len(opponents)} opponents",
         "seed_families": fams, "seeds": [int(min(seeds)), int(max(seeds)), len(seeds)],
+        "world": {"hours": sorted({e.hours for e in episodes}), "days": sorted({e.days for e in episodes}),
+                  "agent_horizon_days": sorted({e.agent_horizon_days for e in episodes}, key=lambda x: (x is None, x))},
         "summary": summary(episodes),
     }
     if extra:
@@ -469,9 +477,11 @@ def _track(kind, spec, opponents, seeds, episodes, entry, extra) -> None:
         params={"checkpoint": entry["checkpoint"], "offset": entry["offset"],
                 "opponents": len(opponents), "seeds": entry["seeds"][2],
                 "seed_first": entry["seeds"][0], "seats": sorted({e.seat for e in episodes}),
-                "hours": HOURS, "days": DAYS, "cash": CASH},
+                "hours": entry["world"]["hours"], "days": entry["world"]["days"],
+                "agent_horizon_days": entry["world"]["agent_horizon_days"], "cash": CASH},
         tags=context_tags("evaluation", checkpoint=spec.path, opponent=opp_label,
-                          seed_family=fams, measurement=kind),
+                          seed_family=fams, measurement=kind,
+                          world=f"{entry['world']['hours']}hx{entry['world']['days']}d"),
         description=describe([
             f"`{kind}` of {spec.label} against {opp_label} on {entry['seeds'][2]} {fams} seeds.",
             "Deterministic policy, the same code the submission runs (kagsym.policy).",
