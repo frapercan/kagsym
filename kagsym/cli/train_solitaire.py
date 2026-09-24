@@ -50,7 +50,7 @@ def _build_policy():
         torch.set_num_threads(1)
         net = E2EAgent(WorldConfig(**_G["cfg"]))
         net.eval()
-        _G["pol"] = Policy(net=net)
+        _G["pol"] = Policy(net=net, offset="stored", stored_offset=_G.get("schedule"))
     _G["pol"].net.load_state_dict(_G["sd"])
     return _G["pol"]
 
@@ -83,13 +83,18 @@ def _episode(task):
                 out = pol.net(torch.from_numpy(g).unsqueeze(0), torch.from_numpy(b).unsqueeze(0),
                               torch.from_numpy(hf).unsqueeze(0))
                 mu = out["macro_mu"][0]
+                off = pol.offset_for(int(day))
+                if off is not None:          # the checkpoint's schedule shifts the mean
+                    mu = mu + torch.from_numpy(off.vector(day / pol.days, N_MACRO))
                 sigma = pol.net.log_sigma.exp()
                 eps = torch.zeros(N_MACRO)
                 if k > 0:
                     eps[live] = torch.randn(len(live), generator=gen)
                 z = mu + sigma * eps
                 vec = torch.sigmoid(z).numpy()
-            records.append((g, b, hf, z.numpy()))
+            shift = (off.vector(day / pol.days, N_MACRO) if off is not None
+                     else np.zeros(N_MACRO, dtype=np.float32))
+            records.append((g, b, hf, z.numpy(), shift))
             pol.plan_day(ob, macro_override=vec)
             pol._day = day
         a = pol.act(ob)
@@ -119,9 +124,12 @@ def main():
     ap.add_argument("--updates", type=int, default=300)
     ap.add_argument("--seeds-per-update", type=int, default=8)
     ap.add_argument("--samples", type=int, default=4, help="sampled episodes per seed (plus the mean)")
-    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--sigma0", type=float, default=None, help="reset the exploration width at start")
+    ap.add_argument("--mu-penalty", type=float, default=1e-3,
+                    help="quadratic penalty on pre-activations beyond +-4: a saturated sigmoid explores nothing")
     ap.add_argument("--lr-sigma", type=float, default=1e-2)
-    ap.add_argument("--adv-scale", type=float, default=500.0, help="dollars per unit of advantage")
+    ap.add_argument("--adv-scale", type=float, default=100.0, help="floor of the advantage scale, in dollars")
     ap.add_argument("--grad-clip", type=float, default=1.0)
     ap.add_argument("--live", default=None, help="live-dial json; default: every dial")
     ap.add_argument("--eval-every", type=int, default=10)
@@ -144,10 +152,13 @@ def main():
     a.out = a.out or os.path.join("runs", a.run_name + ".pt")
     if a.scratch == (a.checkpoint is not None):
         raise SystemExit("give exactly one of --scratch or --checkpoint")
+    from kagsym.policy import Offset
+    schedule = []
     if a.checkpoint:
         net, ck = load_network(a.checkpoint)
         cfg = ck["cfg"] if isinstance(ck["cfg"], dict) else vars(ck["cfg"])
         macro_fields = ck.get("macro_fields")
+        schedule = Offset.schedule_from_checkpoint(ck)     # kept as the mean's shift, not learned
     else:
         cfg = vars(WorldConfig(device="cpu"))
         net = E2EAgent(WorldConfig(**cfg))
@@ -158,7 +169,10 @@ def main():
     if a.live:
         with open(a.live) as f:
             live = sorted(int(i) for i in json.load(f)["live"])
-    _G.update(cfg=cfg, world={"hours": a.hours, "days": a.days}, live=live)
+    _G.update(cfg=cfg, world={"hours": a.hours, "days": a.days}, live=live, schedule=schedule)
+    if a.sigma0 is not None:
+        with torch.no_grad():
+            net.log_sigma.fill_(float(np.log(a.sigma0)))
 
     sigma_params = [net.log_sigma]
     other = [p for n, p in net.named_parameters()
@@ -180,6 +194,8 @@ def main():
 
     def save(upd):
         torch.save({"sd": net.state_dict(), "cfg": cfg, "macro_fields": macro_fields, "upd": upd,
+                    "offset_schedule": [o.to_checkpoint() for o in schedule if o.until_day is not None or o.from_day is not None],
+                    "offset": next((o.to_checkpoint() for o in schedule if o.until_day is None and o.from_day is None), None),
                     "seed": a.seed, "fingerprint": fingerprint(), "model_fingerprint": model_fingerprint(),
                     "learner": "solitaire-pg", "world": _G["world"]}, a.out + ".tmp")
         os.replace(a.out + ".tmp", a.out)
@@ -196,18 +212,21 @@ def main():
             evals = pool.map(_eval_task, eval_seeds, chunksize=1) if upd % a.eval_every == 0 or upd == 1 else None
         base = {s: r for s, k, r, _ in results if k == 0}
         sampled = [(s, r, rec) for s, k, r, rec in results if k > 0]
-        adv = torch.tensor([(r - base[s]) / a.adv_scale for s, r, _ in sampled], dtype=torch.float32)
+        raw = torch.tensor([(r - base[s]) for s, r, _ in sampled], dtype=torch.float32)
+        adv = raw / max(float(raw.std()), a.adv_scale)      # scale by the batch's own spread, floored
         # recompute the log-probability of every sampled day with gradient
         G = torch.from_numpy(np.stack([rec[0] for _, _, recs in sampled for rec in recs]))
         B = torch.from_numpy(np.stack([rec[1] for _, _, recs in sampled for rec in recs]))
         H = torch.from_numpy(np.stack([rec[2] for _, _, recs in sampled for rec in recs]))
         Z = torch.from_numpy(np.stack([rec[3] for _, _, recs in sampled for rec in recs]))
+        SH = torch.from_numpy(np.stack([rec[4] for _, _, recs in sampled for rec in recs]))
         owner = torch.tensor([i for i, (_, _, recs) in enumerate(sampled) for _ in recs])
         out = net(G, B, H)
-        mu = out["macro_mu"]
+        mu = out["macro_mu"] + SH
         sigma = net.log_sigma.exp()
         lp = torch.distributions.Normal(mu[:, live], sigma[live]).log_prob(Z[:, live]).sum(-1)
-        loss = -(lp * adv[owner]).sum() / max(1, len(sampled))
+        pen = a.mu_penalty * torch.relu(mu.abs() - 4.0).pow(2).mean()
+        loss = -(lp * adv[owner]).sum() / max(1, len(sampled)) + pen
         opt.zero_grad()
         loss.backward()
         gn = torch.nn.utils.clip_grad_norm_(list(other) + sigma_params, a.grad_clip)
@@ -217,10 +236,11 @@ def main():
         m_base = float(np.mean(list(base.values())))
         m_samp = float(np.mean([r for _, r, _ in sampled]))
         metrics = {"1_result/train_money_mean_policy": m_base, "1_result/train_money": m_samp,
-                   "2_policy/sigma_macro": float(sigma.mean()), "2_policy/adv_std": float(adv.std()),
+                   "2_policy/sigma_macro": float(sigma.mean()), "2_policy/adv_std": float(raw.std()),
+                   "2_policy/mu_abs_max": float(mu.abs().max()),
                    "4_optim/grad_norm": float(gn), "4_optim/seconds": time.time() - t0}
         line = (f"upd {upd:4d}/{a.updates}  mean-policy {m_base:7,.0f}  sampled {m_samp:7,.0f}  "
-                f"adv sd {float(adv.std()):.2f}  sigma {float(sigma.mean()):.3f}  |g| {float(gn):.1f}")
+                f"adv sd {float(raw.std()):5.0f}$  sigma {float(sigma.mean()):.3f}  |mu|max {float(mu.abs().max()):.1f}  |g| {float(gn):.1f}")
         if evals is not None:
             ev = float(np.mean(evals))
             se = float(np.std(evals, ddof=1) / np.sqrt(len(evals)))
