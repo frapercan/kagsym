@@ -370,9 +370,31 @@ def main():
                     help="comma-separated .npy paths to SEED the opponent bank")
     ap.add_argument("--bank", type=int, default=4,
                     help="how many old versions are kept as opponents")
-    ap.add_argument("--out", default="runs/e2e.pt")
+    ap.add_argument("--out", default=None,
+                    help="checkpoint path; defaults to runs/<run-name>.pt so two "
+                         "trainers never share a file by accident")
     ap.add_argument("--run-name", default="e2e-control")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="seeds torch, numpy and random in the trainer and, derived by "
+                         "rank, in every worker: network init and exploration draws. "
+                         "--seed0 only seeds the BOARDS.")
     a = ap.parse_args()
+    if a.out is None:
+        a.out = os.path.join("runs", a.run_name + ".pt")
+    # REPRODUCIBLE DRAWS. Nothing seeded torch: two runs with the same command
+    # gave different networks and different exploration, so an A/B of two
+    # configurations confounded the configuration with the draw. Workers
+    # derive their own seed from this one plus their rank (parallel_env).
+    import random as _random
+    _random.seed(a.seed); np.random.seed(a.seed); torch.manual_seed(a.seed)
+    os.environ["KAGSYM_SEED"] = str(a.seed)
+    # THE OPPONENTS MUST LOAD before the first update: a rung whose agent
+    # cannot load used to become a PASS agent in silence.
+    from kagsym.environment import LADDER_CAPS as _CAPS, load_public as _lp
+    if len(_CAPS) != len(LADDER):
+        raise SystemExit(f"LADDER has {len(LADDER)} rungs and LADDER_CAPS {len(_CAPS)}")
+    for _name in {n for n in LADDER if n}:
+        _lp(_name)
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     cfg = WorldConfig(device=dev, sigma_micro=a.sigma, n_keys=a.keys,
@@ -759,6 +781,8 @@ def main():
     from kagsym import seeds as _S
     _semilla0 = (a.seed0 if a.seed0 is not None
                  else _S.TRAINING.start + _upd_prev * max(1, a.envs))
+    # A baked ramp travels with the checkpoint; resuming must not drop it.
+    _OFFSET0 = ((d0 or {}).get("offset") or (d0 or {}).get("delta_rampa")) if a.resume else None
     # EL NORMALIZADOR DE VALOR, AQUI y no arriba. `_vmu/_vsd` escalan el
     # objetivo del critico con una media movil; arrancar en (0, 1) tras cada
     # reanudacion le da otra escala durante ~100 updates, y en la liga eso
@@ -910,43 +934,30 @@ def main():
         env = _build_league(_league)
 
     _EVALS = []
-    _MLF = [None]
-    _DIAGMAC = os.environ.get("KDIAGMAC", "") == "1"
-    _DIAGMAC_G = []
-    try:
-        import mlflow
-        mlflow.set_tracking_uri("sqlite:///data/mlflow.db")
-        mlflow.set_experiment("kaggriculture-world-model")
-        mlflow.start_run(run_name=a.run_name)
-        _MLF[0] = mlflow
-        mlflow.log_params(vars(a))
-        # The exam itself. It is set from outside through the environment, so
-        # without this a run could not be told apart from another trained on a
-        # different objective.
-        from kagsym import reward as _Rw
-        mlflow.log_params({"peso_denso": _Rw.DENSE_WEIGHT,
-                           "peso_win": _Rw.WIN_WEIGHT,
-                           "bonus_producto": _Rw.FIRST_PRODUCT_BONUS,
-                           "escala": _Rw.SCALE})
-        # REFERENCES. A money curve cannot be read without its baselines.
-        mlflow.log_params({
-            "ref_inaction": 3000,            # measured, at any horizon
-            "ref_legal_random": 8692,        # a random legal verb every turn
-            "ref_heuristica_v48tope5": 30065,
-            "ref_backbone6_v48tope5": 32645,
-            "ref_termometro_backbone6": -82.7,
-            "ref_v48_tope5": 34905,
-            "ref_experto_2945_vs_v48": 82382,
-        })
-        use_mlflow = True
-    except Exception as _e_ml:
-        # NUNCA EN SILENCIO. Este except apagaba MLflow entero sin una
-        # palabra: un NameError en una linea nueva dejo dos runs con CERO
-        # metricas y solo se noto al consultar la base a mano.
-        import traceback as _tbm
-        print(f"  MLFLOW APAGADO: {type(_e_ml).__name__}: {_e_ml}", flush=True)
-        _tbm.print_exc()
-        use_mlflow = False
+    from kagsym.tracking import Tracker, context_tags, describe
+    from kagsym import reward as _Rw
+    _TR = Tracker(
+        "training", a.run_name,
+        params={**vars(a),
+                "reward.dense_weight": _Rw.DENSE_WEIGHT, "reward.win_weight": _Rw.WIN_WEIGHT,
+                "reward.first_product_bonus": _Rw.FIRST_PRODUCT_BONUS, "reward.scale": _Rw.SCALE,
+                # References a money curve cannot be read without, all measured:
+                "ref.inaction": 3000, "ref.legal_random": 8692,
+                "ref.v48_uncapped_vs_us": 135000, "ref.public_expert_2945_vs_passive": 180186},
+        tags=context_tags("training", checkpoint=a.resume, parent=a.resume,
+                          opponent=str(LADDER[a.level]) + ("" if a.rivales_liga == 0 else "+league"),
+                          seed_family="training", envs=a.envs, procs=a.procs),
+        description=describe([
+            f"PPO training run `{a.run_name}`.",
+            f"Start: {a.resume or 'random initialisation'}. Opponent rung {a.level}: {LADDER[a.level]}.",
+            f"Two-seat self-play workers: {getattr(a, 'dos_asientos', 0)}; league workers: {a.rivales_liga}.",
+            "Read 1_result/eval_money (deterministic, reserved seeds) for level; "
+            "1_result/train_money is the sampled policy on training boards and is not comparable across runs.",
+            "Selection is never by these curves: see docs/PROCEDURE.md.",
+        ]))
+    _TR.start()
+    use_mlflow = _TR.enabled
+    _MLF = [_TR if _TR.enabled else None]
 
     # PERTURBATION PER EPISODE, not per day. Measured: resampling every day
     # costs 54% of the return ($40,972 fixed -> $18,967 sampled), because 30
@@ -2230,7 +2241,6 @@ def main():
                         accum[:] = 0.0; ret_ep.clear()
             if use_mlflow:
                 try:
-                    import mlflow
                     # WHAT IS LOGGED AND WHY. Through a whole debugging
                     # session, win_rate and money diagnosed NOTHING: they are
                     # the result, not the cause. Every real diagnosis came out
@@ -2297,8 +2307,8 @@ def main():
                     _RIV = float(rv.get("money", 0.0) or 0.0)
                     _m = {
                         # 1_RESULT: the only thing that says whether we are winning.
-                        "1_result/win_rate": float(wr),
-                        "1_result/margin_pct": (100.0 * (_money - _RIV) / _RIV
+                        "1_result/train_win_rate": float(wr),
+                        "1_result/train_margin_pct": (100.0 * (_money - _RIV) / _RIV
                                                    if _RIV > 0 else 0.0),
                         # x1 = doing nothing. MEASURED: inaction leaves the
                         # initial $3,000 at ANY horizon. (The "$245" quoted
@@ -2306,21 +2316,21 @@ def main():
                         # the market layer buying, which loses.)
                         "1_result/x_inaction": _money / 3000.0,
                         # 2_HEALTH: whether the machinery is learning.
-                        "2_health/critic_r2": float(_r2),
-                        "2_health/kl_per_dim": float(kl),
-                        "2_health/saturation": float(_sat),
-                        "2_health/epochs_run": float(a.epochs - kl_cuts),
+                        "3_critic/r2": float(_r2),
+                        "2_policy/kl_per_dim": float(kl),
+                        "2_policy/ratio_saturation": float(_sat),
+                        "4_optim/epochs_run": float(a.epochs - kl_cuts),
                         # 3_CONTEXT: what we are being measured against.
-                        "3_context/rival_money": _RIV,
+                        "5_opponent/money": _RIV,
                         # 4_DIAG: only looked at when something fails.
-                        "4_diag/lr_trunk": float(opt.param_groups[0]["lr"]),
-                        "4_diag/lr_heads": float(opt.param_groups[1]["lr"]),
-                        "4_diag/active_dims": float(_nd),
-                        "4_diag/sd_logratio": float(_sd),
-                        "4_diag/reward": float(R.sum(0).mean()),
+                        "4_optim/lr_trunk": float(opt.param_groups[0]["lr"]),
+                        "4_optim/lr_heads": float(opt.param_groups[1]["lr"]),
+                        "2_policy/active_dims": float(_nd),
+                        "2_policy/sd_logratio": float(_sd),
+                        "3_critic/reward_mean": float(R.sum(0).mean()),
                     }
                     if not a.mix:
-                        _m["1_result/money"] = _money
+                        _m["1_result/train_money"] = _money
                     # DAMAGE PER HORIZON: how much we take from the opponent
                     # relative to what it makes against a PASSIVE player at THAT
                     # SAME horizon. It is the only competitive signal that moves
@@ -2331,15 +2341,15 @@ def main():
                     for _d, _rv_d in _riv_by_horizon.items():
                         _b = BASE_PER_HORIZON.get(_d, {}).get(a.level, 0.0)
                         if _b > 0:
-                            _m[f"3_context/damage_{_d}d_pct"] = 100.0 * (1.0 - _rv_d / _b)
+                            _m[f"5_opponent/damage_{_d}d_pct"] = 100.0 * (1.0 - _rv_d / _b)
                     # Scenario: always present, so the run can be followed.
-                    _m["3_context/league"] = float(_league) if a.leagues else -1.0
-                    _m["3_context/rival_level"] = float(a.level)
+                    _m["5_opponent/league"] = float(_league) if a.leagues else -1.0
+                    _m["5_opponent/level"] = float(a.level)
                     for _k, _v in _extra.items():
                         _m[("1_result/" if _k.startswith("money")
                             else "3_context/") + _k] = float(_v)
                     with torch.no_grad():
-                        _m["4_diag/micro_w_norm"] = float(net.micro.weight.norm())
+                        _m["2_policy/micro_w_norm"] = float(net.micro.weight.norm())
                         # MACRO SIGMA. Measured: narrowing the search costs 26
                         # points of win rate (3.3 se), so sigma falling is an
                         # ALARM, not a sign of convergence. It is watched
@@ -2353,16 +2363,16 @@ def main():
                         # no se mueve"- tardo 5.456 episodios en leerse.
                         if _sig_grads:
                             _sgg = _sig_grads[-50:]
-                            _m["2_health/grad_sigma_macro"] = float(
+                            _m["4_optim/grad_sigma_macro"] = float(
                                 np.mean([x[0] for x in _sgg]))
-                            _m["2_health/grad_sigma_micro_value"] = float(
+                            _m["4_optim/grad_sigma_micro_value"] = float(
                                 np.mean([x[1] for x in _sgg]))
-                            _m["2_health/grad_sigma_micro_verb"] = float(
+                            _m["4_optim/grad_sigma_micro_verb"] = float(
                                 np.mean([x[2] for x in _sgg]))
                         if _grad_norms:
                             _gg = _grad_norms[-50:]
-                            _m["2_health/grad_norm"] = float(np.mean(_gg))
-                            _m["2_health/grad_zero_pct"] = 100.0 * float(
+                            _m["4_optim/grad_norm"] = float(np.mean(_gg))
+                            _m["4_optim/grad_zero_pct"] = 100.0 * float(
                                 np.mean([g < 1e-9 for g in _gg]))
                         if a.jepa_weight > 0 and JZ:
                             # COLLAPSE WATCHDOG. If the encoder always emits
@@ -2370,24 +2380,24 @@ def main():
                             # nothing is learned. This falls to zero if that
                             # happens.
                             _z = torch.cat(JZ)
-                            _m["2_health/jepa_sd"] = float(_z.std(0).mean())
+                            _m["3_critic/jepa_sd"] = float(_z.std(0).mean())
                         if _minfo is not None and _minfo["n"] > 0:
                             # alpha is the whole verdict: fitted against the
                             # batch, it is 0 when the memory adds nothing.
-                            _m["3_mem/alpha"] = _minfo["alpha"]
-                            _m["3_mem/gain_mse"] = _minfo["gain"]
-                            _m["3_mem/mse_ratio"] = _minfo["r_mem"]
-                            _m["3_mem/k"] = float(_minfo["k"])
-                            _m["3_mem/half_life"] = float(_minfo["hl"])
-                            _m["3_mem/entries"] = float(_minfo["n"])
+                            _m["3_critic/memory_alpha"] = _minfo["alpha"]
+                            _m["3_critic/memory_gain_mse"] = _minfo["gain"]
+                            _m["3_critic/memory_mse_ratio"] = _minfo["r_mem"]
+                            _m["3_critic/memory_k"] = float(_minfo["k"])
+                            _m["3_critic/memory_half_life"] = float(_minfo["hl"])
+                            _m["3_critic/memory_entries"] = float(_minfo["n"])
                         try:
                             if _explore == _explore:
-                                _m["2_health/verb_explore_pct"] = 100.0 * _explore
-                            _m["2_health/kl_target"] = float(a.kl_target)
-                            _m["2_health/kl_macro"] = float(kl_ma)
-                            _m["2_health/kl_micro"] = float(kl_mi)
-                            _m["4_diag/lr_macro"] = float(opt.param_groups[1]["lr"])
-                            _m["4_diag/lr_micro"] = float(opt.param_groups[2]["lr"])
+                                _m["2_policy/verb_explore_pct"] = 100.0 * _explore
+                            _m["2_policy/kl_target"] = float(a.kl_target)
+                            _m["2_policy/kl_macro"] = float(kl_ma)
+                            _m["2_policy/kl_micro"] = float(kl_mi)
+                            _m["4_optim/lr_macro"] = float(opt.param_groups[1]["lr"])
+                            _m["4_optim/lr_micro"] = float(opt.param_groups[2]["lr"])
                         except Exception:
                             pass
                         # WIN RATE PER RUNG. Each worker plays one, so without
@@ -2407,29 +2417,29 @@ def main():
                             _map = (_assign if _assign else list(range(len(_wpp2))))
                             for _i2, _v2 in enumerate(_wpp2):
                                 if _v2 == _v2 and _i2 < len(_map):
-                                    _m[f"5_rung/win_{_map[_i2]:02d}"] = float(_v2)
+                                    _m[f"5_opponent/rung_win_{_map[_i2]:02d}"] = float(_v2)
                             for _i2, _v2 in enumerate(_rpp2):
                                 if _v2 == _v2 and _i2 < len(_map):
-                                    _m[f"5_rung/rival_{_map[_i2]:02d}"] = float(_v2)
+                                    _m[f"5_opponent/rung_opponent_{_map[_i2]:02d}"] = float(_v2)
                             # how many workers sit on each rung
                             for _j2 in set(_map):
-                                _m[f"5_rung/quota_{_j2:02d}"] = float(
+                                _m[f"5_opponent/rung_quota_{_j2:02d}"] = float(
                                     sum(1 for x in _map if x == _j2))
                         except Exception:
                             pass
-                        _m["2_health/sigma_macro"] = float(net.log_sigma.exp().mean())
+                        _m["2_policy/sigma_macro"] = float(net.log_sigma.exp().mean())
                         _sm = net.log_sigma_micro.detach().exp()
-                        _m["2_health/sigma_micro_value"] = float(_sm[0].mean())
+                        _m["2_policy/sigma_micro_value"] = float(_sm[0].mean())
                         if _sm.shape[0] > 1:
-                            _m["2_health/sigma_micro_verb"] = float(_sm[1:].mean())
-                        _m["2_health/sigma_floor"] = float(a.sigma_floor)
+                            _m["2_policy/sigma_micro_verb"] = float(_sm[1:].mean())
+                        _m["2_policy/sigma_floor"] = float(a.sigma_floor)
                         # x_inaction: 1.0 = the policy is INERT. Four
                         # different collapses would have been visible at a
                         # glance with this on the dashboard.
                         _m["1_result/x_inaction"] = float(_money) / 3000.0
                         # how much of the macro depends on the STATE. If it is
                         # ~0 the head emits a constant and conditions nothing.
-                        _m["2_health/macro_w_norm"] = float(net.macro_mu.weight.norm())
+                        _m["2_policy/macro_w_norm"] = float(net.macro_mu.weight.norm())
                     try:
                         # LA MISMA ancla que se imprime y que decide el
                         # guardado: media de TODOS los trabajadores del rival
@@ -2447,15 +2457,15 @@ def main():
                         _r2v = [_rw2[_k] for _k in _ws2
                                 if _k < len(_rw2) and _rw2[_k] == _rw2[_k]]
                         if _v2:
-                            _m["1_result/ancla_dinero"] = float(np.mean(_v2))
+                            _m["1_result/anchor_money"] = float(np.mean(_v2))
                             # dispersion: sin ella no se puede distinguir un
                             # movimiento real de un rebote de una muestra.
                             if len(_v2) > 1:
-                                _m["1_result/ancla_se"] = float(
+                                _m["1_result/anchor_se"] = float(
                                     np.std(_v2, ddof=1) / len(_v2) ** 0.5)
-                            _m["1_result/ancla_suavizada"] = float(_ancla_ema[0])
+                            _m["1_result/anchor_smoothed"] = float(_ancla_ema[0])
                             if _r2v and np.mean(_r2v) > 0:
-                                _m["1_result/ancla_margen_pct"] = float(
+                                _m["1_result/anchor_margin_pct"] = float(
                                     100.0 * (np.mean(_v2) - np.mean(_r2v))
                                     / np.mean(_r2v))
                     except Exception:
@@ -2467,9 +2477,9 @@ def main():
                     try:
                         _pd, _rl = env.manos_pedidas_reales()
                         if _pd == _pd and _rl == _rl:
-                            _m["2_health/manos_pedidas"] = float(_pd)
-                            _m["2_health/manos_reales"] = float(_rl)
-                            _m["2_health/manos_saturacion"] = float(
+                            _m["6_economy/hands_requested"] = float(_pd)
+                            _m["6_economy/hands_real"] = float(_rl)
+                            _m["6_economy/hands_saturation"] = float(
                                 _rl / max(_pd, 1e-6))
                     except Exception:
                         pass
@@ -2484,13 +2494,13 @@ def main():
                         _uds = _pp.get("uds") or {}
                         _ing = _pp.get("ing") or {}
                         for _k6, _v6 in _uds.items():
-                            _m[f"6_producto/{_k6.lower()}"] = float(_v6)
+                            _m[f"6_economy/units_{_k6.lower()}"] = float(_v6)
                         for _k6, _v6 in _ing.items():
-                            _m[f"6_ingreso/{_k6.lower()}"] = float(_v6)
+                            _m[f"6_economy/income_{_k6.lower()}"] = float(_v6)
                         if _uds:
-                            _m["6_producto/TOTAL"] = float(sum(_uds.values()))
+                            _m["6_economy/units_total"] = float(sum(_uds.values()))
                         if _ing and sum(_ing.values()) > 0:
-                            _m["6_ingreso/TOTAL"] = float(sum(_ing.values()))
+                            _m["6_economy/income_total"] = float(sum(_ing.values()))
                             # VARIEDAD EFECTIVA = exp(entropia de las cuotas de
                             # INGRESO. Sin umbral y sin constantes: dice
                             # "cuantos productos EQUIPONDERADOS darian esta
@@ -2507,9 +2517,9 @@ def main():
                             _sh = np.array([v for v in _ing.values()
                                             if v > 0], dtype=float)
                             _sh = _sh / _sh.sum()
-                            _m["6_ingreso/variedad_efectiva"] = float(
+                            _m["6_economy/income_effective_variety"] = float(
                                 np.exp(-(_sh * np.log(_sh)).sum()))
-                            _m["6_ingreso/cuota_top2"] = float(
+                            _m["6_economy/income_top2_share"] = float(
                                 100.0 * np.sort(_sh)[-2:].sum())
                     except Exception:
                         pass
@@ -2520,27 +2530,27 @@ def main():
                     # nuestro nivel: 0,5 significa que si.
                     if len(_TORNEO):
                         _elos = [q["elo"] for q in _TORNEO.pool]
-                        _m["3_liga/elo_actual"] = float(_TORNEO.elo_actual)
-                        _m["3_liga/instantaneas"] = float(len(_TORNEO))
+                        _m["5_opponent/league_elo"] = float(_TORNEO.elo_actual)
+                        _m["5_opponent/league_snapshots"] = float(len(_TORNEO))
                         _pm = [_TORNEO.p(_i) for _i in range(len(_TORNEO))]
                         _pm = [x for x in _pm if x is not None]
                         if _pm:
                             # cuanto ENSEÑA el pool: media de p(1-p).
-                            _m["3_liga/info_media"] = float(
+                            _m["5_opponent/league_info_mean"] = float(
                                 np.mean([x * (1 - x) for x in _pm]))
-                            _m["3_liga/medidas"] = float(len(_pm))
-                        _m["3_liga/elo_rango"] = float(max(_elos) - min(_elos))
-                        _m["3_liga/peldanos_autojuego"] = float(len(_pool_net))
+                            _m["5_opponent/league_measured"] = float(len(_pm))
+                        _m["5_opponent/league_elo_range"] = float(max(_elos) - min(_elos))
+                        _m["5_opponent/league_selfplay_rungs"] = float(len(_pool_net))
                         if _TORNEO_RIVAL[1]:
                             _wpr_m = env.win_rate_per_rung()
                             _wd = [_wpr_m[k] for k in _TORNEO_RIVAL[1]
                                    if k < len(_wpr_m) and _wpr_m[k] == _wpr_m[k]]
                             if _wd:
-                                _m["3_liga/duelo_win"] = float(np.mean(_wd))
+                                _m["5_opponent/league_duel_win"] = float(np.mean(_wd))
                         if getattr(net, "n_ops", 0):
-                            _m["2_health/verb_signal_noise"] = float(
+                            _m["2_policy/verb_signal_noise"] = float(
                                 net.micro.bias[1:].abs().max()) / max(1e-9, cfg.sigma_ops)
-                    mlflow.log_metrics(_m, step=_upd0 + upd)
+                    _TR.log(_m, step=_upd0 + upd)
                 except Exception:
                     pass
         # Save the BEST by episode return, not the last. In an earlier run
@@ -2560,7 +2570,7 @@ def main():
         # proyecto ya se ha cortado varias veces.
         if a.eval_cada > 0 and (upd % a.eval_cada == 0 or upd == a.updates):
             try:
-                torch.save({"sd": net.state_dict(), "cfg": vars(cfg),
+                torch.save({"sd": net.state_dict(), "cfg": vars(cfg), "seed": a.seed, "offset": _OFFSET0,
                             "init": vec0, "macro_fields": _MACRO_FIELDS,
                             "upd": upd, "fingerprint": fingerprint(),
                             "model_fingerprint": model_fingerprint(),
@@ -2595,11 +2605,11 @@ def main():
                           f"[{_ev['seconds']}s]", flush=True)
                     if _MLF[0] is not None:
                         try:
-                            _MLF[0].log_metrics(
-                                {"1_result/eval_dinero": _ev["money"],
+                            _TR.log(
+                                {"1_result/eval_money": _ev["money"],
                                  "1_result/eval_se": _ev["se"],
-                                 "1_result/eval_margen_pct": _ev["margin_pct"],
-                                 "1_result/eval_mejor": best}, step=_upd0 + upd)
+                                 "1_result/eval_margin_pct": _ev["margin_pct"],
+                                 "1_result/eval_best": best}, step=_upd0 + upd)
                         except Exception:
                             pass
                 else:
@@ -2607,7 +2617,7 @@ def main():
             except Exception as _e_ev:
                 print(f"  [eval] FALLO: {type(_e_ev).__name__}: {_e_ev}", flush=True)
         if upd % 10 == 0 or upd == a.updates:
-            torch.save({"sd": net.state_dict(), "cfg": vars(cfg), "init": vec0,
+            torch.save({"sd": net.state_dict(), "cfg": vars(cfg), "seed": a.seed, "offset": _OFFSET0, "init": vec0,
                         "macro_fields": _MACRO_FIELDS,
                         "upd": upd, "fingerprint": fingerprint(),
                         "model_fingerprint": model_fingerprint(),
@@ -2669,7 +2679,7 @@ def main():
             if (a.eval_cada <= 0
                     and _ancla_n[0] >= _ANCLA_MIN and _ancla_ema[0] > best):
                 best = _ancla_ema[0]
-                torch.save({"sd": net.state_dict(), "cfg": vars(cfg),
+                torch.save({"sd": net.state_dict(), "cfg": vars(cfg), "seed": a.seed, "offset": _OFFSET0,
                             "init": vec0, "macro_fields": _MACRO_FIELDS,
                             "ancla": float(_ancla_ema[0]), "upd": upd,
                             "ret": float(np.mean(ret_ep[-80:])) if ret_ep else float("nan"),

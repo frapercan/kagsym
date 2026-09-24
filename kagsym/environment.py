@@ -366,12 +366,12 @@ class DayEnv:
             self._phi2[i] = self._compute_phi(i, 1) if self.potential else 0.0
 
     def _compute_phi(self, i, asiento=0):
+        # No fallback to 0.0: with shaping `phi_w * (gamma * new - old)`, a
+        # transient failure did not switch shaping off, it injected a spurious
+        # jump of -old_phi into that day's reward. A failure here raises.
         from .potential import phi as _phi_fn
-        try:
-            ob = self.obs[i][asiento]
-            return _phi_fn(ob, asiento, ob["private"]) / self.scale
-        except Exception:
-            return 0.0
+        ob = self.obs[i][asiento]
+        return _phi_fn(ob, asiento, ob["private"]) / self.scale
 
     def set_rival_policy(self, factory):
         """Opponent = one of OUR policies (self-play).
@@ -425,14 +425,15 @@ class DayEnv:
         if name_ is None:
             from kaggle_environments.envs.kaggriculture import kaggriculture as E
             return E.pass_agent
-        try:
-            cap = LADDER_CAPS[min(self.level, len(LADDER_CAPS) - 1)]
-            if cap is not None:
-                return public_with_cap(name_, cap)
-            return load_public(name_)
-        except Exception:
-            from kaggle_environments.envs.kaggriculture import kaggriculture as E
-            return E.pass_agent
+        # No fallback. This used to return `pass_agent` on ANY exception, and
+        # from then on the run trained against an opponent that never acts:
+        # win rate ~1.0, promotions, rising return, and nothing in the log.
+        if len(LADDER_CAPS) != len(LADDER):
+            raise RuntimeError(f"LADDER has {len(LADDER)} rungs and LADDER_CAPS {len(LADDER_CAPS)}")
+        cap = LADDER_CAPS[self.level]
+        if cap is not None:
+            return public_with_cap(name_, cap)
+        return load_public(name_)
 
     def raise_level(self):
         self.level = min(self.level + 1, len(LADDER) - 1)

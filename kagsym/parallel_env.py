@@ -34,6 +34,14 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
     try:
         import torch
         torch.set_num_threads(1)
+        # Exploration draws are reproducible per worker: the trainer's --seed
+        # arrives through the environment (fork inherits it), the rank makes
+        # workers differ, and the same command gives the same draws.
+        _base = int(os.environ.get("KAGSYM_SEED", "0"))
+        torch.manual_seed((_base * 1_000_003 + idx0) % (2 ** 31))
+        import random as _random
+        _random.seed(_base * 7919 + idx0)
+        np.random.seed((_base * 104_729 + idx0) % (2 ** 31))
     except Exception:
         pass
     from kagsym.symbolic import tasks as _T

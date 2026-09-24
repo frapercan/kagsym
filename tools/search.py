@@ -3,13 +3,13 @@
 
 Why search and not gradient. Measured: PPO does not improve any checkpoint
 (-$6,787 from the best one, +$904 from one $10,000 worse), and the macro head
-moves at a KL of 5e-4 per update. What the gradient cannot move, a search can:
-the offsets found this way produced every dollar of the last two days.
+moves at a KL of 5e-4 per update. What the gradient cannot move, a search can.
 
 What is searched. An additive offset in logit space on the LIVE dials of the
-macro (`runs/live_dials.json`, from `tools/live_dials.py`), either constant
-(`a`) or a ramp (`a + b*progress`, `--ramp`). The search starts from the
-offset the checkpoint already carries, so generation 0 reproduces it exactly.
+macro (`<checkpoint>.dials.json`, from `tools/live_dials.py`, whose digest
+must match the checkpoint), either constant (`a`) or a ramp
+(`a + b*progress`, `--ramp`). The search starts from the offset the
+checkpoint already carries, so generation 0 reproduces it exactly.
 
 How it reads. Every candidate of a generation plays the SAME seeds (paired),
 the seeds rotate each generation, and the centre `mu` is itself a candidate:
@@ -17,6 +17,20 @@ the mean of the population is `mu` plus noise and reads far below it where
 perturbing is expensive. "best" is the expected maximum of ~30 noisy draws and
 is never a result. The number that matters is CENTRE minus BASE, and even that
 is a hypothesis until `tools/validate_offset.py` confirms it on reserved seeds.
+
+A candidate with ANY failed episode is disqualified, not averaged over the
+boards that worked: `nanmean` once pointed the selection pressure at the
+candidate that broke on the hard boards.
+
+Outputs, in a directory that must not exist beforehand (`--out`):
+  meta.json      written first: checkpoint digest, live dials, ramp, gens,
+                 provenance (commit, dirty tree, fingerprints, KAG_* env), pid
+  checkpoint.pt  a frozen copy of the checkpoint the search plays
+  offset.npz     the centre, self-describing (delta, live, ramp, digest);
+                 rewritten atomically every generation
+  best.npz       the best single candidate seen (never a result)
+  history.json   one row per generation
+  done.json      written only when the run completes
 
 Objectives:
   money   mean money against one opponent (default v48), seat 0
@@ -31,28 +45,26 @@ Objectives:
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kagsym import evaluate as E, seeds as S  # noqa: E402
 from kagsym.macro import N_MACRO  # noqa: E402
 from kagsym.policy import Offset, load_network  # noqa: E402
+from kagsym.version import provenance  # noqa: E402
+from live_dials import load_dials  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def live_dials(path):
-    with open(path) as f:
-        d = json.load(f)
-    return [int(i) for i in d["live"]]
-
-
 def initial_offset(ckpt, live, ramp):
-    """The offset the checkpoint carries, expressed on `live` (padded for a ramp).
+    """The offset the checkpoint carries, on `live` (padded for a ramp).
 
     Dials the stored offset touches are kept live even if the probe called
     them dead, so generation 0 reproduces the checkpoint exactly.
@@ -62,9 +74,11 @@ def initial_offset(ckpt, live, ramp):
     if stored is not None:
         extra = [i for i in stored.live if i not in live]
         if extra:
-            print(f"[search] stored offset touches dials the probe called dead: "
-                  f"{extra}; kept live", flush=True)
+            print(f"[search] stored offset touches dials the probe called dead: {extra}; kept live",
+                  flush=True)
             live = sorted(set(live) | set(extra))
+        if stored.ramp and not ramp:
+            raise SystemExit("checkpoint carries a ramp; search it with --ramp")
     n = len(live)
     mu = np.zeros(2 * n if ramp else n)
     if stored is not None:
@@ -73,30 +87,38 @@ def initial_offset(ckpt, live, ramp):
         mu[:n] = full_a[live]
         if ramp:
             mu[n:] = full_b[live]
-        elif np.abs(full_b).max() > 0:
-            raise SystemExit("checkpoint carries a ramp; search it with --ramp")
     return mu, live
 
 
 def score(episodes, objective):
-    """money: our cash. margin: ours minus theirs (continuous, sabotage-aware,
-    the surrogate for wins while every board is lost). win: the criterion."""
+    """money: our cash. margin: ours minus theirs. win: the criterion.
+    Any failed episode disqualifies the candidate."""
+    if not episodes or any(e.error for e in episodes):
+        return -np.inf
     if objective == "money":
-        return float(np.nanmean([e.money for e in episodes]))
+        return float(np.mean([e.money for e in episodes]))
     if objective == "margin":
-        return float(np.nanmean([e.money - e.opp_money for e in episodes]))
+        return float(np.mean([e.money - e.opp_money for e in episodes]))
     per = E.by_opponent(episodes)
-    return float(np.mean([v["win"] for v in per.values()])) if per else float("nan")
+    return float(np.mean([v["win"] for v in per.values()])) if per else -np.inf
+
+
+def _write_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=1)
+    os.replace(tmp, path)
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("checkpoint")
-    p.add_argument("--out", required=True, help="prefix for mu/best/history files")
+    p.add_argument("--out", required=True, help="output DIRECTORY; must not exist (or --force)")
+    p.add_argument("--force", action="store_true", help="remove an existing --out directory first")
     p.add_argument("--objective", choices=["money", "margin", "win"], default="margin")
     p.add_argument("--opponent", default=E.V48.name, help="money objective opponent")
-    p.add_argument("--band-sample", type=int, default=8, help="win objective: opponents per generation")
-    p.add_argument("--live", default=os.path.join(ROOT, "runs", "live_dials.json"))
+    p.add_argument("--band-sample", type=int, default=6, help="margin/win: opponents per generation")
+    p.add_argument("--dials", default=None, help="live-dial json (default: <checkpoint>.dials.json)")
     p.add_argument("--ramp", action="store_true")
     p.add_argument("--gens", type=int, default=40)
     p.add_argument("--pop", type=int, default=32)
@@ -106,19 +128,57 @@ def main():
     p.add_argument("--sigma-floor", type=float, default=0.05)
     p.add_argument("--procs", type=int, default=None)
     p.add_argument("--rng", type=int, default=20260924)
+    p.add_argument("--experiment", default=None, help="preregistration id, e.g. EXP-001")
     a = p.parse_args()
 
-    ckpt = os.path.abspath(a.checkpoint)
-    mu, live = initial_offset(ckpt, live_dials(a.live), a.ramp)
+    out = os.path.abspath(a.out)
+    if os.path.exists(out):
+        if not a.force:
+            raise SystemExit(f"{out} exists; a search never overwrites another's files (use --force)")
+        shutil.rmtree(out)
+    os.makedirs(out, exist_ok=False)
+    # The checkpoint is frozen inside the run directory: nothing can rewrite
+    # it under the search's feet, and every artefact carries the copy's digest.
+    ckpt_src = os.path.abspath(a.checkpoint)
+    ckpt = os.path.join(out, "checkpoint.pt")
+    shutil.copyfile(ckpt_src, ckpt)
+    digest = E.file_digest(ckpt)
+    live = load_dials(ckpt_src, a.dials)
+    mu, live = initial_offset(ckpt, live, a.ramp)
     D = len(live) * (2 if a.ramp else 1)
     base = mu.copy()
     sd = np.full(D, a.sigma)
     rng = np.random.default_rng(a.rng)
-    os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
     names = E.public_names()
-    print(f"[search] {ckpt}  {len(live)} live dials  {'ramp' if a.ramp else 'constant'} "
-          f"({D} dims)  objective {a.objective}  pop {a.pop}  elite {a.elite}  "
-          f"{a.seeds} seeds/gen  {a.gens} gens", flush=True)
+    meta = {"checkpoint": os.path.relpath(ckpt_src, ROOT), "checkpoint_digest": digest,
+            "live": live, "ramp": bool(a.ramp), "dims": D, "objective": a.objective,
+            "args": vars(a), "provenance": provenance(),
+            "started": time.strftime("%Y-%m-%d %H:%M:%S")}
+    _write_json(os.path.join(out, "meta.json"), meta)
+    print(f"[search] {ckpt_src} ({digest})  {len(live)} live dials  "
+          f"{'ramp' if a.ramp else 'constant'} ({D} dims)  objective {a.objective}  "
+          f"pop {a.pop}  elite {a.elite}  {a.seeds} seeds/gen  {a.gens} gens  -> {out}", flush=True)
+    if meta["provenance"]["game_env"]:
+        print(f"[search] WARNING game environment variables set: {meta['provenance']['game_env']}",
+              flush=True)
+
+    from kagsym.tracking import Tracker, context_tags, describe
+    tracker = Tracker(
+        "search", os.path.basename(out),
+        params={**vars(a), "live_dials": len(live), "dims": D},
+        tags=context_tags("search", checkpoint=ckpt_src, objective=a.objective,
+                          seed_family="search", experiment=a.experiment,
+                          opponent=(a.opponent if a.objective == "money"
+                                    else f"band-sample({a.band_sample})")),
+        description=describe([
+            f"CEM over the macro offset of {os.path.basename(ckpt_src)}: "
+            f"{'ramp a+b*progress' if a.ramp else 'constant'}, {len(live)} live dials, {D} dims.",
+            f"Objective `{a.objective}`; pop {a.pop}, elite {a.elite}, {a.seeds} common seeds per generation.",
+            "Read search/centre_minus_base: the centre and the base play the same boards. "
+            "search/best is the expected maximum of noisy draws and is never a result.",
+            f"Artefacts in {os.path.relpath(out, ROOT)}; validated by tools/validate_offset.py.",
+        ])).start()
+
     history = []
     best, best_val = mu.copy(), -np.inf
     for g in range(a.gens):
@@ -130,7 +190,7 @@ def main():
             pick = rng.choice(len(names), size=min(a.band_sample, len(names)), replace=False)
             opps, seats = [E.public(names[i]) for i in sorted(pick)], (0, 1)
         cand = [base.copy(), mu.copy()] + [rng.normal(mu, sd) for _ in range(a.pop - 2)]
-        specs = [E.PolicySpec(ckpt, offset=(tuple(float(x) for x in c), tuple(live)))
+        specs = [E.PolicySpec(ckpt, offset=(tuple(float(x) for x in c), tuple(live), bool(a.ramp)))
                  for c in cand]
         todo = [(specs[i], o, s, seat, i) for i in range(len(cand))
                 for o in opps for s in seeds for seat in seats]
@@ -138,29 +198,42 @@ def main():
         for task, ep in E.run_tasks(todo, procs=a.procs):
             by_cand[task[4]].append(ep)
         scores = np.array([score(by_cand[i], a.objective) for i in range(len(cand))])
+        disqualified = int(np.sum(~np.isfinite(scores)))
+        if not np.isfinite(scores[0]) or not np.isfinite(scores[1]):
+            raise SystemExit(f"generation {g}: the base or the centre failed an episode; "
+                             f"the search cannot continue on a broken loop")
         order = np.argsort(-scores)
         elite = [cand[i] for i in order[:a.elite]]
         mu = np.mean(elite, axis=0)
         sd = np.std(elite, axis=0) + a.sigma_floor
         if scores[order[0]] > best_val:
             best_val, best = scores[order[0]], cand[order[0]].copy()
+        finite = scores[np.isfinite(scores)]
         row = {"gen": g, "base": float(scores[0]), "centre": float(scores[1]),
-               "best": float(scores[order[0]]), "mean": float(scores.mean()),
-               "sd": float(sd.mean()), "seconds": time.time() - t0,
+               "best": float(scores[order[0]]), "mean": float(finite.mean()),
+               "sd": float(sd.mean()), "disqualified": disqualified,
+               "seconds": time.time() - t0, "seeds": [int(seeds[0]), int(seeds[-1])],
                "opponents": [o.label for o in opps]}
         history.append(row)
-        np.save(a.out + "_mu.npy", mu)
-        np.save(a.out + "_best.npy", best)
-        with open(a.out + "_history.json", "w") as f:
-            json.dump({"checkpoint": os.path.relpath(ckpt, ROOT), "live": live,
-                       "ramp": a.ramp, "objective": a.objective, "args": vars(a),
-                       "commit": E.git_commit(), "history": history}, f, indent=1)
+        tracker.log({"search/base": row["base"], "search/centre": row["centre"],
+                     "search/centre_minus_base": row["centre"] - row["base"],
+                     "search/best": row["best"], "search/population_mean": row["mean"],
+                     "search/sigma": row["sd"], "search/disqualified": disqualified,
+                     "search/seconds": row["seconds"]}, step=g)
+        Offset(mu, live, bool(a.ramp)).save(os.path.join(out, "offset.npz"), digest, generation=g)
+        Offset(best, live, bool(a.ramp)).save(os.path.join(out, "best.npz"), digest, generation=g)
+        _write_json(os.path.join(out, "history.json"), history)
         fmt = "{:9.3f}" if a.objective == "win" else "{:9,.0f}"
         print(f"  gen {g:3d}  base " + fmt.format(row["base"]) + "  CENTRE "
               + fmt.format(row["centre"]) + f" ({row['centre'] - row['base']:+.3g})  best "
               + fmt.format(row["best"]) + "  mean " + fmt.format(row["mean"])
-              + f"  |sd| {row['sd']:.3f}  {row['seconds']:.0f}s", flush=True)
-    print(f"\n  -> {a.out}_mu.npy   validate on RESERVED seeds with tools/validate_offset.py;"
+              + f"  |sd| {row['sd']:.3f}  dq {disqualified}  {row['seconds']:.0f}s", flush=True)
+    _write_json(os.path.join(out, "done.json"),
+                {"finished": time.strftime("%Y-%m-%d %H:%M:%S"), "generations": len(history)})
+    for name in ("offset.npz", "history.json", "meta.json"):
+        tracker.log_artifact(os.path.join(out, name))
+    tracker.end()
+    print(f"\n  -> {out}/offset.npz   validate on reserved seeds with tools/validate_offset.py;"
           f" nothing here is a result", flush=True)
 
 

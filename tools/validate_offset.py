@@ -4,22 +4,24 @@
 The optimum over the seeds a search saw is a hypothesis: the best of 32
 candidates on 16 seeds is inflated by selection (measured once at +$10,708).
 Here the candidate offset and the checkpoint's current offset play the SAME
-reserved boards and the per-board difference is what is read.
+boards and the per-board difference is what is read.
 
-Two instruments must agree in sign before baking: money against v48 on the
-reserved family, and the band win rate (the criterion) on a smaller sample.
-Opposite signs mean an artefact, and that has happened (+8,436 vs -636, the
-cause was a mutilated measurement loop).
+Two instruments must agree before baking: money against v48 on a seed family
+(paired), and the band win rate (the criterion) on reserved seeds (paired).
 
-Baking: a constant offset is added to the bias of `macro_mu` (zero cost at
-inference); a ramp travels in the checkpoint as `offset` and the policy
-applies it once a day.
+The gate is positive: it requires a finite t, every expected board played,
+and a non-degenerate comparison. `nan < 2.0` is False in Python, and a gate
+written as "reject if t < 2" once let a blind measurement (+0 +- 0, sd 0)
+bake a checkpoint.
 
-    python tools/validate_offset.py runs/search/name_mu.npy runs/model.pt [--n 200]
+The offset comes from a search directory (`offset.npz`, self-describing:
+delta, live dials, ramp, checkpoint digest) and the directory must carry
+`done.json`, the mark that the search completed.
+
+    python tools/validate_offset.py runs/search/name runs/model.pt [--family clean --n 200]
     python tools/validate_offset.py ... --bake runs/new.pt
 """
 import argparse
-import json
 import os
 import sys
 
@@ -29,80 +31,118 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from kagsym import evaluate as E, seeds as S  # noqa: E402
 from kagsym.policy import Offset, load_network  # noqa: E402
+from kagsym.version import provenance  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def bake_allowed(money: dict, band: dict | None, n_money: int, n_band: int,
+                 t_min: float = 2.0, win_min: float = 0.0) -> tuple[bool, str]:
+    """The gate, written positively so that NaN and missing boards refuse."""
+    t = money.get("t", float("nan"))
+    if not np.isfinite(t):
+        return False, f"money t is not finite ({t}): blind or degenerate instrument"
+    if money.get("degenerate"):
+        return False, "every board gives zero difference: the two sides are the same policy"
+    if money["n"] != n_money:
+        return False, f"money instrument played {money['n']} of {n_money} boards"
+    if t < t_min:
+        return False, f"money t {t:+.2f} < {t_min}"
+    if band is not None:
+        if band["n"] != n_band:
+            return False, f"band instrument played {band['n']} of {n_band} boards"
+        wd = band.get("win_diff", float("nan"))
+        if not np.isfinite(wd):
+            return False, "band win difference is not finite"
+        if wd < win_min:
+            return False, f"band win difference {wd:+.3f} < {win_min:+.3f}"
+    return True, "passed"
+
+
+def load_search(search_dir: str, checkpoint: str, allow_unfinished: bool, which: str):
+    off, digest, meta = Offset.load(os.path.join(search_dir, which))
+    if not allow_unfinished and not os.path.exists(os.path.join(search_dir, "done.json")):
+        raise SystemExit(f"{search_dir} has no done.json: the search did not finish "
+                         f"(--allow-unfinished to validate an intermediate centre)")
+    actual = E.file_digest(checkpoint)
+    if digest != actual:
+        raise SystemExit(f"{which} was searched on checkpoint digest {digest}; "
+                         f"{checkpoint} has digest {actual}")
+    return off, meta
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("offset", help="*_mu.npy from tools/search.py")
+    p.add_argument("search_dir", help="directory written by tools/search.py")
     p.add_argument("checkpoint")
-    p.add_argument("--live", default=None, help="live dials json (default: next to the offset history)")
+    p.add_argument("--which", default="offset.npz", choices=["offset.npz", "best.npz"])
+    p.add_argument("--allow-unfinished", action="store_true")
     p.add_argument("--family", default="reserved", help="seed family for the money instrument")
     p.add_argument("--n", type=int, default=200, help="seeds for the money instrument")
-    p.add_argument("--band-n", type=int, default=6, help="reserved seeds per opponent for the band instrument (0 = skip)")
+    p.add_argument("--band-n", type=int, default=6,
+                   help="reserved seeds per opponent for the band instrument (0 = skip)")
     p.add_argument("--procs", type=int, default=None)
     p.add_argument("--bake", help="write the validated checkpoint here")
     p.add_argument("--t-min", type=float, default=2.0)
+    p.add_argument("--win-min", type=float, default=0.0)
     a = p.parse_args()
 
     ckpt = os.path.abspath(a.checkpoint)
-    hist_path = a.offset.replace("_mu.npy", "_history.json").replace("_best.npy", "_history.json")
-    live_path = a.live
-    if live_path is None and os.path.exists(hist_path):
-        with open(hist_path) as f:
-            live = [int(i) for i in json.load(f)["live"]]
-    else:
-        with open(live_path or os.path.join(ROOT, "runs", "live_dials.json")) as f:
-            live = [int(i) for i in json.load(f)["live"]]
-    delta = np.load(a.offset)
-    cand = Offset(np.asarray(delta, dtype=np.float32), live)
+    cand, meta = load_search(os.path.abspath(a.search_dir), ckpt, a.allow_unfinished, a.which)
     base = E.PolicySpec(ckpt, offset="checkpoint")
-    new = E.PolicySpec(ckpt, offset=(tuple(float(x) for x in delta), tuple(live)))
-    print(f"[validate] {a.offset} ({'ramp' if cand.is_ramp else 'constant'}, {len(live)} dials) on {ckpt}")
+    new = E.PolicySpec(ckpt, offset=(tuple(float(x) for x in cand.delta), tuple(cand.live), cand.ramp))
+    print(f"[validate] {a.search_dir}/{a.which} ({'ramp' if cand.ramp else 'constant'}, "
+          f"{len(cand.live)} dials, generation {meta.get('generation')}) on {ckpt}")
 
     fam = S.family(a.family)
     seeds = fam.seeds(a.n)
     eps_b = E.run(base, [E.V48], seeds, seats=(0,), procs=a.procs)
     eps_n = E.run(new, [E.V48], seeds, seats=(0,), procs=a.procs)
     d = E.paired(eps_n, eps_b)
-    print(f"  money vs v48, {d['n']} {fam.name} boards: {d['money_diff']:+,.0f} +- {d['money_se']:,.0f}"
-          f"   t {d['t']:+.2f}   better on {100 * d['boards_better']:.0f}%")
+    print(f"  money vs v48, {d['n']}/{d['n_expected']} {fam.name} boards: {d['money_diff']:+,.0f} "
+          f"+- {d['money_se']:,.0f}   t {d['t']:+.2f}   better on {100 * d['boards_better']:.0f}%"
+          f"{'   DEGENERATE' if d['degenerate'] else ''}")
     E.record("validate-money", new, [E.V48], seeds, eps_n, extra={"paired_vs_checkpoint": d})
 
-    win_ok = True
+    w, n_band = None, 0
     if a.band_n > 0:
         bseeds = S.RESERVED.seeds(a.band_n)
         band = E.band()
         eb = E.run(base, band, bseeds, procs=a.procs)
         en = E.run(new, band, bseeds, procs=a.procs)
         w = E.paired(en, eb)
+        n_band = w["n_expected"]
         sb, sn = E.summary(eb), E.summary(en)
         print(f"  band, {a.band_n} seeds x 2 seats x {len(band)} opponents: win {sb['win_mean']:.3f} -> "
-              f"{sn['win_mean']:.3f} ({w['win_diff']:+.3f})   beaten {sb['beaten']} -> {sn['beaten']}")
+              f"{sn['win_mean']:.3f} ({w['win_diff']:+.3f})   beaten {sb['beaten']} -> {sn['beaten']}"
+              f"   boards {w['n']}/{w['n_expected']}")
         E.record("validate-band", new, band, bseeds, en, extra={"paired_vs_checkpoint": w})
-        win_ok = w["win_diff"] >= 0
 
+    ok, why = bake_allowed(d, w, d["n_expected"], n_band, a.t_min, a.win_min)
+    print(f"\n  gate: {'PASSED' if ok else 'REFUSED'} ({why})")
     if a.bake:
-        if d["t"] < a.t_min or not win_ok:
-            print(f"\n  NOT baked: t {d['t']:+.2f} (need >= {a.t_min}) and band sign "
-                  f"{'ok' if win_ok else 'NEGATIVE'}")
+        if not ok:
             sys.exit(1)
         import torch
         _, ck = load_network(ckpt)
         ck.pop("delta_rampa", None)
-        if cand.is_ramp:
+        if cand.ramp:
             ck["offset"] = cand.to_checkpoint()
         else:
             bias = ck["sd"]["macro_mu.bias"]
             ck["sd"]["macro_mu.bias"] = bias + torch.from_numpy(cand.vector(0.0, bias.shape[0]))
             ck["offset"] = None
-        ck["offset_provenance"] = {"from": os.path.relpath(ckpt, ROOT), "offset": a.offset,
-                                   "money_paired": d, "commit": E.git_commit()}
+        prov = provenance()
+        ck["offset_provenance"] = {"from": os.path.relpath(ckpt, ROOT),
+                                   "search": os.path.relpath(a.search_dir, ROOT), "which": a.which,
+                                   "money_paired": d, "band_paired": w, "provenance": prov}
         for k in ("opt", "opt_nombres"):        # a baked checkpoint is not resumed
             ck.pop(k, None)
-        torch.save(ck, a.bake)
-        print(f"\n  baked -> {a.bake}")
+        ck["fingerprint"] = prov["game_fingerprint"]
+        tmp = a.bake + ".tmp"
+        torch.save(ck, tmp)
+        os.replace(tmp, a.bake)
+        print(f"  baked -> {a.bake}")
 
 
 if __name__ == "__main__":

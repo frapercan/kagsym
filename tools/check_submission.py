@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from kagsym import evaluate as E, seeds as S  # noqa: E402
+from kagsym.version import game_env  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -56,6 +57,11 @@ def main():
     p.add_argument("--n", type=int, default=4)
     p.add_argument("--opponent", default=E.V48.name)
     a = p.parse_args()
+    # Both sides run in this interpreter, so a KAG_* variable that changes how
+    # the agent plays is invisible to the comparison: refuse to run with any set.
+    if game_env():
+        raise SystemExit(f"game environment variables are set ({game_env()}); the gate "
+                         f"cannot see them and Kaggle has none: unset them first")
     os.environ["KAGSYM_CKPT"] = os.path.abspath(a.checkpoint)
     opp = E.public(a.opponent)
     spec = E.PolicySpec(os.path.abspath(a.checkpoint))

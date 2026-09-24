@@ -34,7 +34,7 @@ def test_offset_constant_and_ramp():
     assert not c.is_ramp
     v = c.vector(0.7, 6)
     assert v.tolist() == [0, 0.5, 0, 0, -0.5, 0]
-    r = Offset(np.array([0.5, -0.5, 1.0, 2.0]), live)
+    r = Offset(np.array([0.5, -0.5, 1.0, 2.0]), live, ramp=True)
     assert r.is_ramp
     v = r.vector(0.5, 6)
     assert np.allclose(v, [0, 1.0, 0, 0, 0.5, 0])

@@ -87,7 +87,7 @@ _OPPONENT_CACHE: dict = {}
 
 def _opponent_callable(opp: Opponent):
     """obs -> action. Cached per process; public modules are heavy to load."""
-    key = (opp.kind, opp.name, opp.cap)
+    key = (opp.kind, opp.name, opp.cap) if opp.kind != "checkpoint" else ("checkpoint", _file_key(opp.name), opp.cap)
     fn = _OPPONENT_CACHE.get(key)
     if fn is not None:
         return fn
@@ -117,7 +117,7 @@ class PolicySpec:
     """A picklable description of the policy under evaluation.
 
     `offset` is "checkpoint" (use what the file carries), None (disable), or
-    a tuple (delta, live) for a candidate a search is trying.
+    a tuple (delta, live, ramp) for a candidate a search is trying.
     """
     path: str
     offset: Any = "checkpoint"
@@ -135,20 +135,28 @@ class PolicySpec:
 _POLICY_CACHE: dict = {}
 
 
+def _file_key(path: str) -> tuple:
+    """Cache key that changes when the file is rewritten under the same name."""
+    st = os.stat(path)
+    return (os.path.abspath(path), st.st_mtime_ns, st.st_size)
+
+
 def _policy(spec: PolicySpec):
     from .policy import Offset, Policy
-    pol = _POLICY_CACHE.get(spec.path)
-    if pol is None:
+    key = _file_key(spec.path)
+    if key not in _POLICY_CACHE:
+        _POLICY_CACHE.clear()      # one live checkpoint per worker; old versions go
         pol = Policy.from_checkpoint(spec.path, offset="checkpoint")
-        _POLICY_CACHE[spec.path] = (pol, pol.offset)
-    pol, stored = _POLICY_CACHE[spec.path]
+        _POLICY_CACHE[key] = (pol, pol.offset)
+    pol, stored = _POLICY_CACHE[key]
     if spec.offset == "checkpoint":
         pol.offset = stored
     elif spec.offset is None:
         pol.offset = None
     else:
-        delta, live = spec.offset
-        pol.offset = Offset(np.asarray(delta, dtype=np.float32), list(live))
+        delta, live = spec.offset[0], spec.offset[1]
+        ramp = spec.offset[2] if len(spec.offset) > 2 else (len(delta) == 2 * len(live))
+        pol.offset = Offset(np.asarray(delta, dtype=np.float32), list(live), bool(ramp))
     return pol
 
 
@@ -317,17 +325,29 @@ def summary(episodes: Sequence[Episode]) -> dict:
 
 
 def paired(a: Sequence[Episode], b: Sequence[Episode]) -> dict:
-    """Per-board difference a - b on identical (opponent, seed, seat) keys."""
+    """Per-board difference a - b on identical (opponent, seed, seat) keys.
+
+    `n_expected` is the number of boards either side played (including
+    failures); a smaller `n` means boards were dropped and the reader must
+    know. `degenerate` is True when every board gives exactly zero
+    difference: that is not "no effect", it is the same policy measured
+    twice, which is how a blind instrument reads.
+    """
     ka = {(e.opponent, e.seed, e.seat): e for e in a if not e.error}
     kb = {(e.opponent, e.seed, e.seat): e for e in b if not e.error}
+    n_expected = max(len(set((e.opponent, e.seed, e.seat) for e in a)),
+                     len(set((e.opponent, e.seed, e.seat) for e in b)))
     keys = sorted(set(ka) & set(kb))
     dm = np.array([ka[k].money - kb[k].money for k in keys])
     dw = np.array([ka[k].win - kb[k].win for k in keys])
     se = dm.std(ddof=1) / np.sqrt(len(dm)) if len(dm) > 1 else float("nan")
-    return {"n": len(keys), "money_diff": float(dm.mean()) if len(dm) else float("nan"),
+    degenerate = bool(len(dm) > 0 and np.all(dm == 0) and np.all(dw == 0))
+    return {"n": len(keys), "n_expected": int(n_expected),
+            "money_diff": float(dm.mean()) if len(dm) else float("nan"),
             "money_se": float(se), "t": float(dm.mean() / se) if se and se > 0 else float("nan"),
             "win_diff": float(dw.mean()) if len(dw) else float("nan"),
-            "boards_better": float((dm > 0).mean()) if len(dm) else float("nan")}
+            "boards_better": float((dm > 0).mean()) if len(dm) else float("nan"),
+            "degenerate": degenerate}
 
 
 # -- provenance and the ledger -----------------------------------------------
@@ -352,11 +372,18 @@ def record(kind: str, spec: PolicySpec, opponents: Sequence[Opponent],
            seeds: Sequence[int], episodes: Sequence[Episode], extra: dict | None = None,
            path: str = LEDGER) -> dict:
     """Append one line to the experiment ledger and return it."""
+    from .version import provenance
     fams = sorted({S.family_of(s) or "unregistered" for s in seeds})
+    prov = provenance()
     entry = {
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "kind": kind,
-        "commit": git_commit(),
+        "commit": prov["commit"],
+        "dirty": prov["dirty"],
+        "game_fingerprint": prov["game_fingerprint"],
+        "model_fingerprint": prov["model_fingerprint"],
+        "game_env": prov["game_env"],
+        "argv": prov["argv"], "pid": prov["pid"],
         "checkpoint": os.path.relpath(spec.path, ROOT),
         "checkpoint_digest": file_digest(spec.path),
         "offset": spec.label.split("@")[1] if "@" in spec.label else "checkpoint",
@@ -369,7 +396,46 @@ def record(kind: str, spec: PolicySpec, opponents: Sequence[Opponent],
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
+    _track(kind, spec, opponents, seeds, episodes, entry, extra or {})
     return entry
+
+
+def _track(kind, spec, opponents, seeds, episodes, entry, extra) -> None:
+    """The same measurement as an MLflow run in kagsym/evaluation."""
+    from .tracking import Tracker, context_tags, describe
+    s = entry["summary"]
+    fams = "+".join(entry["seed_families"])
+    opp_label = opponents[0].label if len(opponents) == 1 else f"band({len(opponents)})"
+    tr = Tracker(
+        "evaluation", f"{kind}: {spec.label} vs {opp_label}",
+        params={"checkpoint": entry["checkpoint"], "offset": entry["offset"],
+                "opponents": len(opponents), "seeds": entry["seeds"][2],
+                "seed_first": entry["seeds"][0], "seats": sorted({e.seat for e in episodes}),
+                "hours": HOURS, "days": DAYS, "cash": CASH},
+        tags=context_tags("evaluation", checkpoint=spec.path, opponent=opp_label,
+                          seed_family=fams, measurement=kind),
+        description=describe([
+            f"`{kind}` of {spec.label} against {opp_label} on {entry['seeds'][2]} {fams} seeds.",
+            "Deterministic policy, the same code the submission runs (kagsym.policy).",
+            "band/win_mean and band/beaten are the criterion; money is a diagnostic.",
+            "Paired numbers (paired/*) compare against the checkpoint's own stored offset.",
+        ]))
+    with tr:
+        prefix = "band" if kind.startswith("band") or len(opponents) > 1 else "evaluate"
+        tr.log({f"{prefix}/win_mean": s["win_mean"], f"{prefix}/beaten": s["beaten"],
+                f"{prefix}/contested": s["contested"], f"{prefix}/opponents": s["opponents"],
+                f"{prefix}/money_mean": s["money_mean"], f"{prefix}/money_se": s["money_se"],
+                f"{prefix}/opp_failures": s["opp_failures"], f"{prefix}/our_failures": s["failed"],
+                f"{prefix}/broken_opponents": len(s["broken_opponents"]),
+                f"{prefix}/episodes": s["episodes"]})
+        pv = extra.get("paired_vs_checkpoint")
+        if pv:
+            tr.log({f"paired/{k}": v for k, v in pv.items()})
+        per = by_opponent(episodes)
+        tr.log_table([{"opponent": k, **v} for k, v in sorted(per.items(), key=lambda kv: -kv[1]["win"])],
+                     "per_opponent.csv")
+        tr.log_json([asdict(e) for e in episodes], "episodes.json")
+        tr.log_json(entry, "ledger_entry.json")
 
 
 def save_episodes(episodes: Sequence[Episode], path: str) -> None:

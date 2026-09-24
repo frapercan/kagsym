@@ -22,6 +22,7 @@ What a policy does per episode:
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -44,36 +45,70 @@ def _config_value(config: Any, key: str, default):
 class Offset:
     """Macro offset in logit space: constant (`a`) or ramp (`a + b*progress`).
 
-    `live` holds the macro indices the offset touches; dead dials are never
-    perturbed. A constant offset can be baked into the bias of `macro_mu`; a
-    ramp depends on the day and travels in the checkpoint as `offset`.
+    `live` are the macro indices the offset touches, sorted by index; dead
+    dials are never perturbed. `ramp` is an explicit field: it used to be
+    inferred from the vector length, and a vector of the wrong length was read
+    as a ramp shifted by one dial without any error. The length is now exact:
+    `len(delta) == len(live)` for a constant, `2 * len(live)` for a ramp.
+
+    A constant can be baked into the bias of `macro_mu`; a ramp depends on
+    the day and travels in the checkpoint as `offset`.
     """
     delta: np.ndarray
     live: list[int]
+    ramp: bool = False
+
+    def __post_init__(self):
+        self.delta = np.asarray(self.delta, dtype=np.float32).reshape(-1)
+        self.live = [int(i) for i in self.live]
+        n = len(self.live)
+        expected = 2 * n if self.ramp else n
+        if len(self.delta) != expected:
+            raise ValueError(f"offset has {len(self.delta)} values for {n} live dials "
+                             f"({'ramp' if self.ramp else 'constant'}: expected {expected})")
+        if len(set(self.live)) != n:
+            raise ValueError("live dials repeat")
 
     @property
     def is_ramp(self) -> bool:
-        return len(self.delta) >= 2 * len(self.live)
+        return self.ramp
 
     def vector(self, progress: float, n_macro: int) -> np.ndarray:
         out = np.zeros(int(n_macro), dtype=np.float32)
         n = len(self.live)
-        d = np.asarray(self.delta, dtype=np.float32)
-        v = d[:n] + d[n:2 * n] * float(progress) if self.is_ramp else d[:n]
-        out[list(self.live)] = v
+        d = self.delta
+        v = d[:n] + d[n:2 * n] * float(progress) if self.ramp else d[:n]
+        out[self.live] = v
         return out
 
     def to_checkpoint(self) -> dict:
-        return {"delta": [float(x) for x in self.delta],
-                "live": [int(i) for i in self.live]}
+        return {"delta": [float(x) for x in self.delta], "live": list(self.live),
+                "ramp": bool(self.ramp)}
 
     @staticmethod
     def from_checkpoint(ck: dict) -> "Offset | None":
         r = ck.get("offset") or ck.get("delta_rampa")   # old field name
         if not r:
             return None
-        return Offset(np.asarray(r["delta"], dtype=np.float32),
-                      [int(i) for i in r.get("live", r.get("vivos"))])
+        live = [int(i) for i in r.get("live", r.get("vivos"))]
+        delta = np.asarray(r["delta"], dtype=np.float32)
+        ramp = bool(r["ramp"]) if "ramp" in r else len(delta) == 2 * len(live)
+        return Offset(delta, live, ramp)
+
+    # self-describing files: the vector never travels without its dial map
+    def save(self, path: str, checkpoint_digest: str, **meta) -> None:
+        tmp = path + ".tmp"
+        np.savez(tmp, delta=self.delta, live=np.asarray(self.live, dtype=np.int64),
+                 ramp=np.asarray(self.ramp), checkpoint_digest=np.asarray(checkpoint_digest),
+                 meta=np.asarray(json.dumps(meta)))
+        os.replace(tmp + ".npz" if not tmp.endswith(".npz") else tmp, path)
+
+    @staticmethod
+    def load(path: str) -> "tuple[Offset, str, dict]":
+        z = np.load(path, allow_pickle=False)
+        off = Offset(z["delta"], z["live"].tolist(), bool(z["ramp"]))
+        meta = json.loads(str(z["meta"])) if "meta" in z else {}
+        return off, str(z["checkpoint_digest"]), meta
 
 
 def load_network(path: str, strict: bool = False, verbose: bool = False):
@@ -88,6 +123,9 @@ def load_network(path: str, strict: bool = False, verbose: bool = False):
     # Every evaluator and the submission must run the network identically.
     torch.set_num_threads(1)
     ck = torch.load(path, map_location="cpu", weights_only=False)
+    if verbose or os.environ.get("KAGSYM_CHECK_FINGERPRINT") == "1":
+        from .version import check
+        check(ck.get("fingerprint"), what=os.path.basename(path))
     cfg = ck["cfg"]
     cfg = WorldConfig(**cfg) if isinstance(cfg, dict) else cfg
     cfg.device = "cpu"
