@@ -63,3 +63,25 @@ day 0, plants 50 tiles 2-3 times, sells everything by day 7; still 32%
 tile-day occupancy, 7 hands with 160/517/641 unit-turns pass/move/work,
 17,095 $-days of idle cash, 17 seeds unplanted. The continuation to 1,200
 updates runs with snapshots every 100 for the convergence curve.
+
+## PPO does not converge in this world: the deterministic curve (20 reserved seeds)
+
+```
+updates    300     350     400     450     500     550     600    1,200
+money    5,788   5,753   5,258   3,098   4,818   4,195   4,542   3,606
+```
+
+The sampled return in the log barely moves (3,594 -> 3,469) while the mean
+policy swings by 2,700 $ between 50-update windows. Diagnosis from the
+curves: the critic never fits (R^2 <= 0 for 1,200 updates), the exploration
+width never leaves its initial 0.35 (learning rate 7.5e-5 on log_sigma), and
+the objective is the noisy policy's return, not the mean's. The 5,788 at
+update 300 was a point on a random walk, not a converged optimum.
+
+Consequence: a minimal learner for this world (`kagsym/cli/train_solitaire.py`):
+policy gradient with the mean policy's money on the same seed as an exact
+baseline, sigma with its own learning rate, and the mean policy evaluated
+on reserved seeds inside the loop. Its first run (lr 3e-4, unnormalised
+advantages) saturated the macro head by update 14: every sample returned
+the same money (adv sd 0, gradient 0). Fixed with normalised advantages, a
+lower learning rate and a penalty on pre-activations outside +-4.
