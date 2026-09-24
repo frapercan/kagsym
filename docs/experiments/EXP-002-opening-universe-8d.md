@@ -99,3 +99,6 @@ day 20, not day 30; a rung yardstick must be predictive of the final, and
 this one is not. Next: EXP-003 searches the opening on the full game (the
 proxy saved a factor of two and did not transfer), and the closing becomes
 its own rung.
+
+Band, paired on 900 boards: win 0.064 -> 0.066 (+0.002), beaten 5 -> 5.
+Gate REFUSED (money t -9.20). Not baked.
