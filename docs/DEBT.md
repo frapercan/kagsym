@@ -93,3 +93,21 @@ today. Each item says what it is, why it waits, and what unblocks it.
   13 hands and plants nothing there. The yardstick for k >= 5 is a planner's
   optimum on the exact engine, not yet built (the archived receding-horizon
   search is the candidate).
+
+## Measurement (2026-09-24, evening)
+
+- **Public agents are not fully deterministic under the official runner.**
+  With identical observations, v48 issued a different action at step 505 of
+  seed 7101 under `kaggle_environments.run` than under our loader; our agent
+  was identical for all 505 steps and the engines agree to the dollar on a
+  replayed action stream. Band numbers against v48 carry that extra noise;
+  the cause (module state or an unseeded RNG in the public agent) is not
+  ours to fix but worth knowing when a Kaggle result differs from ours.
+- **A reduced solitaire inverts strategic dials.** `tiles +0.15 on day 0`
+  is worth +5,503 $ in a 14-day solitaire and -25,117 $ against v48 in the
+  full game on the same seed family; the searched opening of EXP-002 was
+  worth +4,801 $ at day 8 and -9,718 $ at day 30. Short worlds against a
+  passive opponent are valid for mechanical consistency (hands hired with
+  nothing to do: fixed and validated) and invalid for strategy. The stage
+  map is made on the full game against the real opponent (`tools/stage_map.py
+  --days 30 --opponent v48-fast-routes`), where the rollouts stay exact.
