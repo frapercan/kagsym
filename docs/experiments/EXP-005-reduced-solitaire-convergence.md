@@ -45,3 +45,21 @@ of actions across the rhythms is read from the day-by-day regret and from
 Every mechanism runs to its planned length. What is reported is the regret
 curve, the day profile and the health of the network; nothing is baked or
 deployed from this experiment.
+
+## Results so far (2026-09-24, 23:00), 20 reserved seeds, deterministic
+
+```
+partida_v5 as it is                         2,854 +- 2
+CEM on v5's ramp, gen 28 centre (search seeds)   4,433   (validation on reserved seeds pending)
+PPO from v5, 150 updates                    4,129 +- 16    regret vs local oracle (K=32) 554
+PPO from random weights, 300 updates        5,788 +- 26    regret vs local oracle (K=32) 468; oracle 6,385
+```
+
+Health of both PPO checkpoints: every required head with gradient, sigmas
+alive, fingerprint current. The 30-day prior of v5 is a trap in this world
+(hires, animals); from nothing the policy learns the crop economy in three
+minutes. Audit of the from-scratch policy (seed 7101): buys one quadrant on
+day 0, plants 50 tiles 2-3 times, sells everything by day 7; still 32%
+tile-day occupancy, 7 hands with 160/517/641 unit-turns pass/move/work,
+17,095 $-days of idle cash, 17 seeds unplanted. The continuation to 1,200
+updates runs with snapshots every 100 for the convergence curve.
