@@ -149,3 +149,17 @@ package under `archivo/kaggsim/` and `archivo/kaggriculture-simulation/`.
 - **`tools/plan_search.py` coordinate descent stops at a local optimum** and
   its value grids are hand-picked (tiles in steps of 5, five selling levels).
   The per-day dial oracle is 560 $ above the best plan found.
+- **The tactical layer is a myopic per-turn assignment** (value x
+  0.82^distance). It has no notion of a trip (harvest, carry, drop, sell)
+  and the rung-1 fixes above are patches on it: a deadline, a load
+  threshold, per-unit drop columns. The exact answer for a harvest day is
+  a small routing problem (units, ripe tiles, one depot, 24 turns); the
+  plan-space way is to expose the remaining tactical choices as plan
+  fields and search them. Not done: harvest green vs ripe, sowing order
+  inside a day.
+- **The rung-1 tactical mechanics are off under a value map.** Per-unit
+  DROP columns, the four shed-access tiles, the last-day deadline and the
+  plan's load threshold run only for agents without a network. Under v5's
+  frozen map they cost -5,356 $ paired vs v48 (t -4.8) because the map was
+  trained on the old semantics. Unblocked by: training a network with them
+  on (the plan head of EXP-008) and measuring that network, not v5.

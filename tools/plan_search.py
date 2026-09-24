@@ -40,7 +40,7 @@ def grid(days: int):
     for c, t, h, l in itertools.product(crops, tiles, hands, land):
         if t > 25 * (1 + l):
             continue
-        yield dict(crop=c, tiles=t, hands=h, land=l)
+        yield dict(crop=c, tiles=t, hands=h, land=l, load=12)
 
 
 def main():
@@ -75,10 +75,10 @@ def main():
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     json.dump([dict(plan=p, mean=m, values=vals) for p, m, vals in rows], open(a.out, "w"), indent=1)
     if a.schedule:
-        fields = ("hands", "tiles", "crop", "selling")
-        starts = [dict(rows[0][0], selling=0.05)]
-        starts += [dict(crop="WHEAT", tiles=50, hands=7, land=1, selling=0.05),
-                   dict(crop="CARROT", tiles=50, hands=7, land=1, selling=0.05)]
+        fields = ("hands", "load", "tiles", "crop", "selling")
+        starts = [dict(rows[0][0], selling=0.05, load=0)]
+        starts += [dict(crop="WHEAT", tiles=50, hands=7, land=1, selling=0.05, load=0),
+                   dict(crop="CARROT", tiles=50, hands=7, land=1, selling=0.05, load=0)]
         found = []
         for st in starts:
             cur, best = schedule_search(st, seeds, a.days, a.hours, a.procs, rounds=a.rounds, fields=fields)
@@ -106,7 +106,8 @@ def schedule_search(start: dict, seeds, days: int, hours: int, procs: int, round
     max_tiles = 25 * (1 + int(start.get("land", 0)))
     values = values or {"hands": list(range(0, 9)),
                         "tiles": [t for t in (0, 5, 10, 15, 20, 25, 30, 40, 50, 75) if t <= max_tiles],
-                        "crop": crops, "selling": [0.05, 0.25, 0.5, 0.75, 0.95]}
+                        "crop": crops, "selling": [0.05, 0.25, 0.5, 0.75, 0.95],
+                        "load": [0, 3, 6, 9, 12, 15]}
     cur = dict(start)
     for f in fields:
         v = cur[f]
@@ -125,6 +126,8 @@ def schedule_search(start: dict, seeds, days: int, hours: int, procs: int, round
                         c = dict(cur)
                         sched = list(cur[f]); sched[d] = val; c[f] = tuple(sched)
                         cands.append(c)
+                    if not cands:                 # a field with one legal value
+                        continue
                     res = pool.map(_one, [(c, seeds, days, hours) for c in cands], chunksize=1)
                     top = max(res, key=lambda x: x[1])
                     if top[1] > best + 1e-6:

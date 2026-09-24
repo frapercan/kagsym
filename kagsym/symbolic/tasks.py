@@ -183,6 +183,41 @@ def _is_shed_access(x: int, y: int) -> bool:
     return (x, y) in _shed_access_set()
 
 
+def _plan_load(obs) -> int:
+    from ..plan import get_plan
+    pl = get_plan()
+    return 0 if pl is None else pl.load_on(int(obs["day"]))
+
+
+def _shed_dist(tile) -> int:
+    return min(dist(tile, a) for a in _shed_access_set())
+
+
+def _carried_values(obs) -> list:
+    """What each unit's load is worth if dropped now: the price drop it avoids
+    plus what the nightly flush would discard (shed overflow) or the game's
+    end would forfeit (last day). Same margins as `_shed_task`, per unit."""
+    from .market_ops import future_price, marginal_prices
+    priv = obs["private"]
+    shed = priv.get("shed", {}) or {}
+    priv_inv = priv.get("inventories") or []
+    shed_room = max(0, int(spec.DEFAULT_CONFIG["shedCapacity"]) - int(sum(shed.values())))
+    carried_total = sum(int(n_) for inv in priv_inv for item, n_ in (inv or {}).items()
+                        if item in spec.PRODUCTS)
+    overflow_share = 0.0 if carried_total <= 0 else max(0.0, carried_total - shed_room) / carried_total
+    lost = 1.0 if days_left(obs) <= 1 else overflow_share
+    out = []
+    for inv in priv_inv:
+        v_ = 0.0
+        for item, n_ in (inv or {}).items():
+            if item in spec.PRODUCTS and n_:
+                now = float(sum(marginal_prices(obs, item, int(n_))))
+                later = float(future_price(obs, item, spec.TURNS_PER_DAY)) * int(n_)
+                v_ += max(0.0, now - later) + lost * now
+        out.append(v_)
+    return out
+
+
 def _shed_task(obs, farm, ctx=None, macro=None):
     """What to take out of the shed. Without this the animal chain never
     closes: the animal is bought, lands in the shed and stays there forever.
@@ -220,23 +255,7 @@ def _shed_task(obs, farm, ctx=None, macro=None):
     # does not fit in the shed (capacity 100; 116 units carried, 100 kept),
     # and on the last day whatever is still carried at the close is worth
     # nothing, because the score is cash. Dropping is what lets it be sold.
-    from .market_ops import future_price, marginal_prices
-    priv_inv = priv.get("inventories") or []
-    shed_room = max(0, int(spec.DEFAULT_CONFIG["shedCapacity"]) - int(sum(shed.values())))
-    carried_total = sum(int(n_) for inv in priv_inv for item, n_ in (inv or {}).items()
-                        if item in spec.PRODUCTS)
-    overflow_share = 0.0 if carried_total <= 0 else max(0.0, carried_total - shed_room) / carried_total
-    last_day = days_left(obs) <= 1
-    best = 0.0
-    for inv in priv_inv:
-        v_ = 0.0
-        for item, n_ in (inv or {}).items():
-            if item in spec.PRODUCTS and n_:
-                now = float(sum(marginal_prices(obs, item, int(n_))))
-                later = float(future_price(obs, item, spec.TURNS_PER_DAY)) * int(n_)
-                lost = 1.0 if last_day else overflow_share
-                v_ += max(0.0, now - later) + lost * now
-        best = max(best, v_)
+    best = max(_carried_values(obs), default=0.0)
     if best > 0:
         return (best, ["DROP"])
 
@@ -846,6 +865,19 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
     for y in range(BOARD):
         for x in range(BOARD):
             if not unlocked(farm, x, y):
+                # The engine resolves DROP/PICKUP before the LOCKED guard and
+                # lets units stand on locked tiles: the three locked
+                # shed-access tiles are legal standing positions for the shed.
+                # Only the unlocked one was offered, so every unit queued on
+                # the same corner.
+                # Only WITHOUT a value map: with one, every other column is
+                # priced by the network and a heuristic dollar figure here
+                # dominates the matrix (measured: v5 vs passive on seed
+                # 7102, 89,117 -> 74,176 alone, 43,754 with per-unit columns).
+                if _is_shed_access(x, y) and value_map is None:
+                    t = _shed_task(obs, farm, ctx, macro)
+                    if t is not None:
+                        tasks[(x, y)] = t
                 continue
             if verb_map is not None:
                 # END TO END: LEGALITY from the engine, the VERB from the
@@ -1066,9 +1098,32 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
     """
     tiles = list(tasks)
     n = len(units)
+    invs = invs or [{}] * len(units)
+    # ONE DROP COLUMN PER CARRYING UNIT. The shed has one access tile per
+    # unlocked quadrant, so with one quadrant there was ONE column for the
+    # whole crew: the Hungarian sent one unit per turn to the shed, the rest
+    # kept harvesting or passed, and the load died in their hands. Measured
+    # on the 4-day solitaire, 25 carrot tiles, 6 hands: 75 units harvested,
+    # 24 sold, 51 carried at the close. Every carrying unit now has its own
+    # column on the same tile, worth what IT carries (the column's value was
+    # the crew's maximum, so the unit with 3 units looked like the one with
+    # 12). In map mode the network's value is kept and scaled by that share.
+    _deadline = None if chain_ctx is None else chain_ctx.get("deadline")
+    _load = 0 if chain_ctx is None else int(chain_ctx.get("load") or 0)
+    _carried_n = [sum(int(n_) for it, n_ in (inv or {}).items() if it in spec.PRODUCTS)
+                  if isinstance(inv, dict) else 0 for inv in invs]
+    _drop_tiles = [t for t in tiles if tasks[t][1][0] == "DROP"]
+    _carried = None
+    _share = None
+    if _drop_tiles and chain_ctx is not None and chain_ctx.get("carried") is not None:
+        _carried = list(chain_ctx["carried"])
+        _cmax = max(_carried) if _carried else 0.0
+        _share = [(c / _cmax if _cmax > 0 else 0.0) for c in _carried]
+        _n_carry = sum(1 for c in _carried if c > 0)
+        for _t in _drop_tiles:
+            tiles.extend([_t] * max(0, _n_carry - 1))
     m = len(tiles) + n
     value = [[0.0] * m for _ in range(n)]
-    invs = invs or [{}] * len(units)
     if PASS_ACC is not None:
         PASS_ACC["units"] += len(units)
     # THE KEY TERM, VECTORISED. One dot product per (unit, tile) pair in pure
@@ -1139,6 +1194,27 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
                 continue
             if PASS_ACC is not None:
                 PASS_ACC["offers"] += 1
+            if _share is not None and op[0] == "DROP" and i < len(_share):
+                v = v * _share[i]
+                if _load > 0 and _carried_n[i] < _load:
+                    # The plan says how full a hand goes to the shed; the
+                    # deadline overrides it (a trip that cannot wait).
+                    _forced = _deadline is not None and _deadline <= _shed_dist(pos) + 2
+                    if not _forced:
+                        continue
+            if _deadline is not None and op[0] == "WATER":
+                # Watering on the last day pays only through a harvest that
+                # still reaches the market.
+                _need = dist(pos, tile) + 2 + _shed_dist(tile) + 1 + 1
+                if _need > _deadline:
+                    continue
+            if _deadline is not None and op[0] == "HARVEST":
+                # LAST DAY: the score is cash, and a harvest reaches it only
+                # through walk + HARVEST + walk to the shed + DROP + a SELL
+                # order the turn after. What cannot make that trip is worth 0.
+                _need = dist(pos, tile) + 1 + _shed_dist(tile) + 1 + 1
+                if _need > _deadline:
+                    continue
             row[j] = v * (STEP_DISCOUNT ** dist(pos, tile))
             _base_j = row[j]
             # PER-UNIT PREFERENCE. The value is the same for everybody, so
@@ -1321,8 +1397,20 @@ def assign_units(obs, free_capacity: int,
     # Without this a unit that is not carrying what an operation consumes
     # simply never sees that tile, and "fetch it, then use it" is not a
     # decision anybody can take.
+    _remaining = spec.EPISODE_STEPS - 1 - int(obs["step"])     # turns after this one
     _chain_ctx = {"shed": obs["private"].get("shed", {}) or {},
                   "access": sorted(_shed_access_set())}
+    if value_map is None:
+        # THE TACTICAL MECHANICS BELOW ARE FOR AGENTS WITHOUT A VALUE MAP
+        # (the plan executor, the heuristic agent). Under the deployed
+        # network they change the semantics its map was trained on -one
+        # DROP column, no deadline- and a frozen policy cannot be judged on
+        # a widened space: measured paired v5 vs v48, 200 episodes, they
+        # cost -5,356 $ (t -4.8, worse on 127). They reach the network only
+        # by retraining with them on. See docs/DEBT.md.
+        _chain_ctx.update({"carried": _carried_values(obs),
+                           "deadline": _remaining if days_left(obs) <= 1 else None,
+                           "load": _plan_load(obs)})
     adh = 0.0
     if macro is not None:
         from ..macro import assignment_stickiness

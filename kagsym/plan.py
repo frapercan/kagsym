@@ -18,6 +18,7 @@ the next step):
   land     quadrants to buy at the start (0-3)
   animals  animals to keep (0 in the 8-day world: none pays)
   selling  the macro's selling dial in [0, 1]: 0 sells at once
+  load     units a hand carries before walking to the shed (0: whenever it pays)
 """
 from __future__ import annotations
 
@@ -41,6 +42,10 @@ class Plan:
     land: int | tuple = 0
     animals: int | tuple = 0
     selling: float | tuple = 0.05
+    load: int | tuple = 0          # units a hand carries before a shed trip; 0 = whenever it pays
+
+    def load_on(self, day: int) -> int:
+        return int(_by_day(self.load, day))
 
     def crop_on(self, day: int) -> str:
         return str(_by_day(self.crop, day))

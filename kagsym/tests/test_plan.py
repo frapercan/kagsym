@@ -98,3 +98,47 @@ def test_a_plan_beats_the_dial_policy_bar():
                 (20, 25, 25, 25, 25, 25, 25, 25), (2, 0, 2, 7, 1, 2, 3, 0), 0, 0,
                 (0.05, 0.05, 0.05, 0.05, 0.5, 0.05, 0.05, 0.05))
     assert play_plan(best, 7101) > 5776
+
+
+# -- rung 1 of the ladder: 4 days, one carrot cycle ----------------------------
+
+def _last_day_ledger(plan: Plan, seed: int = 7101, days: int = 4):
+    """Units harvested, sold, carried at the close, left on tiles."""
+    steps = HOURS * days
+    spec.set_turns_per_day(HOURS)
+    spec.set_episode_steps(steps)
+    with active(plan):
+        env = FastEnv(configuration={"episodeSteps": steps, "turnsPerDay": HOURS, "startingMoney": 3000}, seed=seed)
+        obs = env.reset()
+        ag = Agent(episode_steps=steps, macro=plan_macro(plan))
+        sold = 0
+        last = None
+        while not env.done:
+            ob = obs[0]
+            a = ag(ob)
+            sold += sum(o[2] for o in a.get("market", []) if o[0] == "SELL")
+            last = ob
+            obs, _ = env.step([a, dict(E.PASS_ACTION)])
+        f = last["farms"][0]
+        left = sum(t.get("yield_units", 0) for r in f["tiles"] for t in r
+                   if isinstance(t, dict) and t.get("kind") == "PLANT")
+        carried = sum(sum(i.values()) for i in last["private"]["inventories"])
+        return dict(sold=sold, carried=carried, left=left, final=float(env.rewards()[0]))
+
+
+def test_nothing_is_carried_home_on_the_last_day():
+    # The score is cash: a load still in a unit's hands at the close is lost.
+    # Before the deadline rule, 6 hands harvested 75 units and carried 51.
+    for hands in (3, 6, 8):
+        led = _last_day_ledger(Plan("CARROT", 25, hands, 0, 0, 0.05, 12))
+        assert led["carried"] == 0, (hands, led)
+
+
+def test_rung_one_is_near_the_hand_bound():
+    # 25 carrot tiles yield 75 units; sold in one day at the day-0 price curve
+    # they gross ~2,130 $, so the bound is ~4,600 $. One DROP column for the
+    # whole crew gave 3,348; per-unit columns, the four shed-access tiles, the
+    # last-day deadline and a load of 12 give 4,379 on five seeds.
+    led = _last_day_ledger(Plan("CARROT", 25, 8, 0, 0, 0.05, 12))
+    assert led["sold"] >= 66, led
+    assert led["final"] >= 4300, led

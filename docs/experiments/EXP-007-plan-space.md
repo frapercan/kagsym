@@ -75,3 +75,67 @@ hands, crop, land; continuous selling) trained by imitation of the searched
 plan and regression of its money; (3) the network's plan as the search's
 starting point, so each iteration needs fewer rollouts. Gate: the network's
 regret against the searched plan, per day, on reserved seeds.
+
+## Part 2 (2026-09-25, early morning): the ladder from the minimum horizon
+
+Rule adopted: never straight to the full game. Start where one decision
+matters and climb: 4 days (one carrot cycle) -> 5 (wheat) -> 6 -> 8 -> 11
+(tomato) -> 14 -> 30, always 24 hours, closing each rung before the next.
+
+### Rung 1: 4 days, 25 carrot tiles
+
+The strategy is trivial (plant everything on day 0, sell on day 3) and the
+exhaustive grid confirmed it (1,125 constant plans: tiles 25, hands 3,
+selling irrelevant). The money was not: 3,348 $ against a hand bound of
+~4,600 (75 carrots sold in one day at the day-0 price curve gross 2,130).
+The loss was tactical, on the last day:
+
+```
+hands   final   harvested   sold   carried at close   left on tiles
+  3     3,348      51        27          24                17
+  6     3,194      75        24          51                 0
+  8     2,876      75        18          57                 0
+```
+
+More hands harvested everything and sold LESS. Four mechanisms, each exact
+in the engine, each now in `kagsym/symbolic/tasks.py`:
+
+1. **One DROP column for the whole crew.** The shed has one access tile per
+   unlocked quadrant; the Hungarian assignment gives each column to one
+   unit, so one unit per turn went to the shed and the rest passed with
+   full hands. Now every carrying unit has its own column, worth what IT
+   carries (the column carried the crew's maximum, so the unit with 3
+   units looked like the one with 12).
+2. **Three of the four shed-access tiles were never offered** because they
+   are LOCKED; the engine resolves DROP before the LOCKED guard and lets
+   units stand there. Offered now, but only to agents without a value map:
+   with a map the heuristic dollar figure dominated the matrix (v5 vs
+   passive, seed 7102: 89,117 -> 74,176 alone, 43,754 with mechanism 1).
+3. **The last-day deadline.** A harvest reaches the score only through walk
+   + HARVEST + walk + DROP + a SELL order the turn after; what cannot make
+   the trip is worth 0, and so is a watering whose harvest cannot. Nothing
+   is carried home now (test).
+4. **`load`, a tactical plan field**: how many units a hand carries before
+   a shed trip (the deadline overrides it). Without it a hand made a trip
+   for every 3 units and 73 % of its turns were moves.
+
+```
+                                         4 days, 5 reserved seeds
+one column, no deadline (hands 3)              3,348
+per-unit columns + 4 tiles + deadline (8)      3,661
++ load 12 (8 hands)                            4,379
++ per-day schedule (hands 3,0,3,8; load 9)     4,533     bound ~4,600
+```
+
+Mechanisms 1 and 3 sit inside the assignment, so at first they reached the
+deployed policy too. Measured paired, v5 vs v48, 100 reserved seeds x 2
+seats, HEAD against the working tree: -5,356 $ (se 1,115, t -4.8, worse on
+127 of 200) -- while the same code gave +4,059 on one seed against a
+passive opponent. The network's map was trained with one DROP column and
+no deadline; changing the semantics under a frozen policy is not a
+measurement of the mechanism (docs/PROCEDURE.md: a widened space is only
+judged by retraining). All four mechanisms are therefore active only for
+agents WITHOUT a value map: the plan executor and the heuristic agent. The
+deployed policy is byte-identical (200 of 200 paired episodes equal,
+rechecked after the gate). Teaching them to the network is retraining
+work, recorded in docs/DEBT.md.
