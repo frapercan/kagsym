@@ -38,8 +38,9 @@ def main():
     p.add_argument("offset", help="*_mu.npy from tools/search.py")
     p.add_argument("checkpoint")
     p.add_argument("--live", default=None, help="live dials json (default: next to the offset history)")
-    p.add_argument("--n", type=int, default=200, help="reserved seeds for the money instrument")
-    p.add_argument("--band-n", type=int, default=2, help="seeds per opponent for the band instrument (0 = skip)")
+    p.add_argument("--family", default="reserved", help="seed family for the money instrument")
+    p.add_argument("--n", type=int, default=200, help="seeds for the money instrument")
+    p.add_argument("--band-n", type=int, default=6, help="reserved seeds per opponent for the band instrument (0 = skip)")
     p.add_argument("--procs", type=int, default=None)
     p.add_argument("--bake", help="write the validated checkpoint here")
     p.add_argument("--t-min", type=float, default=2.0)
@@ -60,17 +61,18 @@ def main():
     new = E.PolicySpec(ckpt, offset=(delta.tolist(), live))
     print(f"[validate] {a.offset} ({'ramp' if cand.is_ramp else 'constant'}, {len(live)} dials) on {ckpt}")
 
-    seeds = S.RESERVED.seeds(a.n)
+    fam = S.family(a.family)
+    seeds = fam.seeds(a.n)
     eps_b = E.run(base, [E.V48], seeds, seats=(0,), procs=a.procs)
     eps_n = E.run(new, [E.V48], seeds, seats=(0,), procs=a.procs)
     d = E.paired(eps_n, eps_b)
-    print(f"  money vs v48, {d['n']} reserved boards: {d['money_diff']:+,.0f} +- {d['money_se']:,.0f}"
+    print(f"  money vs v48, {d['n']} {fam.name} boards: {d['money_diff']:+,.0f} +- {d['money_se']:,.0f}"
           f"   t {d['t']:+.2f}   better on {100 * d['boards_better']:.0f}%")
     E.record("validate-money", new, [E.V48], seeds, eps_n, extra={"paired_vs_checkpoint": d})
 
     win_ok = True
     if a.band_n > 0:
-        bseeds = S.RESERVED.seeds(a.band_n, offset=a.n if a.n + a.band_n <= S.RESERVED.size else 0)
+        bseeds = S.RESERVED.seeds(a.band_n)
         band = E.band()
         eb = E.run(base, band, bseeds, procs=a.procs)
         en = E.run(new, band, bseeds, procs=a.procs)
