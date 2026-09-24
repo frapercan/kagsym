@@ -335,8 +335,12 @@ def paired(a: Sequence[Episode], b: Sequence[Episode]) -> dict:
     """
     ka = {(e.opponent, e.seed, e.seat): e for e in a if not e.error}
     kb = {(e.opponent, e.seed, e.seat): e for e in b if not e.error}
-    n_expected = max(len(set((e.opponent, e.seed, e.seat) for e in a)),
-                     len(set((e.opponent, e.seed, e.seat) for e in b)))
+    # Boards whose opponent did not load are outside the criterion on both
+    # sides by design; only OUR failures count as dropped boards.
+    def _expected(eps):
+        return {(e.opponent, e.seed, e.seat) for e in eps
+                if not (e.error and e.error.startswith("opponent-load"))}
+    n_expected = max(len(_expected(a)), len(_expected(b)))
     keys = sorted(set(ka) & set(kb))
     dm = np.array([ka[k].money - kb[k].money for k in keys])
     dw = np.array([ka[k].win - kb[k].win for k in keys])

@@ -59,7 +59,17 @@ def play_with_kaggle_runner(tarball: str, turns: int) -> dict:
         env.run([main_py, "random"])
         statuses = [s.status for s in env.state]
         money = env.state[0].observation["farms"][0]["money"]
-        return {"statuses": statuses, "money": money, "steps": len(env.steps), "dir": tmp}
+        # Did OUR agent act? A crash inside main.py is caught and answered
+        # with PASS, so the status alone cannot tell a broken agent from a
+        # cautious one; any non-PASS action over the played turns can.
+        acted = 0
+        for step in env.steps:
+            act = step[0].action if hasattr(step[0], "action") else step[0].get("action")
+            if isinstance(act, dict) and (act.get("hands") or act.get("market")
+                                          or (act.get("farmer") and act["farmer"][0] != "PASS")):
+                acted += 1
+        return {"statuses": statuses, "money": money, "steps": len(env.steps),
+                "acted_turns": acted, "dir": tmp}
     finally:
         sys.path = saved_path
         if env_ckpt is not None:
@@ -78,9 +88,9 @@ def main():
     if a.no_play:
         return
     r = play_with_kaggle_runner(out, a.turns)
-    ok = r["statuses"][0] == "DONE" and r["money"] != 3000
-    print(f"[package] kaggle runner: statuses {r['statuses']}  our money after {a.turns} turns "
-          f"{r['money']:,.0f}  -> {'OK' if ok else 'FAILED'}")
+    ok = r["statuses"][0] == "DONE" and r["acted_turns"] > 0
+    print(f"[package] kaggle runner: statuses {r['statuses']}  our agent acted on "
+          f"{r['acted_turns']} of {r['steps']} turns  money {r['money']:,.0f}  -> {'OK' if ok else 'FAILED'}")
     if not ok:
         print(f"  extracted at {r['dir']}; run it by hand to see the traceback")
         sys.exit(1)
