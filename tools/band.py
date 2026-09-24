@@ -39,12 +39,16 @@ def report(spec, eps):
     print(f"{'opponent':46s} {'win':>5s} {'ours':>9s} {'theirs':>9s} {'fail':>5s}")
     for name, r in rows:
         print(f"  {name[:44]:44s} {r['win']:5.2f} {r['money']:9,.0f} "
-              f"{r['opp_money']:9,.0f} {r['opp_failures']:5d}")
+              f"{r['opp_money']:9,.0f} {r['opp_failures']:5d}{'  BROKEN' if r['broken'] else ''}")
     s = E.summary(eps)
     print(f"\n  WIN MEAN {s['win_mean']:.3f}   beaten (>0.5): {s['beaten']} of "
           f"{s['opponents']}   contested (0.35-0.65): {s['contested']}")
     print(f"  money {s['money_mean']:,.0f} +- {s['money_se']:,.0f}   "
           f"opponent failures {s['opp_failures']}   our failures {s['failed']}")
+    if s["broken_opponents"]:
+        print(f"  broken opponents (played PASS, excluded): {s['broken_opponents']}")
+    if s["opponents_not_loaded"]:
+        print(f"  opponents that did not load (excluded): {s['opponents_not_loaded']}")
 
 
 def main():

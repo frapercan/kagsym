@@ -154,6 +154,16 @@ def _policy(spec: PolicySpec):
 
 # -- one episode ---------------------------------------------------------------
 
+class OpponentLoadError(RuntimeError):
+    """The opponent could not be built; the episode was never played."""
+
+
+# An opponent that throws on more than this share of turns is BROKEN, not
+# weak: it played PASS and a 1.00 against it is not a win the ladder would
+# give us. Broken opponents are reported and excluded from the criterion.
+BROKEN_FAILURE_SHARE = 0.5
+
+
 @dataclass
 class Episode:
     opponent: str
@@ -178,7 +188,10 @@ def play(spec: PolicySpec, opp: Opponent, seed: int, seat: int = 0,
     pol = _policy(spec)
     pol.configure(config)
     pol.reset()
-    rival = _opponent_callable(opp)
+    try:
+        rival = _opponent_callable(opp)
+    except Exception as e:
+        raise OpponentLoadError(f"{opp.label}: {type(e).__name__}: {e}") from e
     env = FastEnv(configuration=config, seed=seed)
     obs = env.reset()
     me, other = seat, 1 - seat
@@ -202,10 +215,13 @@ def _play_task(task):
     spec, opp, seed, seat = task
     try:
         return play(spec, opp, seed, seat)
+    except OpponentLoadError as e:
+        return Episode(opp.label, int(seed), int(seat), float("nan"), float("nan"),
+                       float("nan"), 0, error="opponent-load: " + str(e))
     except Exception as e:  # our side: keep the traceback, never a silent NaN
         import traceback
         return Episode(opp.label, int(seed), int(seat), float("nan"), float("nan"),
-                       float("nan"), 0, error=traceback.format_exc()[-2000:] or repr(e))
+                       float("nan"), 0, error="ours: " + (traceback.format_exc()[-2000:] or repr(e)))
 
 
 # -- many episodes -------------------------------------------------------------
@@ -215,27 +231,43 @@ def tasks(spec: PolicySpec, opponents: Sequence[Opponent], seeds: Sequence[int],
     return [(spec, o, s, seat) for o in opponents for s in seeds for seat in seats]
 
 
-def run(spec: PolicySpec, opponents: Sequence[Opponent], seeds: Sequence[int],
-        seats: Sequence[int] = (0, 1), procs: int | None = None,
-        progress: bool = False) -> list[Episode]:
-    """Play every (opponent, seed, seat) in parallel and return the records."""
+def run_tasks(todo: Sequence[tuple], procs: int | None = None,
+              progress: bool = False) -> list[tuple[tuple, Episode]]:
+    """Play arbitrary (spec, opponent, seed, seat) tasks in parallel.
+
+    Returns (task, episode) pairs so callers with several policies (a search
+    population) can group the records themselves.
+    """
     import multiprocessing as mp
-    todo = tasks(spec, opponents, seeds, seats)
     procs = procs or max(1, (os.cpu_count() or 2) - 1)
-    out: list[Episode] = []
+    out: list[tuple[tuple, Episode]] = []
     t0 = time.time()
     with mp.get_context("fork").Pool(procs) as pool:
-        for i, ep in enumerate(pool.imap_unordered(_play_task, todo, chunksize=1), 1):
-            out.append(ep)
+        for i, (task, ep) in enumerate(
+                pool.imap_unordered(_play_task_keyed, todo, chunksize=1), 1):
+            out.append((task, ep))
             if progress and (i % max(1, len(todo) // 20) == 0 or i == len(todo)):
                 el = time.time() - t0
                 print(f"  {i}/{len(todo)} episodes  {el:.0f}s  "
                       f"ETA {el / i * (len(todo) - i):.0f}s", flush=True)
-    errors = [e for e in out if e.error]
-    if errors:
-        print(f"[evaluate] {len(errors)} episodes FAILED on our side; first:\n"
-              f"{errors[0].error}", flush=True)
+    ours = [e for _, e in out if e.error and e.error.startswith("ours")]
+    not_loaded = sorted({e.opponent for _, e in out if e.error and e.error.startswith("opponent-load")})
+    if ours:
+        print(f"[evaluate] {len(ours)} episodes FAILED on our side; first:\n{ours[0].error}", flush=True)
+    if not_loaded:
+        print(f"[evaluate] opponents that did not load (excluded): {not_loaded}", flush=True)
     return out
+
+
+def _play_task_keyed(task):
+    return task, _play_task(task)
+
+
+def run(spec: PolicySpec, opponents: Sequence[Opponent], seeds: Sequence[int],
+        seats: Sequence[int] = (0, 1), procs: int | None = None,
+        progress: bool = False) -> list[Episode]:
+    """Play every (opponent, seed, seat) in parallel and return the records."""
+    return [ep for _, ep in run_tasks(tasks(spec, opponents, seeds, seats), procs, progress)]
 
 
 # -- summaries -----------------------------------------------------------------
@@ -249,22 +281,31 @@ def by_opponent(episodes: Iterable[Episode]) -> dict[str, dict]:
     out = {}
     for name, eps in rows.items():
         w = np.array([e.win for e in eps])
+        failures = int(sum(e.opp_failures for e in eps))
+        turns = len(eps) * HOURS * DAYS
         out[name] = {"n": len(eps), "win": float(w.mean()),
                      "money": float(np.mean([e.money for e in eps])),
                      "opp_money": float(np.mean([e.opp_money for e in eps])),
-                     "opp_failures": int(sum(e.opp_failures for e in eps))}
+                     "opp_failures": failures,
+                     "broken": failures > BROKEN_FAILURE_SHARE * turns}
     return out
 
 
 def summary(episodes: Sequence[Episode]) -> dict:
     """The criterion: mean win rate over opponents and how many we beat."""
-    per = by_opponent(episodes)
+    per_all = by_opponent(episodes)
+    broken = sorted(k for k, v in per_all.items() if v["broken"])
+    per = {k: v for k, v in per_all.items() if not v["broken"]}
     wins = np.array([v["win"] for v in per.values()]) if per else np.array([])
     money = np.array([e.money for e in episodes if not e.error])
+    not_loaded = sorted({e.opponent for e in episodes
+                         if e.error and e.error.startswith("opponent-load")})
     return {
         "opponents": len(per),
+        "broken_opponents": broken,
+        "opponents_not_loaded": not_loaded,
         "episodes": int(sum(v["n"] for v in per.values())),
-        "failed": int(sum(1 for e in episodes if e.error)),
+        "failed": int(sum(1 for e in episodes if e.error and e.error.startswith("ours"))),
         "win_mean": float(wins.mean()) if len(wins) else float("nan"),
         "beaten": int((wins > 0.5).sum()),
         "contested": int(((wins > 0.35) & (wins < 0.65)).sum()),
