@@ -126,6 +126,8 @@ def main():
     ap.add_argument("--samples", type=int, default=4, help="sampled episodes per seed (plus the mean)")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--sigma0", type=float, default=None, help="reset the exploration width at start")
+    ap.add_argument("--heads-only", action="store_true",
+                    help="train only the macro head and sigma; the trunk and the micro map stay as loaded")
     ap.add_argument("--mu-penalty", type=float, default=1e-3,
                     help="quadratic penalty on pre-activations beyond +-4: a saturated sigmoid explores nothing")
     ap.add_argument("--lr-sigma", type=float, default=1e-2)
@@ -175,8 +177,10 @@ def main():
             net.log_sigma.fill_(float(np.log(a.sigma0)))
 
     sigma_params = [net.log_sigma]
-    other = [p for n, p in net.named_parameters()
-             if n.startswith(("world.", "cuerpo.", "macro_mu."))]
+    trained = ("macro_mu.",) if a.heads_only else ("world.", "cuerpo.", "macro_mu.")
+    other = [p for n, p in net.named_parameters() if n.startswith(trained)]
+    for n, p in net.named_parameters():
+        p.requires_grad_(n.startswith(trained) or n == "log_sigma")
     opt = torch.optim.Adam([{"params": other, "lr": a.lr}, {"params": sigma_params, "lr": a.lr_sigma}])
     train_seeds = S.TRAINING.seeds(a.updates * a.seeds_per_update, offset=a.seed * 100_000)
     eval_seeds = S.RESERVED.seeds(a.eval_n)
