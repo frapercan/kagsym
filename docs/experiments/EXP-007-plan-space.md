@@ -172,3 +172,23 @@ the plan and its bound: tactical, not strategic.
 Coordinate descent is already local at rung 3 (3,752 found, 3,790 by hand
 with 8 hands); the schedule search is to be strengthened before the high
 rungs (CEM over schedules, or day-by-day search with rollouts).
+
+### Rungs 9-11 and the limit of local search (01:07-01:21)
+
+```
+ 9     8,298   land, alternating carrot/wheat, a day without sowing
+10     9,334   land, mixes on days 0 and 6, wheat
+11    26,463   20 MELON tiles, no land, 2 hands then 6 on the last day       melon: yields on day 10 at 250 $/unit
+```
+
+Melon is the rung-11 decision, and it is three coordinated changes away
+from the 10-day plan (crop, 20 tiles, no land); each intermediate step is
+worse (9,449 -> 6,170 -> 3,175 -> 26,463). A day-by-day search with exact
+rollouts (`tools/plan_daysearch.py`: every single-field and twelve random
+two-field variations of the day's plan, played to the end) refines a plan
+in 20 s per seed at 11 days but cannot leave its basin: from the 10-day
+plan it returns 9,573. The constant-plan grid finds melon (24,990). The
+search is therefore staged: grid (global over constant plans) -> day-by-day
+refinement with the state in hand, which records (state, day plan, money)
+for the plan head. The ladder's coordinate descent was stopped after rung
+11 (12-15 min per rung and rising).
