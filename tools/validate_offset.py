@@ -85,6 +85,9 @@ def main():
     p.add_argument("--bake", help="write the validated checkpoint here")
     p.add_argument("--t-min", type=float, default=2.0)
     p.add_argument("--win-min", type=float, default=0.0)
+    p.add_argument("--days", type=int, default=30, help="world for the money instrument")
+    p.add_argument("--agent-horizon", type=int, default=None)
+    p.add_argument("--opponent", default=E.V48.name, help="public agent or 'passive'")
     a = p.parse_args()
 
     ckpt = os.path.abspath(a.checkpoint)
@@ -98,13 +101,17 @@ def main():
 
     fam = S.family(a.family)
     seeds = fam.seeds(a.n)
-    eps_b = E.run(base, [E.V48], seeds, seats=(0,), procs=a.procs)
-    eps_n = E.run(new, [E.V48], seeds, seats=(0,), procs=a.procs)
+    opp = E.passive() if a.opponent == "passive" else E.public(a.opponent)
+    world = {"days": a.days, "agent_horizon_days": a.agent_horizon}
+    eps_b = [ep for _, ep in E.run_tasks([(base, opp, s, 0, world) for s in seeds], procs=a.procs)]
+    eps_n = [ep for _, ep in E.run_tasks([(new, opp, s, 0, world) for s in seeds], procs=a.procs)]
     d = E.paired(eps_n, eps_b)
-    print(f"  money vs v48, {d['n']}/{d['n_expected']} {fam.name} boards: {d['money_diff']:+,.0f} "
+    sb, sn = E.summary(eps_b), E.summary(eps_n)
+    print(f"  money vs {opp.label} ({a.days}d), {d['n']}/{d['n_expected']} {fam.name} boards: "
+          f"{sb['money_mean']:,.0f} -> {sn['money_mean']:,.0f}   {d['money_diff']:+,.0f} "
           f"+- {d['money_se']:,.0f}   t {d['t']:+.2f}   better on {100 * d['boards_better']:.0f}%"
           f"{'   DEGENERATE' if d['degenerate'] else ''}")
-    E.record("validate-money", new, [E.V48], seeds, eps_n, extra={"paired_vs_checkpoint": d})
+    E.record("validate-money", new, [opp], seeds, eps_n, extra={"paired_vs_checkpoint": d, "world": world})
 
     w, n_band = None, 0
     if a.band_n > 0:
