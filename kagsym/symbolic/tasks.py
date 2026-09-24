@@ -108,6 +108,14 @@ def plantable(obs, crop: str) -> bool:
     LABOUR guard -- the comment above it had the mechanism wrong and the
     outcome right.
     """
+    from ..plan import get_plan
+    if get_plan() is not None:
+        # UNDER A PLAN the guard is the engine's, not the labour heuristic:
+        # a crop can be sown if it yields at all before the game ends
+        # (first yield on `first_yield_day`, harvested and sold that day).
+        # Whether a green cycle pays is the plan's decision to make and the
+        # search's to measure (rung 3 of the ladder: 3 days, carrot).
+        return spec.CROPS[crop]["first_yield_day"] < days_left(obs)
     return cycle_days(crop) < days_left(obs)
 
 
@@ -181,6 +189,11 @@ _SHED_ACCESS = None
 
 def _is_shed_access(x: int, y: int) -> bool:
     return (x, y) in _shed_access_set()
+
+
+def _under_plan() -> bool:
+    from ..plan import get_plan
+    return get_plan() is not None
 
 
 def _plan_load(obs) -> int:
@@ -442,6 +455,16 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         age = day - tile["planted_day"]
         price = unit_price(obs, tile["crop"])
         ripe = age >= cd["first_yield_day"] and tile["yield_units"] > 0
+
+        if ripe and days_left(obs) <= 1 and _under_plan():
+            # LAST DAY under a plan: whatever is on the tile is all it will
+            # ever yield. The plan says whether to water it first (+1 unit
+            # for one action) or take it now; labour decides which pays and
+            # the search measures it. Before FERTILIZE, which returned a
+            # 5e-5 $ task ahead of a 70 $ harvest.
+            from ..plan import get_plan
+            if tile["watered_today"] or get_plan().water_last_on(int(day)) == 0:
+                return (tile["yield_units"] * price, ["HARVEST"])
 
         if not tile["watered_today"]:
             # `consecutive_unwatered` IS BORN AT 1 on planting: a plant not

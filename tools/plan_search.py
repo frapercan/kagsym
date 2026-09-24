@@ -31,10 +31,9 @@ def _one(args):
 
 
 def grid(days: int):
-    from kagsym.symbolic.tasks import cycle_days
     from kagsym import spec
-    crops = [c for c in spec.CROP_LIST if cycle_days(c) <= days]
-    tiles = [10, 15, 20, 25, 30, 35, 40, 50, 60, 75]
+    crops = [c for c in spec.CROP_LIST if spec.CROPS[c]["first_yield_day"] < days]
+    tiles = [0, 10, 15, 20, 25, 30, 35, 40, 50, 60, 75]
     hands = list(range(0, 9))
     land = [0, 1, 2]
     for c, t, h, l in itertools.product(crops, tiles, hands, land):
@@ -75,10 +74,12 @@ def main():
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     json.dump([dict(plan=p, mean=m, values=vals) for p, m, vals in rows], open(a.out, "w"), indent=1)
     if a.schedule:
-        fields = ("hands", "load", "tiles", "crop", "selling")
+        fields = ("hands", "load", "water_last", "tiles", "crop", "selling")
+        days = a.days
         starts = [dict(rows[0][0], selling=0.05, load=0)]
-        starts += [dict(crop="WHEAT", tiles=50, hands=7, land=1, selling=0.05, load=0),
-                   dict(crop="CARROT", tiles=50, hands=7, land=1, selling=0.05, load=0)]
+        if days >= 6:
+            starts += [dict(crop="WHEAT", tiles=50, hands=7, land=1, selling=0.05, load=0),
+                       dict(crop="CARROT", tiles=50, hands=7, land=1, selling=0.05, load=0)]
         found = []
         for st in starts:
             cur, best = schedule_search(st, seeds, a.days, a.hours, a.procs, rounds=a.rounds, fields=fields)
@@ -100,14 +101,13 @@ def schedule_search(start: dict, seeds, days: int, hours: int, procs: int, round
                     fields=("hands", "tiles"), values=None):
     """Coordinate descent over per-day schedules: for every (field, day) try
     every value with the rest fixed, keep the best, repeat until no gain."""
-    from kagsym.symbolic.tasks import cycle_days
     from kagsym import spec
-    crops = [c for c in spec.CROP_LIST if cycle_days(c) < days]
+    crops = [c for c in spec.CROP_LIST if spec.CROPS[c]["first_yield_day"] < days]
     max_tiles = 25 * (1 + int(start.get("land", 0)))
     values = values or {"hands": list(range(0, 9)),
                         "tiles": [t for t in (0, 5, 10, 15, 20, 25, 30, 40, 50, 75) if t <= max_tiles],
                         "crop": crops, "selling": [0.05, 0.25, 0.5, 0.75, 0.95],
-                        "load": [0, 3, 6, 9, 12, 15]}
+                        "load": [0, 3, 6, 9, 12, 15], "water_last": [0, 1]}
     cur = dict(start)
     for f in fields:
         v = cur[f]

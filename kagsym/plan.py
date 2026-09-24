@@ -19,6 +19,7 @@ the next step):
   animals  animals to keep (0 in the 8-day world: none pays)
   selling  the macro's selling dial in [0, 1]: 0 sells at once
   load     units a hand carries before walking to the shed (0: whenever it pays)
+  water_last  on the last day, water ripe tiles before harvesting (1) or harvest at once (0)
 """
 from __future__ import annotations
 
@@ -43,6 +44,10 @@ class Plan:
     animals: int | tuple = 0
     selling: float | tuple = 0.05
     load: int | tuple = 0          # units a hand carries before a shed trip; 0 = whenever it pays
+    water_last: int | tuple = 1    # last day: 1 water ripe tiles before harvesting (+1 unit), 0 harvest at once
+
+    def water_last_on(self, day: int) -> int:
+        return int(_by_day(self.water_last, day))
 
     def load_on(self, day: int) -> int:
         return int(_by_day(self.load, day))
