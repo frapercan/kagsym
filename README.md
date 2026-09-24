@@ -117,7 +117,14 @@ tools/
   band.py, evaluate.py       the criterion and the money diagnostic
   check_submission.py        the gate
   search.py, live_dials.py, validate_offset.py   the search loop
+  matrix.py, quick_eval.py   own-checkpoint duels; the trainer's log line
   ledger.py                  the record of every evaluation
+  audit_decisions.py         AST walk over every decision site in the executor
+  download_ladder.py, public_ladder.py           ladder data
+docs/
+  PROCEDURE.md, DEBT.md      how a result is produced; what is known to be wrong
+  experiments/               one preregistration per experiment, written before launch
+  archive/                   earlier state documents (Spanish), history only
 submit_kagsym/main.py        the Kaggle wrapper (plus model.pt, not versioned)
 ```
 
