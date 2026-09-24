@@ -179,7 +179,7 @@ def main():
 
     from kagsym.tracking import Tracker, context_tags, describe
     tracker = Tracker(
-        "search", os.path.basename(out),
+        "search", os.path.relpath(out, os.path.join(ROOT, "runs")),   # e.g. search/exp002 or pipeline/smoke/search
         params={**vars(a), "live_dials": len(live), "dims": D},
         tags=context_tags("search", checkpoint=ckpt_src, objective=a.objective,
                           seed_family="search", experiment=a.experiment,
