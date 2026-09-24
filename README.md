@@ -109,6 +109,7 @@ kagsym/
   macro.py, obs.py           the macro vector and the observation encoding
   nets/                      the network (encoder + heads)
   policy.py                  the deployed policy, defined once
+  plan.py                    an explicit per-day plan the executor obeys literally
   evaluate.py, seeds.py      the evaluator and the seed families
   migrate_ckpt.py, version.py checkpoint migration and code fingerprints
   environment.py, parallel_env.py, reward.py, cli/train.py   training
@@ -120,6 +121,7 @@ tools/
   matrix.py, quick_eval.py   own-checkpoint duels; the trainer's log line
   ledger.py                  the record of every evaluation
   audit_decisions.py         AST walk over every decision site in the executor
+  plan_search.py, regret.py  brute-force plan search; rollout oracles and regret
   download_ladder.py, public_ladder.py           ladder data
 docs/
   PROCEDURE.md, DEBT.md      how a result is produced; what is known to be wrong

@@ -25,6 +25,7 @@ MAY_EMIT_MACRO = {
     "kagsym/parallel_env.py",      # self-play copies inside training workers
     "kagsym/cli/train.py",         # the trainer
     "kagsym/nets/world.py",        # defines the output; does not play
+    "kagsym/cli/train_solitaire.py",  # the minimal learner: samples the macro head per day
 }
 
 

@@ -470,7 +470,15 @@ def apply_params(macro: Macro) -> None:
     WATERING_FACTOR = p["watering"]
 
 
+def _plan():
+    from . import plan as _P
+    return _P.get_plan()
+
+
 def target_hands(obs, macro: Macro) -> int:
+    pl = _plan()
+    if pl is not None:
+        return pl.hands_on(int(obs["day"]))
     # NO CEILING, and the engine backs that up: it does not limit hiring
     # -`_hire_cost(hires_today)` only makes it MORE EXPENSIVE- so the 15 that
     # used to be here was a wall I put over a learnable level. Same mechanism
@@ -489,6 +497,11 @@ def target_tiles(obs, macro: Macro) -> int:
     """
     me = int(obs["player"])
     farm = obs["farms"][me]
+    pl = _plan()
+    if pl is not None:
+        plantable_ = sum(1 for y in range(spec.BOARD) for x in range(spec.BOARD)
+                         if farm["tiles"][y][x] != "LOCKED")
+        return max(0, min(plantable_, pl.tiles_on(int(obs["day"]))))
     # PLANNED, not the ones present right now. The macro is decided at hour 0,
     # when yesterday's hands have been cleared (`farm["hands"] = []` nightly)
     # and today's have not been hired yet: `len(farm["hands"])` is ALWAYS 0
@@ -522,6 +535,9 @@ def target_tiles(obs, macro: Macro) -> int:
 
 def target_animals(obs, macro: Macro) -> int:
     """How many animals to sustain. Each costs ~3 actions a day."""
+    pl = _plan()
+    if pl is not None:
+        return pl.animals_on(int(obs["day"]))
     me = int(obs["player"])
     farm = obs["farms"][me]
     n_units = 1 + target_hands(obs, macro)   # planned, see above
@@ -551,8 +567,9 @@ def sell_horizon(obs, macro: Macro) -> int:
     # no ceiling: the old `2 *` limited it to two days by my decision, and
     # holding produce longer is exactly the play that can pay against an
     # opponent who is not crashing the price.
-    return max(1, int(round(spec.TURNS_PER_DAY
-                            * math.exp(_logit(macro.selling)))))
+    pl = _plan()
+    selling = macro.selling if pl is None else pl.selling_on(int(obs["day"]))
+    return max(1, int(round(spec.TURNS_PER_DAY * math.exp(_logit(selling)))))
 
 
 def target_crop(obs, macro: Macro):
@@ -566,6 +583,15 @@ def target_crop(obs, macro: Macro):
     viable = [c for c in spec.CROP_LIST if cycle_days(c) <= days]
     if not viable:
         return None
+    pl = _plan()
+    if pl is not None:
+        # The executor plants only what `plantable` allows (strict: the cycle
+        # must END before the game does). `viable` above is one day looser,
+        # so seed bought by it for the last cycle was never planted (measured
+        # 2026-09-25: 50 wheat seeds, $500, idle from day 4 of 8).
+        from .symbolic.tasks import plantable
+        c = pl.crop_on(int(obs["day"]))
+        return c if plantable(obs, c) else None
     if macro.crop <= 0.0:
         return min(viable, key=lambda c: cycle_days(c))
     by_value = sorted(viable, key=lambda c: cycle_profit(obs, c) / max(1, cycle_days(c)))

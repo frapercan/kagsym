@@ -45,38 +45,33 @@ head, a joint ratio over ~450 dims saturating the clip, 11 samples per
 update against 80,000 $ of noise) learns from nothing to +2,788 $ of profit
 in three minutes when the signal is clean.
 
-## The design to build: expert iteration with an evolutionary outer loop
+## The design to build: a plan the executor obeys, searched, then learned
 
-Three mechanisms exist in the repo and answer three different questions.
-They are not alternatives; they run on three clocks of one learner.
+Measured 2026-09-25 (docs/experiments/EXP-007-plan-space.md): the 67 dials
+are a coarse model of the problem. An explicit `Plan` (`kagsym/plan.py`:
+crop, tiles, hands, land, animals, selling, each per day) executed
+literally by the symbolic layer, and searched by brute force on the exact
+engine (`tools/plan_search.py`, six minutes, five seeds), beats the best
+learned dial policy on fifteen unseen seeds (5,982 vs 5,803 $, 19/20
+paired). The search is the model of the world; the network's job is to
+amortise it.
 
-1. **Per decision: the exact rollout oracle** (`Policy.macro_candidates`,
-   `tools/regret.py`). At each day boundary it tries K candidates of the
-   policy's own Gaussian on the exact engine and keeps the best. It is not
-   deployable (1 s per turn on Kaggle) but it is the teacher: its choices
-   are improved targets, and its gain over the policy is the regret.
-2. **Per batch: the network** trained by
-   - imitation of the oracle's daily macro choices (supervised, dense,
-     low noise; keep the micro map's own targets), and
-   - PPO on the environment reward, so it can go beyond what the oracle
-     explored around the current mean.
-   Convergence is when the regret against the oracle is inside the
-   oracle's own noise on every day AND the oracle stops finding gains
-   (self-consistency). Distilling a K=16 oracle once failed (the choices
-   were noise around the mean); use K >= 32, several seeds per day, and
-   the oracle's *gain* as the sample weight.
-3. **Per generation: CEM / evolution** on what the gradient cannot reach:
-   the executor's dials with thresholds (`runs/<ckpt>.dials.json`), the
-   windowed offsets (`kagsym.policy.Offset`), and the trainer's
-   hyperparameters. It is also the cheap bar: the best fixed schedule.
-   (value of state-dependence = PPO - CEM; value of search = oracle - PPO)
+1. **Search first.** Widen the plan search until it reaches the per-day
+   dial oracle (6,537 $): CEM over schedules, or day-by-day search with
+   exact rollouts. Every plan found is data: (state at the day boundary,
+   plan, money).
+2. **Then imitate.** A network whose heads emit the day's plan (discrete
+   tiles, hands, crop, land; continuous selling), trained by cross-entropy
+   on the searched plan and regression on its money. No policy gradient,
+   no critic.
+3. **Then close the loop.** The network's plan is the search's starting
+   point; the search corrects it; the corrections are the next batch.
+   Convergence is the network's regret against the search, per day, on
+   reserved seeds.
 
-Suggested order: (a) run the from-scratch PPO to convergence in this world
-and plot regret per day; (b) add the imitation term from oracle targets and
-show it lowers the regret faster; (c) grow the world (8 -> 14 -> 30 days,
-still passive) and show the same convergence; (d) only then the shared
-market with an opponent. Each step is a preregistration in
-docs/experiments/ with its decision rule written before launch.
+The dials stay as the executor's constants; the plan replaces them as the
+decision. The full game adds what the 8-day world cannot show (land,
+animals, ongoing crops, the opponent), and the plan fields are the same.
 
 ## What each rhythm must show (the quality of the plays)
 

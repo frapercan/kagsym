@@ -39,3 +39,21 @@ PPO from scratch, best point               5,788   (then oscillates 3,098-5,753)
 minimal PG from the CEM point, heads only  4,39-4,46 plateau (300 updates)
 local rollout oracle around the PPO point  6,385
 ```
+
+## Result of half 1 (2026-09-25 00:40)
+
+The launch crashed twice on names that were never executed (`np`, `N_MACRO`
+in `tools/regret.py`): the tool had been written and not run. Fixed and
+rerun, 20 reserved seeds, K=32, 3 generations per day:
+
+```
+policy (PPO from scratch, best point)   5,877 $
+global per-day oracle                   6,537 $   regret mean 660, max 1,027
+days the search won                     0, 1, 3, 4, 6, 7  (gains 487, 33, 52, 120, 101, 142)
+```
+
+Per the rule: 6,537 lies between 6,500 and 7,000, so half 2 would run and
+the verdict would say so. It is NOT run: in the meantime the explicit plan
+space (EXP-007) beat the same policy by 185 $ paired with a six-minute
+search, which is the interface the second half should teach. Half 2 is
+superseded by EXP-008 (expert iteration on the plan head).

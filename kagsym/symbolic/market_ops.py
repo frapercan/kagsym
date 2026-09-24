@@ -318,7 +318,9 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None,
     hired = int(farm["hires_today"])
     money = float(farm["money"])
     days = max(1, (turns_left(obs) + 1) // spec.TURNS_PER_DAY)
-    if days < MIN_HAND_DAYS:
+    from ..plan import get_plan as _get_plan
+    _pl = _get_plan()
+    if days < MIN_HAND_DAYS and _pl is None:
         return []                      # no time left to pay it back
 
     from kaggle_environments.envs.kaggriculture import kaggriculture as E
@@ -381,6 +383,12 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None,
     orders = []
     for n in range(hired, n_max):
         cost = E._fib(n)
+        if _pl is not None:                 # the plan says how many; only cash limits it
+            if cost > money:
+                break
+            orders.append(["HIRE"])
+            money -= cost
+            continue
         # A hand contributes `turnsPerDay` actions. It is hired while its
         # cost is a fraction of what those actions yield. It is NOT capped by
         # a share of cash: labour is the multiplier of everything else, and
@@ -446,6 +454,10 @@ def land_orders(obs, macro=None) -> list:
         return []
     cost = spec.LAND_PRICES[n]
     money = float(farm["money"])
+    from ..plan import get_plan as _get_plan
+    _pl = _get_plan()
+    if _pl is not None:                 # the plan says how much land, literally
+        return [["BUY_LAND"]] if n < _pl.land_on(int(obs["day"])) and money >= cost else []
     # Only expand if the land already owned is being used. An alternative
     # payback criterion was tried (buy if there is season left to pay for it)
     # and it is WORSE: -$1,000 on all three controls, because it buys 25 tiles
@@ -535,6 +547,14 @@ def seed_orders(obs, tile_target: int, macro=None) -> list:
     # crops, against the 57 it manages under its own.
     unused = sum(int(v) for v in obs["private"].get("seeds", {}).values())
     n_units = 1 + len(farm["hands"])
+    from ..plan import get_plan as _get_plan
+    _pl = _get_plan()
+    if _pl is not None:                 # the plan: one crop, the tiles it asks, all the cash
+        planted_now = sum(planted_by_crop.values())
+        missing = _pl.tiles_on(int(obs["day"])) - planted_now - int(obs["private"].get("seeds", {}).get(c, 0))
+        price = max(1, spec.CROPS[c]["seed"])
+        n_take = min(missing, int(float(farm["money"]) // price))
+        return [["BUY_SEED", c, n_take]] if n_take > 0 else []
     # LEARNED. This `return []` ABORTS the whole seed purchase, and with 8.4
     # units the threshold came out at 16.8 while we carried 25.1 seeds on
     # average: for much of the episode nothing was bought.

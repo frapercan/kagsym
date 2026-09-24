@@ -1,0 +1,140 @@
+"""Exhaustive search over explicit plans on the exact engine (reduced solitaire).
+
+    python tools/plan_search.py --days 8 --seeds 5 --procs 11
+
+Every plan in the grid is played deterministically on the same reserved seeds
+and the mean money is reported. This is the executor's true optimum over
+structured plans: the number the learner has to reach, and the teacher for
+expert iteration (kagsym/plan.py).
+"""
+from __future__ import annotations
+
+import argparse
+import itertools
+import json
+import os
+import sys
+import time
+from multiprocessing import Pool
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from kagsym.plan import Plan, play_plan          # noqa: E402
+from kagsym.seeds import RESERVED               # noqa: E402
+
+
+def _one(args):
+    plan_d, seeds, days, hours = args
+    plan = Plan(**plan_d)
+    vals = [play_plan(plan, s, days=days, hours=hours) for s in seeds]
+    return plan_d, sum(vals) / len(vals), vals
+
+
+def grid(days: int):
+    from kagsym.symbolic.tasks import cycle_days
+    from kagsym import spec
+    crops = [c for c in spec.CROP_LIST if cycle_days(c) <= days]
+    tiles = [10, 15, 20, 25, 30, 35, 40, 50, 60, 75]
+    hands = list(range(0, 9))
+    land = [0, 1, 2]
+    for c, t, h, l in itertools.product(crops, tiles, hands, land):
+        if t > 25 * (1 + l):
+            continue
+        yield dict(crop=c, tiles=t, hands=h, land=l)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--days", type=int, default=8)
+    ap.add_argument("--hours", type=int, default=24)
+    ap.add_argument("--seeds", type=int, default=5)
+    ap.add_argument("--procs", type=int, default=11)
+    ap.add_argument("--out", default="runs/plan_search.json")
+    ap.add_argument("--schedule", action="store_true",
+                    help="after the grid, coordinate descent over per-day hands and tiles from the best plan")
+    ap.add_argument("--rounds", type=int, default=3)
+    ap.add_argument("--grid-json", default=None, help="reuse a finished grid instead of replaying it")
+    a = ap.parse_args()
+    seeds = RESERVED.seeds(a.seeds)
+    if a.grid_json:                       # reuse a finished grid
+        rows = [(r["plan"], r["mean"], r["values"]) for r in json.load(open(a.grid_json))]
+    else:
+        plans = list(grid(a.days))
+        print(f"{len(plans)} plans x {len(seeds)} seeds, {a.days}d x {a.hours}h", flush=True)
+        t0 = time.time()
+        with Pool(a.procs) as pool:
+            rows = pool.map(_one, [(p, seeds, a.days, a.hours) for p in plans], chunksize=4)
+        rows.sort(key=lambda r: -r[1])
+        print(f"{time.time() - t0:.0f}s", flush=True)
+    print("top 15:")
+    for p, m, vals in rows[:15]:
+        print(f"  {m:8,.0f}  {p}  {[round(v) for v in vals]}")
+    print("bottom 3:")
+    for p, m, vals in rows[-3:]:
+        print(f"  {m:8,.0f}  {p}")
+    os.makedirs(os.path.dirname(a.out), exist_ok=True)
+    json.dump([dict(plan=p, mean=m, values=vals) for p, m, vals in rows], open(a.out, "w"), indent=1)
+    if a.schedule:
+        fields = ("hands", "tiles", "crop", "selling")
+        starts = [dict(rows[0][0], selling=0.05)]
+        starts += [dict(crop="WHEAT", tiles=50, hands=7, land=1, selling=0.05),
+                   dict(crop="CARROT", tiles=50, hands=7, land=1, selling=0.05)]
+        found = []
+        for st in starts:
+            cur, best = schedule_search(st, seeds, a.days, a.hours, a.procs, rounds=a.rounds, fields=fields)
+            print(f"schedule optimum {best:,.0f}  {cur}", flush=True)
+            found.append(dict(plan=cur, mean=best))
+        found.sort(key=lambda r: -r["mean"])
+        json.dump(found, open(a.out.replace(".json", "_schedule.json"), "w"), indent=1)
+        print(f"BEST {found[0]['mean']:,.0f}  {found[0]['plan']}")
+
+
+
+# ---------------------------------------------------------------- schedules
+
+def _eval_plan(plan_d, seeds, days, hours):
+    return _one((plan_d, seeds, days, hours))[1]
+
+
+def schedule_search(start: dict, seeds, days: int, hours: int, procs: int, rounds: int = 3,
+                    fields=("hands", "tiles"), values=None):
+    """Coordinate descent over per-day schedules: for every (field, day) try
+    every value with the rest fixed, keep the best, repeat until no gain."""
+    from kagsym.symbolic.tasks import cycle_days
+    from kagsym import spec
+    crops = [c for c in spec.CROP_LIST if cycle_days(c) < days]
+    max_tiles = 25 * (1 + int(start.get("land", 0)))
+    values = values or {"hands": list(range(0, 9)),
+                        "tiles": [t for t in (0, 5, 10, 15, 20, 25, 30, 40, 50, 75) if t <= max_tiles],
+                        "crop": crops, "selling": [0.05, 0.25, 0.5, 0.75, 0.95]}
+    cur = dict(start)
+    for f in fields:
+        v = cur[f]
+        cur[f] = tuple(v) if isinstance(v, (list, tuple)) else tuple([v] * days)
+    best = _eval_plan(cur, seeds, days, hours)
+    print(f"start {best:,.0f}  {cur}", flush=True)
+    with Pool(procs) as pool:
+        for r in range(rounds):
+            improved = False
+            for f in fields:
+                for d in range(days):
+                    cands = []
+                    for val in values[f]:
+                        if val == cur[f][d]:
+                            continue
+                        c = dict(cur)
+                        sched = list(cur[f]); sched[d] = val; c[f] = tuple(sched)
+                        cands.append(c)
+                    res = pool.map(_one, [(c, seeds, days, hours) for c in cands], chunksize=1)
+                    top = max(res, key=lambda x: x[1])
+                    if top[1] > best + 1e-6:
+                        best, cur, improved = top[1], top[0], True
+                        print(f"  round {r} {f}[{d}] -> {cur[f][d]}: {best:,.0f}", flush=True)
+            print(f"round {r} done: {best:,.0f}  {cur}", flush=True)
+            if not improved:
+                break
+    return cur, best
+
+
+if __name__ == "__main__":
+    main()

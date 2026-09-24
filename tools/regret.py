@@ -21,6 +21,7 @@ import argparse
 import collections
 import os
 import sys
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -139,8 +140,6 @@ def oracle_global_solitaire(policy_path: str, days: int, seed: int, pop: int = 3
     the local oracle it can leave the policy's neighbourhood: it measures
     what the executor's interface can express with near-perfect daily
     decisions, not what the policy almost does."""
-    import torch
-    from kagsym import obs as O
     cfg = {"episodeSteps": hours * days, "turnsPerDay": hours, "startingMoney": CASH}
     plain, _, _ = play_solitaire(policy_path, days, seed, hours)
     pol = Policy.from_checkpoint(policy_path)
@@ -157,11 +156,11 @@ def oracle_global_solitaire(policy_path: str, days: int, seed: int, pop: int = 3
         if ob["hour"] == 0:
             mean_vec = pol.macro_candidates(ob, 1)[0]
             mu = np.log(np.clip(mean_vec, 1e-4, 1 - 1e-4)) - np.log1p(-np.clip(mean_vec, 1e-4, 1 - 1e-4))
-            sd = np.full(N_MACRO, sigma0)
+            sd = np.full(len(mean_vec), sigma0)
             best_vec, best_val, base_val = mean_vec, -np.inf, None
             for g in range(gens):
                 cands = [mean_vec] if g == 0 else []
-                cands += [1.0 / (1.0 + np.exp(-(mu + sd * rng.standard_normal(N_MACRO)))) for _ in range(pop - len(cands))]
+                cands += [1.0 / (1.0 + np.exp(-(mu + sd * rng.standard_normal(len(mean_vec))))) for _ in range(pop - len(cands))]
                 tasks = [(pol, env, c.astype(np.float32)) for c in cands]
                 vals = pool.map(_rollout_task, tasks, chunksize=1) if pool else [_rollout_task(t) for t in tasks]
                 if g == 0:

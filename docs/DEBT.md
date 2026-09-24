@@ -129,3 +129,23 @@ package under `archivo/kaggsim/` and `archivo/kaggriculture-simulation/`.
   measurement (with the demand cap, -39,212 $, and the value floor, -3,509 $).
   Mechanical rules that are safe to hard-wire are about watering and
   planting what was bought, not about labour.
+
+## Found while wiring the plan interface (2026-09-25)
+
+- **`macro.target_crop` is one day looser than `tasks.plantable`.** The
+  first accepts a crop whose cycle ends on the last day, the second refuses
+  to plant it; seed bought by the first sits idle. Fixed in plan mode only
+  (the plan asks `plantable`). In dial mode it still buys that seed; fixing
+  it changes the deployed policy's purchases and must be measured paired
+  against v48 first.
+- **`MIN_HAND_DAYS` refuses every hire with one day left**, in dial mode.
+  The plan bypasses it; whether the deployed policy loses its last day the
+  same way (harvest with the farmer alone) is unmeasured. Test:
+  `test_hands_follow_the_plan_including_the_last_days`.
+- **`Plan` is a process global** (`kagsym.plan.PLAN`), like the executor's
+  constants: one plan per process at a time, set with `plan.active(...)`.
+  Fine for search workers (one plan each); wrong the day two agents in one
+  process need different plans. Fix: pass the plan through `Agent`.
+- **`tools/plan_search.py` coordinate descent stops at a local optimum** and
+  its value grids are hand-picked (tiles in steps of 5, five selling levels).
+  The per-day dial oracle is 560 $ above the best plan found.

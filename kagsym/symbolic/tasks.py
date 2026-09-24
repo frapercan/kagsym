@@ -215,8 +215,18 @@ def _shed_task(obs, farm, ctx=None, macro=None):
     #
     # This is the third place where gross value was confused with marginal
     # (before: the animal's nominal price and the fertiliser bonus).
+    # TWO MORE MARGINS, both exact in the engine (measured 2026-09-25 in the
+    # 8-day solitaire, wheat on 50 tiles): the nightly flush DISCARDS what
+    # does not fit in the shed (capacity 100; 116 units carried, 100 kept),
+    # and on the last day whatever is still carried at the close is worth
+    # nothing, because the score is cash. Dropping is what lets it be sold.
     from .market_ops import future_price, marginal_prices
     priv_inv = priv.get("inventories") or []
+    shed_room = max(0, int(spec.DEFAULT_CONFIG["shedCapacity"]) - int(sum(shed.values())))
+    carried_total = sum(int(n_) for inv in priv_inv for item, n_ in (inv or {}).items()
+                        if item in spec.PRODUCTS)
+    overflow_share = 0.0 if carried_total <= 0 else max(0.0, carried_total - shed_room) / carried_total
+    last_day = days_left(obs) <= 1
     best = 0.0
     for inv in priv_inv:
         v_ = 0.0
@@ -224,7 +234,8 @@ def _shed_task(obs, farm, ctx=None, macro=None):
             if item in spec.PRODUCTS and n_:
                 now = float(sum(marginal_prices(obs, item, int(n_))))
                 later = float(future_price(obs, item, spec.TURNS_PER_DAY)) * int(n_)
-                v_ += max(0.0, now - later)      # only the drop avoided
+                lost = 1.0 if last_day else overflow_share
+                v_ += max(0.0, now - later) + lost * now
         best = max(best, v_)
     if best > 0:
         return (best, ["DROP"])
