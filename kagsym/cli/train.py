@@ -2568,7 +2568,7 @@ def main():
                             "opt_nombres": _nombres_planos,
                             "vnorm": (_vmu, _vsd, _vn)}, a.out + ".ultimo")
                 import subprocess as _sp, json as _js
-                _r = _sp.run([sys.executable, "tools/evalua.py", a.out + ".ultimo",
+                _r = _sp.run([sys.executable, "tools/quick_eval.py", a.out + ".ultimo",
                               "--n", str(a.eval_n), "--procs", "4"],
                              capture_output=True, text=True, timeout=600,
                              cwd=os.path.dirname(os.path.dirname(
@@ -2576,10 +2576,10 @@ def main():
                 _ln = [l for l in _r.stdout.splitlines() if l.startswith("EVAL ")]
                 if _ln:
                     _ev = _js.loads(_ln[-1][5:])
-                    _EVALS.append((upd, _ev["dinero"]))
+                    _EVALS.append((upd, _ev["money"]))
                     _mejor = " "
-                    if _ev["dinero"] > best:
-                        best = _ev["dinero"]
+                    if _ev["money"] > best:
+                        best = _ev["money"]
                         import shutil as _sh
                         _sh.copyfile(a.out + ".ultimo", a.out)
                         _mejor = "*"
@@ -2589,16 +2589,16 @@ def main():
                                          open(_MEJOR_JSON, "w"))
                             except Exception:
                                 pass
-                    print(f"  [eval]{_mejor} upd {upd}: {_ev['dinero']:.0f} $ "
-                          f"(se {_ev['se']:.0f}) vs {_ev['rival']:.0f} "
-                          f"({_ev['margen_pct']:+.1f}%)  mejor {best:.0f}  "
-                          f"[{_ev['seg']}s]", flush=True)
+                    print(f"  [eval]{_mejor} upd {upd}: {_ev['money']:.0f} $ "
+                          f"(se {_ev['se']:.0f}) vs {_ev['opponent']:.0f} "
+                          f"({_ev['margin_pct']:+.1f}%)  mejor {best:.0f}  "
+                          f"[{_ev['seconds']}s]", flush=True)
                     if _MLF[0] is not None:
                         try:
                             _MLF[0].log_metrics(
-                                {"1_result/eval_dinero": _ev["dinero"],
+                                {"1_result/eval_dinero": _ev["money"],
                                  "1_result/eval_se": _ev["se"],
-                                 "1_result/eval_margen_pct": _ev["margen_pct"],
+                                 "1_result/eval_margen_pct": _ev["margin_pct"],
                                  "1_result/eval_mejor": best}, step=_upd0 + upd)
                         except Exception:
                             pass

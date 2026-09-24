@@ -25,8 +25,6 @@ MAY_EMIT_MACRO = {
     "kagsym/parallel_env.py",      # self-play copies inside training workers
     "kagsym/cli/train.py",         # the trainer
     "kagsym/nets/world.py",        # defines the output; does not play
-    "tools/matriz.py",             # to be ported to kagsym.evaluate
-    "tools/evalua.py",             # used by the trainer's --eval-cada; to be ported
 }
 
 
