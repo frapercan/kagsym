@@ -219,3 +219,15 @@ def test_no_undefined_names():
                     n += pyflakes.checkPath(os.path.join(dirpath, f), Reporter(out, err))
     undefined = [l for l in out.getvalue().splitlines() if "undefined name" in l]
     assert not undefined, "\n".join(undefined)
+
+
+# -- the calendar is process-global: a checkpoint opponent must not reset it --
+
+def test_checkpoint_opponent_keeps_the_episode_calendar():
+    from kagsym import spec
+    from kagsym.tests.test_policy import _ckpt
+    path = _ckpt()
+    E.play(E.PolicySpec(path), E.checkpoint(path), 7401, 0, hours=24, days=2)
+    assert spec.EPISODE_STEPS == 48, spec.EPISODE_STEPS
+    rival = E._opponent_callable(E.checkpoint(path))
+    assert rival.policy.steps == 48

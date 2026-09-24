@@ -57,6 +57,10 @@ class Offset:
     delta: np.ndarray
     live: list[int]
     ramp: bool = False
+    # An OPENING offset applies only while day < until_day (None = whole
+    # episode). It lets the first days be searched in a reduced calendar and
+    # deployed unchanged inside the full game.
+    until_day: int | None = None
 
     def __post_init__(self):
         self.delta = np.asarray(self.delta, dtype=np.float32).reshape(-1)
@@ -73,6 +77,9 @@ class Offset:
     def is_ramp(self) -> bool:
         return self.ramp
 
+    def active(self, day: int) -> bool:
+        return self.until_day is None or int(day) < int(self.until_day)
+
     def vector(self, progress: float, n_macro: int) -> np.ndarray:
         out = np.zeros(int(n_macro), dtype=np.float32)
         n = len(self.live)
@@ -83,7 +90,7 @@ class Offset:
 
     def to_checkpoint(self) -> dict:
         return {"delta": [float(x) for x in self.delta], "live": list(self.live),
-                "ramp": bool(self.ramp)}
+                "ramp": bool(self.ramp), "until_day": self.until_day}
 
     @staticmethod
     def from_checkpoint(ck: dict) -> "Offset | None":
@@ -93,20 +100,21 @@ class Offset:
         live = [int(i) for i in r.get("live", r.get("vivos"))]
         delta = np.asarray(r["delta"], dtype=np.float32)
         ramp = bool(r["ramp"]) if "ramp" in r else len(delta) == 2 * len(live)
-        return Offset(delta, live, ramp)
+        return Offset(delta, live, ramp, r.get("until_day"))
 
     # self-describing files: the vector never travels without its dial map
     def save(self, path: str, checkpoint_digest: str, **meta) -> None:
         tmp = path + ".tmp"
         np.savez(tmp, delta=self.delta, live=np.asarray(self.live, dtype=np.int64),
-                 ramp=np.asarray(self.ramp), checkpoint_digest=np.asarray(checkpoint_digest),
-                 meta=np.asarray(json.dumps(meta)))
+                 ramp=np.asarray(self.ramp), until_day=np.asarray(-1 if self.until_day is None else int(self.until_day)),
+                 checkpoint_digest=np.asarray(checkpoint_digest), meta=np.asarray(json.dumps(meta)))
         os.replace(tmp + ".npz" if not tmp.endswith(".npz") else tmp, path)
 
     @staticmethod
     def load(path: str) -> "tuple[Offset, str, dict]":
         z = np.load(path, allow_pickle=False)
-        off = Offset(z["delta"], z["live"].tolist(), bool(z["ramp"]))
+        until = int(z["until_day"]) if "until_day" in z else -1
+        off = Offset(z["delta"], z["live"].tolist(), bool(z["ramp"]), None if until < 0 else until)
         meta = json.loads(str(z["meta"])) if "meta" in z else {}
         return off, str(z["checkpoint_digest"]), meta
 
@@ -211,8 +219,8 @@ class Policy:
                            torch.from_numpy(b).unsqueeze(0),
                            torch.from_numpy(hf).unsqueeze(0))
             mu = out["macro_mu"][0]
-            if self.offset is not None:
-                day = int(obs["day"])
+            day = int(obs["day"])
+            if self.offset is not None and self.offset.active(day):
                 mu = mu + torch.from_numpy(
                     self.offset.vector(day / self.days, M.N_MACRO))
             self._agent.macro = M.Macro.from_vector(torch.sigmoid(mu).numpy())

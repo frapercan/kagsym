@@ -132,6 +132,23 @@ Working disk (not versioned): `runs/` (checkpoints, ledger, search outputs),
 `agents_pub/` and `data/` (public agents and ladder data), `archivo/` (earlier
 iterations).
 
+## One launch, from random weights to a packaged checkpoint
+
+```
+python tools/pipeline.py --smoke --out runs/pipeline/smoke      # ~7 minutes
+python tools/pipeline.py --full  --out runs/pipeline/<name> --experiment EXP-00x
+```
+
+The pipeline is the tutorial and the minesweeper at once: tests, training
+from random weights on a reduced calendar (24 hours a day, 8 or 14 days)
+against itself, the submission gate, live dials, search, validation with a
+positive gate, the band criterion, and packaging played under the real
+Kaggle runner. Every stage is a gate; the run stops at the first failure with
+the stage's log, and its report is `report.json` in the output directory.
+Training is reduced because the public agents die outside 24h x 30d and a
+number measured in the reduced world describes another game: measurement
+stages always run at full scale.
+
 ## Setup
 
 ```

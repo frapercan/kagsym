@@ -104,6 +104,7 @@ def _opponent_callable(opp: Opponent):
             if int(obs["step"]) == 0 or _p.agent is None:
                 _p.reset()
             return _p.act(obs)
+        fn.policy = pol     # `play` configures it with the episode's calendar
     else:
         raise ValueError(f"unknown opponent kind {opp.kind!r}")
     _OPPONENT_CACHE[key] = fn
@@ -117,7 +118,7 @@ class PolicySpec:
     """A picklable description of the policy under evaluation.
 
     `offset` is "checkpoint" (use what the file carries), None (disable), or
-    a tuple (delta, live, ramp) for a candidate a search is trying.
+    a tuple (delta, live, ramp[, until_day]) for a candidate a search is trying.
     """
     path: str
     offset: Any = "checkpoint"
@@ -156,7 +157,8 @@ def _policy(spec: PolicySpec):
     else:
         delta, live = spec.offset[0], spec.offset[1]
         ramp = spec.offset[2] if len(spec.offset) > 2 else (len(delta) == 2 * len(live))
-        pol.offset = Offset(np.asarray(delta, dtype=np.float32), list(live), bool(ramp))
+        until = spec.offset[3] if len(spec.offset) > 3 else None
+        pol.offset = Offset(np.asarray(delta, dtype=np.float32), list(live), bool(ramp), until)
     return pol
 
 
@@ -182,11 +184,29 @@ class Episode:
     win: float
     opp_failures: int
     error: str | None = None
+    # Value of the final position inside a LONGER game (exact liquidation with
+    # the full horizon), for episodes played on a reduced calendar. Cash at
+    # day 8 is meaningless: a policy that invests ends with less cash and a
+    # better game. NaN when not requested.
+    value: float = float("nan")
+    opp_value: float = float("nan")
 
 
 def play(spec: PolicySpec, opp: Opponent, seed: int, seat: int = 0,
-         hours: int = HOURS, days: int = DAYS, cash: int = CASH) -> Episode:
-    """Play one full episode. Our failure raises; the opponent's is counted."""
+         hours: int = HOURS, days: int = DAYS, cash: int = CASH,
+         value_horizon_days: int | None = None,
+         agent_horizon_days: int | None = None) -> Episode:
+    """Play one full episode. Our failure raises; the opponent's is counted.
+
+    `agent_horizon_days`: our policy plays as if the game lasted that long
+    while the episode ends after `days`. This is what makes a reduced
+    calendar an OPENING laboratory: the executor values seeds and animals by
+    the time left, so in an honest 8-day game nothing pays and it correctly
+    does nothing. The first 8 days of a 30-day game are a different problem.
+    `value_horizon_days`: also value the final position as if the game went
+    on to that many days (exact liquidation: cash, shed, standing crops and
+    animals that have time to pay). The objective of an opening search.
+    """
     import torch
     torch.set_num_threads(1)
     from .fastenv import FastEnv
@@ -195,11 +215,20 @@ def play(spec: PolicySpec, opp: Opponent, seed: int, seat: int = 0,
     config = {"episodeSteps": steps, "turnsPerDay": hours, "startingMoney": cash}
     pol = _policy(spec)
     pol.configure(config)
+    if agent_horizon_days is not None:
+        pol.steps = hours * agent_horizon_days
     pol.reset()
     try:
         rival = _opponent_callable(opp)
     except Exception as e:
         raise OpponentLoadError(f"{opp.label}: {type(e).__name__}: {e}") from e
+    if hasattr(rival, "policy"):
+        # A checkpoint opponent shares the process-global calendar (spec).
+        # Left at its default it reset the horizon to 720 turns under our
+        # executor's feet, and an 8-day episode was valued as a 30-day one.
+        rival.policy.configure(config)
+        if agent_horizon_days is not None:
+            rival.policy.steps = hours * agent_horizon_days
     env = FastEnv(configuration=config, seed=seed)
     obs = env.reset()
     me, other = seat, 1 - seat
@@ -216,13 +245,34 @@ def play(spec: PolicySpec, opp: Opponent, seed: int, seat: int = 0,
     money = env.rewards()
     mine, theirs = float(money[me]), float(money[other])
     win = 1.0 if mine > theirs else (0.5 if mine == theirs else 0.0)
-    return Episode(opp.label, int(seed), int(seat), mine, theirs, win, failures)
+    ep = Episode(opp.label, int(seed), int(seat), mine, theirs, win, failures)
+    if value_horizon_days is not None:
+        ep.value, ep.opp_value = position_value(obs, me, other, hours, value_horizon_days)
+    return ep
+
+
+def position_value(obs, me: int, other: int, hours: int, horizon_days: int) -> tuple[float, float]:
+    """Exact liquidation of both positions with a `horizon_days` game.
+
+    The opponent's shed is not observable, so their value is a consistent
+    underestimate; ours counts the shed and what units carry."""
+    from . import spec
+    from .potential import liquidation
+    saved = spec.EPISODE_STEPS
+    try:
+        spec.set_episode_steps(hours * horizon_days)
+        ours = float(liquidation(obs[me], me, obs[me].get("private")))
+        theirs = float(liquidation(obs[other], other, None))
+    finally:
+        spec.set_episode_steps(saved)
+    return ours, theirs
 
 
 def _play_task(task):
     spec, opp, seed, seat = task[:4]          # extra elements are caller tags
+    world = next((t for t in task[4:] if isinstance(t, dict)), {})   # hours/days/value horizon
     try:
-        return play(spec, opp, seed, seat)
+        return play(spec, opp, seed, seat, **world)
     except OpponentLoadError as e:
         return Episode(opp.label, int(seed), int(seat), float("nan"), float("nan"),
                        float("nan"), 0, error="opponent-load: " + str(e))
