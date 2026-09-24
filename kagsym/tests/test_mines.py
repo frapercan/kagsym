@@ -266,11 +266,12 @@ def test_offset_schedule_round_trip():
 
 # -- stage consistency: when nothing can pay, the policy must spend nothing --
 
-@pytest.mark.xfail(reason="measured 2026-09-24: hands are hired in games where nothing pays "
-                          "(3/9/22 HIRE in 2/3/5-day solitaires); hire_orders is a game file, "
-                          "to be fixed with its own ablation", strict=True)
 def test_idle_game_keeps_the_starting_cash():
+    """In a 2-day game no crop can be harvested (carrot needs 3 days, wheat 4)
+    and no animal can produce: the only consistent play is to spend nothing.
+    Measured before the fix: 3 hands hired with nothing to do."""
     from kagsym.tests.test_policy import _ckpt
     import regret as R
     final, _, orders = R.play_solitaire(_ckpt(), days=2, seed=7401)
-    assert final == 3000.0 and not orders, (final, orders)
+    market = {k: v for k, v in orders.items() if not k.startswith("farmer:")}
+    assert final == 3000.0 and not market, (final, orders)

@@ -78,3 +78,18 @@ today. Each item says what it is, why it waits, and what unblocks it.
   their Spanish names and read the training database only.
 - `docs/env_src/` is a copy of the engine sources used to derive
   `SPECIFICATION.md`; not versioned.
+
+## Stage consistency (tools/regret.py, 2026-09-24)
+
+- **Hands were hired where nothing could pay** (3/9/22 in 2/3/5-day
+  solitaires). Fixed by valuing a unit-turn with the standing work
+  (`market_ops._value_per_action`), +345 $ (t 1.8) at full scale. Two other
+  fixes measured and rejected: a demand cap under the macro (-39,212 $,
+  t -22) and removing the value floor alone (-3,509 $, t -11.5).
+- **The farmer wanders and digs in an idle world** (WEST, NORTH, DIG with
+  no crop to come). Free actions, inconsistent with the stage; `DIG_VALUE`
+  is a dial and the weeding value ignores whether anything will be planted.
+- **A 5-day world is not idle** (carrot 3 days, wheat 4): partida_v5 hires
+  13 hands and plants nothing there. The yardstick for k >= 5 is a planner's
+  optimum on the exact engine, not yet built (the archived receding-horizon
+  search is the candidate).

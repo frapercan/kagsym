@@ -66,13 +66,17 @@ def scenario_idle(policy_path: str, days: int, seeds):
     return rows
 
 
-SCENARIOS = {f"idle-{k}": (scenario_idle, k) for k in (1, 2, 3, 5)}
+# Idle worlds: nothing can pay. Carrot needs 3 days and wheat 4 (plant, grow,
+# harvest, sell), the fastest animal produces on day 4; with k <= 3 the
+# optimum is the starting cash. From k = 5 on, a plan pays and the yardstick
+# must be a planner's, not 3,000 $.
+SCENARIOS = {f"idle-{k}": (scenario_idle, k) for k in (1, 2, 3)}
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("checkpoint")
-    p.add_argument("--scenarios", default="idle-1,idle-2,idle-3,idle-5")
+    p.add_argument("--scenarios", default="idle-1,idle-2,idle-3")
     p.add_argument("--seeds", type=int, default=3)
     a = p.parse_args()
     seeds = S.DIALS.seeds(a.seeds)
