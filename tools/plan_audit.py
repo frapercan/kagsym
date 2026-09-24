@@ -64,10 +64,29 @@ def audit(plan: Plan, days: int, seed: int, hours: int = 24, cash: int = 3000) -
                     cur["hires"] += 1
                 elif o[0] == "BUY_LAND":
                     spent["land"] += 1
-            for v in [a.get("farmer", ["PASS"])[0]] + [h[0] for h in a.get("hands", [])]:
+            positions = [tuple(f["farmer"])] + [tuple(p) for p in f["hands"]]
+            if ob["hour"] == 0:
+                walk = {}                         # unit -> (steps since last work, tile of last work)
+            for i, v in enumerate([a.get("farmer", ["PASS"])[0]] + [h[0] for h in a.get("hands", [])]):
                 verbs["move" if v in MOVES else ("pass" if v == "PASS" else "work")] += 1
                 cur["harvests"] += v == "HARVEST"
                 cur["drops"] += v == "DROP"
+                # STEPS OF EXCESS: between two work actions a unit needs the
+                # Manhattan distance; anything above is a detour or a change
+                # of target on the way. Steps with no work after them before
+                # the day ends are orphans.
+                steps_, last_tile = walk.get(i, (0, None))
+                if v in MOVES:
+                    walk[i] = (steps_ + 1, last_tile)
+                elif v != "PASS":
+                    here = positions[i]
+                    need = abs(here[0] - last_tile[0]) + abs(here[1] - last_tile[1]) if last_tile else steps_
+                    tot["steps_needed"] += need
+                    tot["steps_excess"] += max(0, steps_ - need)
+                    walk[i] = (0, here)
+            if ob["hour"] == hours - 1:
+                for steps_, _ in walk.values():
+                    tot["steps_orphan"] += steps_
             if ob["hour"] == hours - 1:
                 planted = sum(1 for r in f["tiles"] for t in r if isinstance(t, dict) and t.get("kind") == "PLANT")
                 weeds = sum(1 for r in f["tiles"] for t in r if isinstance(t, dict) and t.get("kind") == "WEED")
@@ -100,7 +119,8 @@ def audit(plan: Plan, days: int, seed: int, hours: int = 24, cash: int = 3000) -
     sales = final - cash + spent["seed"] + sum(spec.LAND_PRICES[i] for i in range(spent["land"])) + hands_cost
     return dict(final=final, days=day_rows, sold=dict(sold_units), seed=spent["seed"], land=spent["land"],
                 left_on_tiles=left, carried_at_close=carried, shed_at_close=shed, overflow_discarded=tot["overflow"],
-                turns=dict(verbs), price_bound=round(price_bound), sales_taken=round(sales))
+                turns=dict(verbs), price_bound=round(price_bound), sales_taken=round(sales),
+                steps=dict(needed=tot["steps_needed"], excess=tot["steps_excess"], orphan=tot["steps_orphan"]))
 
 
 def _fib(n: int) -> int:
@@ -120,6 +140,9 @@ def main():
           f"shed overflow {r['overflow_discarded']}")
     t = r["turns"]; n = sum(t.values())
     print(f"crew turns: work {t.get('work',0)/n:.0%}  move {t.get('move',0)/n:.0%}  pass {t.get('pass',0)/n:.0%}  ({n} unit-turns)")
+    st = r["steps"]; tm = t.get("move", 0)
+    print(f"moves: {tm} = needed {st['needed']} ({st['needed']/max(1,tm):.0%}) + excess {st['excess']} ({st['excess']/max(1,tm):.0%}) "
+          f"+ orphan {st['orphan']} ({st['orphan']/max(1,tm):.0%})")
     print(f"price: taken {r['sales_taken']:,} vs day-0 curve for the same units {r['price_bound']:,}")
     print("day  cash  hands planted weeds on_tiles carried shed harv drops sold")
     for d in r["days"]:
