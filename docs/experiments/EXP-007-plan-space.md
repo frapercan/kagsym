@@ -139,3 +139,36 @@ agents WITHOUT a value map: the plan executor and the heuristic agent. The
 deployed policy is byte-identical (200 of 200 paired episodes equal,
 rechecked after the gate). Teaching them to the network is retraining
 work, recorded in docs/DEBT.md.
+
+## Part 3: the ladder one day at a time (2026-09-25, 00:26-)
+
+`tools/plan_search.py` per rung, 5 reserved seeds, no opponent, pure search
+(grid of constant plans, then coordinate descent over the per-day schedule
+of hands, load, water_last, tiles, crop, selling). A day's crop may be a
+50/50 mix (from rung 8 on in this pass; rungs 3-7 re-run with mixes).
+
+```
+days   money   plan                                                   the decision that appears
+ 1     3,000   nothing                                                do not spend (the idle floor holds)
+ 2     3,000   nothing
+ 3     3,802   20-25 carrot (a 50/50 mix on day 0), 6 hands last day  the green harvest: carrot yields 2-3 at age 2
+ 4     4,533   25 carrot; hands 3,0,3,8; load 9                       the full cycle; last-day logistics
+ 5     4,893   25 wheat; hands 3,0,3,2,8; load 15                     wheat replaces carrot
+ 6     5,478   land + 50 wheat; hands 4-7                             land pays with one cycle of 50 wheat
+ 7     6,360   land + 50 wheat/carrot alternating; hands 2-8          alternating crops across days
+ 8     7,443   land + 50 mixed (carrot/wheat 50/50) then carrot        the mix inside the day
+```
+
+Rung 8 on 20 reserved seeds: 7,379 +- 94 (15 unseen: 7,357), against PPO
+5,788 and the per-day dial oracle 6,537: +27 % and +13 %. The old bar test
+is re-pinned to this plan (7,388 on seed 7101).
+
+`tools/plan_audit.py` says how a plan is executed. Rungs 4/6/8: units sold
+72 of 75, 187 of ~206 (16 discarded by shed overflow), 313 of 317; nothing
+carried home; the crew spends 51-58 % of its turns moving and 5-13 %
+passing. That, and the shed overflow at rung 6, is what remains between
+the plan and its bound: tactical, not strategic.
+
+Coordinate descent is already local at rung 3 (3,752 found, 3,790 by hand
+with 8 hands); the schedule search is to be strengthened before the high
+rungs (CEM over schedules, or day-by-day search with rollouts).
