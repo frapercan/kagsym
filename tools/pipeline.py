@@ -10,13 +10,20 @@ next gate, on a clean tree, in a single command.
 Stages:
   0 tests            pytest kagsym/tests; refuses KAG_* game env variables
   1 train            kagsym.cli.train from random init, seeded, on a reduced
-                     calendar (24h x 8d smoke, 24h x 14d full) against itself
+                     calendar (24h x 8d smoke, 24h x 14d full) against itself;
+                     the state after ONE update is kept as the starting point
+  1b health          tools/health.py: which heads received gradient, sigmas alive,
+                     fingerprint current
+  1c progress        tools/evaluate.py: trained vs starting point, paired on
+                     reserved seeds, must improve at t >= progress_t
   2 gate             tools/check_submission.py on the trained checkpoint
   3 live-dials       tools/live_dials.py
   4 search           tools/search.py (constant offset, margin objective)
   5 validate+bake    tools/validate_offset.py --bake
   6 criterion        tools/band.py, paired against the trained checkpoint
   7 package          tools/package_submission.py (plays under the Kaggle runner)
+  8 reference        tools/band.py, final checkpoint paired against --reference:
+                     competitive means the win rate is not below the deployed one
 
 Presets:
   --smoke   minutes: tiny sizes, proves the chain and the gates, not strength
@@ -47,11 +54,11 @@ PY = sys.executable
 SMOKE = dict(train_updates=8, envs=4, procs=4, hours=24, days=8, two_seat=3,
              dials_n=1, search_gens=2, search_pop=6, search_elite=2, search_seeds=2,
              band_sample=2, validate_n=6, validate_band_n=1, band_n=1, band_limit=6,
-             package_turns=48)
+             package_turns=48, progress_n=4, progress_t=0.0)
 FULL = dict(train_updates=300, envs=11, procs=11, hours=24, days=14, two_seat=8,
-            dials_n=3, search_gens=40, search_pop=32, search_elite=8, search_seeds=16,
+            dials_n=3, search_gens=30, search_pop=32, search_elite=8, search_seeds=4,
             band_sample=6, validate_n=200, validate_band_n=6, band_n=6, band_limit=0,
-            package_turns=48)
+            package_turns=48, progress_n=60, progress_t=2.0)
 
 
 class Stage:
@@ -93,6 +100,9 @@ def main():
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--experiment", default=None, help="preregistration id tagged on every run")
     p.add_argument("--skip-tests", action="store_true")
+    p.add_argument("--reference", default=None,
+                   help="a deployed checkpoint the result must not be worse than on the band "
+                        "(the absolute gate: 'competitive' means not below what is deployed)")
     p.add_argument("--force", action="store_true")
     a = p.parse_args()
     P = SMOKE if a.smoke else FULL
@@ -117,13 +127,31 @@ def main():
 
     if not a.skip_tests:
         st.run("tests", [PY, "-m", "pytest", "kagsym/tests", "-q", "-p", "no:warnings"])
-    st.run("train", [PY, "-m", "kagsym.cli.train", "--envs", str(P["envs"]), "--procs", str(P["procs"]),
-                     "--updates", str(P["train_updates"]), "--days", str(P["days"]),
-                     "--steps", str(P["hours"] * P["days"]), "--dos-asientos", str(P["two_seat"]),
-                     "--seed", str(a.seed), "--run-name", f"pipeline-{run_name}", "--out", trained],
+    start = os.path.join(out, "start.pt")
+    common = ["--envs", str(P["envs"]), "--procs", str(P["procs"]), "--days", str(P["days"]),
+              "--steps", str(P["hours"] * P["days"]), "--dos-asientos", str(P["two_seat"]),
+              "--seed", str(a.seed)]
+    # The starting point: one update from the seeded random init. Progress
+    # is measured against it, paired; "the loss went down" is not progress.
+    st.run("train-start", [PY, "-m", "kagsym.cli.train", *common, "--updates", "1",
+                           "--run-name", f"pipeline-{run_name}-start", "--out", start],
+           must_exist=[start + ".ultimo"], env=env)
+    shutil.copyfile(start + ".ultimo", start)
+    st.run("train", [PY, "-m", "kagsym.cli.train", *common, "--updates", str(P["train_updates"]),
+                     "--run-name", f"pipeline-{run_name}", "--out", trained],
            must_exist=[trained + ".ultimo"], env=env)
     if not os.path.exists(trained):
         shutil.copyfile(trained + ".ultimo", trained)   # the last state; never "the best by return"
+    st.run("health", [PY, "tools/health.py", trained])
+    r = st.run("progress", [PY, "tools/evaluate.py", start, trained, "--n", str(P["progress_n"]),
+                            "--seeds", "reserved", "--procs", str(P["procs"])], allow_fail=True)
+    with open(st.report[-1]["log"] if os.path.isabs(st.report[-1]["log"]) else os.path.join(ROOT, st.report[-1]["log"])) as f:
+        paired = [l for l in f if l.strip().startswith("PAIRED")]
+    t_val = float(paired[-1].split(" t ")[1].split()[0]) if paired else float("nan")
+    print(f"   progress: {paired[-1].strip() if paired else 'no paired line'}")
+    if not (t_val == t_val and t_val >= P["progress_t"]):
+        raise SystemExit(f"pipeline stopped: training did not improve on its starting point "
+                         f"(t {t_val:+.2f} < {P['progress_t']}); see {st.report[-1]['log']}")
     st.run("gate", [PY, "tools/check_submission.py", trained, "--n", "2"])
     st.run("live-dials", [PY, "tools/live_dials.py", trained, "--n", str(P["dials_n"]),
                           "--procs", str(P["procs"])],
@@ -161,6 +189,17 @@ def main():
     finally:
         if backup:
             shutil.move(backup, submit_model)      # the pipeline never deploys by itself
+    if a.reference:
+        st.run("reference", [PY, "tools/band.py", final, "--against", os.path.abspath(a.reference),
+                             "--n", str(P["band_n"]), "--procs", str(P["procs"]),
+                             "--save", os.path.join(out, "band_vs_reference.json")]
+               + (["--limit", str(P["band_limit"])] if P["band_limit"] else []), env=env)
+        with open(os.path.join(ROOT, st.report[-1]["log"])) as f:
+            line = [l for l in f if l.strip().startswith("PAIRED")]
+        print(f"   reference: {line[-1].strip() if line else 'no paired line'}")
+        win_diff = float(line[-1].split("win ")[1].split()[0]) if line else float("nan")
+        verdict = "COMPETITIVE (not below the reference)" if win_diff == win_diff and win_diff >= -0.01 else "NOT competitive"
+        print(f"   verdict: {verdict}")
     print(f"\nPIPELINE OK  final checkpoint {os.path.relpath(final, ROOT)}  "
           f"tarball {os.path.relpath(os.path.join(out, 'submission.tar.gz'), ROOT)}")
     print(f"report: {os.path.relpath(os.path.join(out, 'report.json'), ROOT)}")
