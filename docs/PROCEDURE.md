@@ -187,3 +187,40 @@ win rate     -0.007
 Money that the criterion does not see. This is the measurement that closes
 the money phase: an offset validated on dollars against v48 is not evidence
 about the ladder.
+
+## 8. The ladder of universes
+
+A universe is the first `k` days of a 30-day game: the episode is cut at day
+`k`, our policy plays as if 30 days remained (`--agent-horizon 30`), and the
+position at the cut is valued with the full horizon (exact liquidation:
+cash, shed, standing crops and animals that have time to pay). It is not a
+shorter game: in an honest 8-day game nothing pays and the optimal policy is
+inaction, which is how an earlier ladder promoted inert policies.
+
+Each rung has a fixed, external yardstick: the position value of the public
+agents at day `k` (they are schedules; they do the same thing every time).
+Measured on 2026-09-24 at day 8, partida_v5 against v48: 11,000-12,500 $
+against 25,000-28,000 $; against the 2945 expert: 10,500 $ against 33,000 $.
+
+```
+rung   days   gate to climb
+  1      8    position value / v48's >= 0.6 on 30 reserved seeds, paired vs the previous rung
+  2     14    same, >= 0.6
+  3     20    same, >= 0.6
+  4     30    the criterion: band win rate, paired vs the previous checkpoint
+```
+
+Rules that come from what already failed:
+
+- Promotion is by the rung's external yardstick, never by self-play return
+  or Elo (both rise while real strength falls).
+- The cheap mechanism first at every rung (an opening offset searched by
+  `tools/search.py --days k --until-day k --objective value`), the gradient
+  only if the search plateaus, and every mechanism validated at full scale
+  (`tools/validate_offset.py` plays the whole game) before the next rung
+  starts from it.
+- The public agents survive reduced episodes (0 failures at 8 days), so a
+  rung is played against them, not only against ourselves; the mirror test
+  (a policy against itself reads 0.5) stays in the test suite as the null
+  case.
+- The last rung is the only place where the band decides.
