@@ -198,8 +198,15 @@ def main():
         with open(os.path.join(ROOT, st.report[-1]["log"])) as f:
             line = [l for l in f if l.strip().startswith("PAIRED")]
         print(f"   reference: {line[-1].strip() if line else 'no paired line'}")
+        # Competitive = not below the reference on the criterion AND not
+        # significantly below it on money. Where every board is lost by both,
+        # the win-rate difference is 0 and says nothing; a smoke run once read
+        # "competitive" at -29,298 $ (t -10.7) that way.
         win_diff = float(line[-1].split("win ")[1].split()[0]) if line else float("nan")
-        verdict = "COMPETITIVE (not below the reference)" if win_diff == win_diff and win_diff >= -0.01 else "NOT competitive"
+        t_money = float(line[-1].split(" t ")[1].split()[0]) if line else float("nan")
+        ok_ref = (win_diff == win_diff and win_diff >= -0.01) and (t_money == t_money and t_money > -2.0)
+        verdict = "COMPETITIVE (not below the reference on wins, not significantly below on money)" if ok_ref \
+            else f"NOT competitive (win {win_diff:+.3f}, money t {t_money:+.1f})"
         print(f"   verdict: {verdict}")
     print(f"\nPIPELINE OK  final checkpoint {os.path.relpath(final, ROOT)}  "
           f"tarball {os.path.relpath(os.path.join(out, 'submission.tar.gz'), ROOT)}")
