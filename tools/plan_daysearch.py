@@ -61,11 +61,13 @@ def candidates(plan: Plan, day: int, days: int, rng=None, pairs: int = 12) -> li
     variations (a single-field fixed point is not a joint one: measured, the
     ladder's coordinate-descent optimum survived every single move)."""
     out = []
-    if day == 0:
-        for land in (0, 1, 2):
-            if land != int(_sched(plan, "land", days)[0]):
-                out.append(replace(plan, land=land))
-    vals = _values(days - day, int(_sched(plan, "land", days)[0]))
+    # Land on ANY day: after a melon harvest the cash is there and a quadrant
+    # plus a short cycle is the reinvestment (only day 0 was offered before).
+    cur_land = int(_sched(plan, "land", days)[day])
+    for land in (0, 1, 2, 3):
+        if land != cur_land and (day == 0 or land > cur_land):
+            out.append(with_value(plan, "land", day, land, days))
+    vals = _values(days - day, cur_land)
     for f in FIELDS:
         cur = _sched(plan, f, days)[day]
         for v in vals[f]:
@@ -141,7 +143,7 @@ def search_game(seed: int, days: int, starts: list, pool, rounds: int = 2, hours
                 plan = best_plan
                 set_plan(plan)
                 records.append(dict(seed=seed, days=days, state=_state(ob), base=base, best=best,
-                                    plan={f: _sched(plan, f, days)[day] for f in FIELDS} | {"land": _sched(plan, "land", days)[0]}))
+                                    plan={f: _sched(plan, f, days)[day] for f in FIELDS} | {"land": _sched(plan, "land", days)[day]}))
                 if log:
                     print(f"  seed {seed} day {day}: {base:,.0f} -> {best:,.0f}  {records[-1]['plan']}", file=log, flush=True)
             a = ag(ob)
