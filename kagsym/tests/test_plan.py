@@ -93,15 +93,14 @@ def test_last_day_harvest_is_sold_not_carried():
     assert final > rows[6]["money"] + 500
 
 
-@pytest.mark.xfail(strict=False, reason="the sowing guard under a plan became the engine's (rung 3); "
-                   "this plan was found under the old guard and the rung-8 search re-pins the bar")
 def test_a_plan_beats_the_dial_policy_bar():
     # The bar the plan space had to clear (docs/experiments/EXP-007): PPO's
-    # best point in this world is 5,776 on seed 7101.
-    best = Plan(("CARROT", "WHEAT", "CARROT", "CARROT", "WHEAT", "CARROT", "CARROT", "CARROT"),
-                (20, 25, 25, 25, 25, 25, 25, 25), (2, 0, 2, 7, 1, 2, 3, 0), 0, 0,
-                (0.05, 0.05, 0.05, 0.05, 0.5, 0.05, 0.05, 0.05))
-    assert play_plan(best, 7101) > 5776
+    # best point in this world is 5,776 on seed 7101; the per-day dial oracle
+    # (EXP-006) 6,537 on 20 seeds. Rung 8 of the ladder found this plan.
+    best = Plan(crop=({"CARROT": 0.5, "WHEAT": 0.5}, {"CARROT": 0.5, "WHEAT": 0.5}) + ("CARROT",) * 6,
+                tiles=(50, 50, 0, 50, 50, 50, 50, 50), hands=(6, 5, 5, 8, 8, 6, 6, 8), land=1,
+                selling=0.05, load=(0, 0, 0, 0, 0, 0, 0, 12), water_last=1)
+    assert play_plan(best, 7101) > 6537
 
 
 # -- rung 1 of the ladder: 4 days, one carrot cycle ----------------------------
