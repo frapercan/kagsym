@@ -73,3 +73,29 @@ both (n 120)  13,512 -> 19,256       32,230   0.42 -> 0.60    +4,801 +- 362   t 
 Rule 3 (>= +3,000 at t >= 3) passes. The opening offset closes about a
 third of the day-8 gap. Rule 4 (transfer at full scale) runs next:
 `runs/search/exp002_validate.log`.
+
+## Result, transfer (2026-09-24 14:25): opening improved, game not
+
+Full game, 200 CLEAN seeds against v48, paired against the base:
+**-13,297 +- 1,445 $ (t -9.20), better on 25% of boards.** Band result
+appended below when the validation finishes; the bake is refused regardless.
+
+Why the proxy failed, from the trace on seed 7101 (base -> searched opening):
+
+```
+day   money base / opening    plants     animals    hands    strawberry price
+ 10      3,042 /    146        7 / 22      7 / 10    9 /  9
+ 20     17,056 / 19,700       34 / 31      8 / 11   11 / 12     185 / 156
+ 22     32,444 / 31,718       21 / 27      8 / 11   10 / 12     159 /  49
+ 24     39,426 / 32,519       17 / 11      8 / 11   10 / 13     135 /  39
+ 29     48,387 / 39,327
+```
+
+The searched opening is ahead until day 20 and then dumps a larger
+strawberry harvest into the market at once: the price falls from 156 to 49
+in two days (the base keeps it above 135). The closing logic does not scale
+with the harvest it is given. The day-8 position at marginal prices predicts
+day 20, not day 30; a rung yardstick must be predictive of the final, and
+this one is not. Next: EXP-003 searches the opening on the full game (the
+proxy saved a factor of two and did not transfer), and the closing becomes
+its own rung.
