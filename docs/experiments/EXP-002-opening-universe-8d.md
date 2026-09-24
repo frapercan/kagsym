@@ -1,0 +1,54 @@
+# EXP-002: the opening, searched in the 8-day universe
+
+Written before launch, 2026-09-24 13:35. The decision rule does not change
+while the run is alive.
+
+## Question
+
+The first rung of the ladder of universes: playing the first 8 days of a
+30-day game, can a search over an OPENING offset (applied while day < 8)
+close the gap between our position at day 8 and v48's, and does the gain
+transfer to the full game and the criterion (band win rate)?
+
+## Measured baseline (same instrument, partida_v5, agent horizon 30 days)
+
+```
+day 8, position value with the 30-day horizon (cash + shed + what pays in time)
+                          ours       theirs     ratio
+vs v48        seed 7101  11,106     24,692      0.45
+vs v48        seed 7102  12,535     28,231      0.44
+vs 2945       seed 7101  10,540     33,262      0.32
+```
+
+## Setup
+
+- Universe: 24h x 8d played, our policy values a 30-day game
+  (`--days 8 --agent-horizon 30`); the offset applies while day < 8.
+- Start: `runs/partida_v5.pt`, its stored ramp as generation-0 centre; live
+  dials from `runs/partida_v5.pt.dials.json`.
+- Objective `value`: our position value minus the opponent's at the cut.
+- Opponents fixed: `v48-fast-routes` and `the-2945-farm-96-vs-the-top-10-public-bots`,
+  both seats; 8 common seeds per generation from the SEARCH family, rotating.
+  Per generation: 32 candidates x 2 opponents x 8 seeds x 2 seats = 1,024
+  episodes of 192 turns (about a quarter of a full episode each).
+- `tools/search.py runs/partida_v5.pt --out runs/search/exp002_opening8 --ramp
+  --objective value --days 8 --agent-horizon 30 --until-day 8
+  --opponents v48-fast-routes,the-2945-farm-96-vs-the-top-10-public-bots
+  --seeds 8 --pop 32 --elite 8 --gens 30 --experiment EXP-002`
+
+## Decision rule
+
+1. Not stopped before generation 30 unless the process dies, or unless a
+   power reading at generation 10 shows the standard error of centre - base
+   cannot resolve 2,000 $ of position value by generation 30.
+2. Intermediate reading: CENTRE minus BASE (paired). Informative only.
+3. Rung gate (this universe): the centre's position value against v48 on 30
+   RESERVED seeds, paired against the base, must gain >= +3,000 $ at t >= 3
+   (a quarter of the gap). If it does not, the offset space cannot fix the
+   opening and the next step is the executor's opening logic, not a search.
+4. Transfer: `tools/validate_offset.py runs/search/exp002_opening8
+   runs/partida_v5.pt --family clean --n 200 --band-n 6` at FULL scale.
+   Bake only if the band win-rate difference is >= 0 and money t >= 2.
+5. A gain at day 8 that does not survive the full game is recorded as
+   "opening improved, game not": the next rung (14 days) then searches from
+   the baked opening, not from v5.

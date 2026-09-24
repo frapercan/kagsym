@@ -90,9 +90,11 @@ def main():
     ckpt = os.path.abspath(a.checkpoint)
     cand, meta = load_search(os.path.abspath(a.search_dir), ckpt, a.allow_unfinished, a.which)
     base = E.PolicySpec(ckpt, offset="checkpoint")
-    new = E.PolicySpec(ckpt, offset=(tuple(float(x) for x in cand.delta), tuple(cand.live), cand.ramp))
+    new = E.PolicySpec(ckpt, offset=(tuple(float(x) for x in cand.delta), tuple(cand.live), cand.ramp,
+                                     cand.until_day))
     print(f"[validate] {a.search_dir}/{a.which} ({'ramp' if cand.ramp else 'constant'}, "
-          f"{len(cand.live)} dials, generation {meta.get('generation')}) on {ckpt}")
+          f"{len(cand.live)} dials{f', opening day < {cand.until_day}' if cand.until_day else ''}, "
+          f"generation {meta.get('generation')}) on {ckpt}; validation plays the FULL game")
 
     fam = S.family(a.family)
     seeds = fam.seeds(a.n)

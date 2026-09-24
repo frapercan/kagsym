@@ -91,14 +91,17 @@ def initial_offset(ckpt, live, ramp):
 
 
 def score(episodes, objective):
-    """money: our cash. margin: ours minus theirs. win: the criterion.
-    Any failed episode disqualifies the candidate."""
+    """money: our cash. margin: ours minus theirs. value: our final position
+    valued with the full horizon, minus theirs (the opening objective).
+    win: the criterion. Any failed episode disqualifies the candidate."""
     if not episodes or any(e.error for e in episodes):
         return -np.inf
     if objective == "money":
         return float(np.mean([e.money for e in episodes]))
     if objective == "margin":
         return float(np.mean([e.money - e.opp_money for e in episodes]))
+    if objective == "value":
+        return float(np.mean([e.value - e.opp_value for e in episodes]))
     per = E.by_opponent(episodes)
     return float(np.mean([v["win"] for v in per.values()])) if per else -np.inf
 
@@ -115,7 +118,15 @@ def main():
     p.add_argument("checkpoint")
     p.add_argument("--out", required=True, help="output DIRECTORY; must not exist (or --force)")
     p.add_argument("--force", action="store_true", help="remove an existing --out directory first")
-    p.add_argument("--objective", choices=["money", "margin", "win"], default="margin")
+    p.add_argument("--objective", choices=["money", "margin", "win", "value"], default="margin")
+    p.add_argument("--days", type=int, default=30, help="days played per episode (a universe of the ladder)")
+    p.add_argument("--hours", type=int, default=24)
+    p.add_argument("--agent-horizon", type=int, default=30,
+                   help="days our policy believes the game lasts (the first k days of a 30-day game)")
+    p.add_argument("--until-day", type=int, default=None,
+                   help="the offset applies only while day < until_day (an opening offset)")
+    p.add_argument("--opponents", default=None,
+                   help="comma-separated public agents for value/margin; default: a band sample per generation")
     p.add_argument("--opponent", default=E.V48.name, help="money objective opponent")
     p.add_argument("--band-sample", type=int, default=6, help="margin/win: opponents per generation")
     p.add_argument("--dials", default=None, help="live-dial json (default: <checkpoint>.dials.json)")
@@ -150,8 +161,12 @@ def main():
     sd = np.full(D, a.sigma)
     rng = np.random.default_rng(a.rng)
     names = E.public_names()
+    world = {"hours": a.hours, "days": a.days, "agent_horizon_days": a.agent_horizon,
+             "value_horizon_days": a.agent_horizon if a.objective == "value" else None}
+    fixed_opps = [E.public(n.strip()) for n in a.opponents.split(",")] if a.opponents else None
     meta = {"checkpoint": os.path.relpath(ckpt_src, ROOT), "checkpoint_digest": digest,
-            "live": live, "ramp": bool(a.ramp), "dims": D, "objective": a.objective,
+            "live": live, "ramp": bool(a.ramp), "until_day": a.until_day, "world": world,
+            "dims": D, "objective": a.objective,
             "args": vars(a), "provenance": provenance(),
             "started": time.strftime("%Y-%m-%d %H:%M:%S")}
     _write_json(os.path.join(out, "meta.json"), meta)
@@ -168,11 +183,14 @@ def main():
         params={**vars(a), "live_dials": len(live), "dims": D},
         tags=context_tags("search", checkpoint=ckpt_src, objective=a.objective,
                           seed_family="search", experiment=a.experiment,
+                          universe=f"{a.hours}hx{a.days}d/{a.agent_horizon}d",
                           opponent=(a.opponent if a.objective == "money"
                                     else f"band-sample({a.band_sample})")),
         description=describe([
             f"CEM over the macro offset of {os.path.basename(ckpt_src)}: "
-            f"{'ramp a+b*progress' if a.ramp else 'constant'}, {len(live)} live dials, {D} dims.",
+            f"{'ramp a+b*progress' if a.ramp else 'constant'}, {len(live)} live dials, {D} dims"
+            f"{f', opening only (day < {a.until_day})' if a.until_day else ''}.",
+            f"Universe: {a.hours}h x {a.days}d played, the agent values a {a.agent_horizon}-day game.",
             f"Objective `{a.objective}`; pop {a.pop}, elite {a.elite}, {a.seeds} common seeds per generation.",
             "Read search/centre_minus_base: the centre and the base play the same boards. "
             "search/best is the expected maximum of noisy draws and is never a result.",
@@ -184,15 +202,17 @@ def main():
     for g in range(a.gens):
         t0 = time.time()
         seeds = S.SEARCH.seeds(a.seeds, offset=(g * a.seeds) % (S.SEARCH.size - a.seeds))
-        if a.objective == "money":
+        if fixed_opps is not None:
+            opps, seats = fixed_opps, (0, 1)
+        elif a.objective == "money":
             opps, seats = [E.public(a.opponent)], (0,)
         else:
             pick = rng.choice(len(names), size=min(a.band_sample, len(names)), replace=False)
             opps, seats = [E.public(names[i]) for i in sorted(pick)], (0, 1)
         cand = [base.copy(), mu.copy()] + [rng.normal(mu, sd) for _ in range(a.pop - 2)]
-        specs = [E.PolicySpec(ckpt, offset=(tuple(float(x) for x in c), tuple(live), bool(a.ramp)))
+        specs = [E.PolicySpec(ckpt, offset=(tuple(float(x) for x in c), tuple(live), bool(a.ramp), a.until_day))
                  for c in cand]
-        todo = [(specs[i], o, s, seat, i) for i in range(len(cand))
+        todo = [(specs[i], o, s, seat, i, world) for i in range(len(cand))
                 for o in opps for s in seeds for seat in seats]
         by_cand = {i: [] for i in range(len(cand))}
         for task, ep in E.run_tasks(todo, procs=a.procs):
@@ -220,8 +240,8 @@ def main():
                      "search/best": row["best"], "search/population_mean": row["mean"],
                      "search/sigma": row["sd"], "search/disqualified": disqualified,
                      "search/seconds": row["seconds"]}, step=g)
-        Offset(mu, live, bool(a.ramp)).save(os.path.join(out, "offset.npz"), digest, generation=g)
-        Offset(best, live, bool(a.ramp)).save(os.path.join(out, "best.npz"), digest, generation=g)
+        Offset(mu, live, bool(a.ramp), a.until_day).save(os.path.join(out, "offset.npz"), digest, generation=g, world=world)
+        Offset(best, live, bool(a.ramp), a.until_day).save(os.path.join(out, "best.npz"), digest, generation=g, world=world)
         _write_json(os.path.join(out, "history.json"), history)
         fmt = "{:9.3f}" if a.objective == "win" else "{:9,.0f}"
         print(f"  gen {g:3d}  base " + fmt.format(row["base"]) + "  CENTRE "
