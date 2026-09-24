@@ -88,8 +88,8 @@ _CACHE = {}
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("ckpt")
-    p.add_argument("--n", type=int, default=12)
-    p.add_argument("--procs", type=int, default=3)
+    p.add_argument("--n", type=int, default=200)   # las 200 reservadas: el docstring lo decia y el default lo desmentia
+    p.add_argument("--procs", type=int, default=12)
     p.add_argument("--json", default=None)
     a = p.parse_args()
     import multiprocessing as mp

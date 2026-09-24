@@ -61,6 +61,30 @@ def _red():
     return net
 
 
+def _offset(delta, progreso, N_MACRO, torch, np):
+    """El desplazamiento de HOY. Un vector de 2D es RAMPA, no constante.
+
+    Medido en `partida_v3`: los dias 0-1 compramos 12 peones y 7 animales
+    contra 1 lote de semilla, mientras v48 compra 5, 1 y 7. Los dos nos
+    arruinamos el dia 5, pero su capital esta en simiente -que multiplica
+    x1,78 al dia con trigo- y el nuestro en plantilla y ganado. Resultado:
+    ocho dias sin sembrar, diez arruinados, y el dia 20 el va 49.897 a
+    nuestros 16.712.
+
+    Eso NO lo puede arreglar un desplazamiento constante, que es lo que
+    buscaban las rondas 1 y 2: el reparto optimo del dia 0 no es el del dia
+    20. Con `a + b*progreso` la busqueda puede decir "mas semilla al principio
+    y mas plantilla despues" con b=0 reproduciendo exactamente el caso
+    constante, asi que no se pierde nada de lo ya ganado.
+    """
+    off = torch.zeros(N_MACRO)
+    d = np.asarray(delta, dtype=np.float32)
+    D = len(VIVOS)
+    v = d[:D] + d[D:2 * D] * progreso if len(d) >= 2 * D else d[:D]
+    off[VIVOS] = torch.from_numpy(np.asarray(v, dtype=np.float32))
+    return off
+
+
 def episodio(seed, delta):
     """Un episodio con el desplazamiento aplicado. `delta` en indices VIVOS."""
     import torch; torch.set_num_threads(1)
@@ -73,9 +97,7 @@ def episodio(seed, delta):
     H, D = 24, 30
     spec.set_turns_per_day(H); spec.set_episode_steps(H * D)
     net = _red()
-    off = torch.zeros(N_MACRO)
-    if delta is not None:
-        off[VIVOS] = torch.from_numpy(np.asarray(delta, dtype=np.float32))
+    _dias = D
     env = FastEnv(configuration={"episodeSteps": H * D, "turnsPerDay": H,
                                  "startingMoney": 3000}, seed=seed)
     o = env.reset()
@@ -90,6 +112,8 @@ def episodio(seed, delta):
                 out = net(torch.from_numpy(gr).unsqueeze(0),
                           torch.from_numpy(b).unsqueeze(0),
                           torch.zeros(1, Mw.N_HIST))
+                off = (torch.zeros(N_MACRO) if delta is None else
+                       _offset(delta, float(ob["day"]) / max(1, _dias), N_MACRO, torch, np))
                 ag.macro = Macro.from_vector(
                     torch.sigmoid(out["macro_mu"][0] + off).numpy())
                 ag.micro = (lambda _o, m=_sm(out["micro"][0].numpy()): m)
@@ -111,11 +135,13 @@ def _t(t):
 
 if __name__ == "__main__":
     import multiprocessing as mp
-    D = len(VIVOS)
+    D = len(VIVOS) * (2 if os.environ.get("CEM_RAMPA") == "1" else 1)
     mu = np.zeros(D, dtype=np.float64)
     sd = np.full(D, SIGMA0)
     rng = np.random.default_rng(20260924)
-    print(f"[cem] {CK}  {D} diales vivos  pop {POP}  elite {ELITE}  "
+    print(f"[cem] {CK}  {len(VIVOS)} diales vivos"
+          + ("  RAMPA a+b*progreso (96 dim)" if D > len(VIVOS) else "")
+          + f"  pop {POP}  elite {ELITE}  "
           f"{NSEM} semillas comunes  {GENS} generaciones", flush=True)
     mejor_mu, mejor_val = mu.copy(), -1e18
     hist = []
