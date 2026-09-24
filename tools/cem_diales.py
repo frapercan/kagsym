@@ -108,10 +108,20 @@ def episodio(seed, delta):
         while not env.done:
             ob = o[0]
             if day != ob["day"]:
-                gr, b = O.encode_obs(ob)
+                # `_destinations` TAMBIEN: el agente que se sube pasa
+                # `getattr(ag,"_destinations",None)` y sin el la rejilla
+                # no lleva a donde va cada unidad. Segunda diferencia
+                # encontrada comparando este bucle con submit_kagsym.
+                gr, b = O.encode_obs(ob, getattr(ag, "_destinations", None))
+                # EL HISTORICO, REAL. Lo puse a ceros y costo una noche: el
+                # entrenamiento (`environment.encode` -> `Hf[i]=rival_flow`) y
+                # el agente que se sube (`submit_kagsym/main.py`) lo rellenan
+                # los dos, asi que buscar con ceros optimiza una condicion que
+                # no ocurre NUNCA. KAG_HIST=0 reproduce el fallo para medirlo.
+                _hf = (torch.zeros(1, Mw.N_HIST) if os.environ.get("KAG_HIST") == "0"
+                       else torch.from_numpy(np.asarray(O.rival_flow(ob), dtype=np.float32)).unsqueeze(0))
                 out = net(torch.from_numpy(gr).unsqueeze(0),
-                          torch.from_numpy(b).unsqueeze(0),
-                          torch.zeros(1, Mw.N_HIST))
+                          torch.from_numpy(b).unsqueeze(0), _hf)
                 off = (torch.zeros(N_MACRO) if delta is None else
                        _offset(delta, float(ob["day"]) / max(1, _dias), N_MACRO, torch, np))
                 ag.macro = Macro.from_vector(

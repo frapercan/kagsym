@@ -62,10 +62,13 @@ def juega(seed, dial=None, val=None):
         while not env.done:
             ob = o[0]
             if day != ob["day"]:
-                gr, b = O.encode_obs(ob)
+                gr, b = O.encode_obs(ob, getattr(ag, '_destinations', None))
+                # HISTORICO REAL y DESTINOS, como el agente que se sube.
+                # Con ceros el mismo episodio da 25.335 $ en vez de 76.607: el
+                # audit se hizo sobre un agente mutilado.
+                _hf = torch.from_numpy(np.asarray(O.rival_flow(ob), dtype=np.float32)).unsqueeze(0)
                 out = net(torch.from_numpy(gr).unsqueeze(0),
-                          torch.from_numpy(b).unsqueeze(0),
-                          torch.zeros(1, Mw.N_HIST))
+                          torch.from_numpy(b).unsqueeze(0), _hf)
                 v = torch.sigmoid(out["macro_mu"])[0].numpy().copy()
                 if dial is not None:
                     v[dial] = val
