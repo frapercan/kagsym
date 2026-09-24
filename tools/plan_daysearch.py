@@ -140,7 +140,7 @@ def search_game(seed: int, days: int, starts: list, pool, rounds: int = 2, hours
                         break
                 plan = best_plan
                 set_plan(plan)
-                records.append(dict(seed=seed, state=_state(ob), base=base, best=best,
+                records.append(dict(seed=seed, days=days, state=_state(ob), base=base, best=best,
                                     plan={f: _sched(plan, f, days)[day] for f in FIELDS} | {"land": _sched(plan, "land", days)[0]}))
                 if log:
                     print(f"  seed {seed} day {day}: {base:,.0f} -> {best:,.0f}  {records[-1]['plan']}", file=log, flush=True)
