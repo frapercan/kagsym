@@ -121,3 +121,11 @@ workload (4,272 engine steps/s against 37,152; a full game with our agent
 1.6 s against 0.9 s): its 550k steps/s live inside Rust, for tapes and
 batches. It would pay only with the executor ported to Rust. Binary and
 package under `archivo/kaggsim/` and `archivo/kaggriculture-simulation/`.
+- **Hiring by an explicit work model loses.** Sizing hands by (crops +
+  plantings + harvestable) x turns_per_tile + animals x actions, capped at
+  the macro's target: 5,788 -> 4,526 and 4,471 -> 4,170 in the 8-day
+  solitaire. The explicit model misses market trips, pickups and drops; the
+  policy's 7 hands were right. Third "reasonable" hiring rule refuted by
+  measurement (with the demand cap, -39,212 $, and the value floor, -3,509 $).
+  Mechanical rules that are safe to hard-wire are about watering and
+  planting what was bought, not about labour.

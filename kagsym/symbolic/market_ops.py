@@ -375,6 +375,7 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None,
     else:
         STARTUP_HANDS = 2
         n_max = min(n_max, max(STARTUP_HANDS, -(-max(tasks, 1) // per_unit)))
+
     budget = max(LABOUR_FLOOR, money * LABOUR_BUDGET_FRACTION)
 
     orders = []

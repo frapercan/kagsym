@@ -45,6 +45,8 @@ def main():
     unit_turns = collections.Counter()
     last_day = 0
     hands_seen = 0                      # hands is 0 at hour 0: read it at hour 23
+    unwatered_today = 0                 # crops not watered by hour 23 (watering daily is exact mechanics)
+    unwatered = []
     tile_days = 0                       # tile-days under crop
     idle_cash = 0.0                     # cash at end of day while tiles were free
     harvest_waits = []                  # units ready but not harvested, per day
@@ -65,6 +67,8 @@ def main():
                 digs += 1
         if ob["hour"] == 23:
             hands_seen = max(hands_seen, len(ob["farms"][0]["hands"]))
+            unwatered_today = sum(1 for r in ob["farms"][0]["tiles"] for t in r
+                                  if isinstance(t, dict) and t.get("kind") == "PLANT" and not t.get("watered_today"))
         for o in a_.get("market", []):
             cur[o[0]] += int(o[2]) if len(o) > 2 and isinstance(o[2], (int, float)) else 1
         prev_tiles = {(x, y): t for y, r in enumerate(ob["farms"][0]["tiles"]) for x, t in enumerate(r)}
@@ -83,16 +87,18 @@ def main():
             crops = sum(1 for t in tiles if t.get("kind") == "PLANT")
             anim = sum(1 for t in tiles if t.get("animal"))
             free = sum(1 for t in all_tiles if t is None)
-            ready = sum(int(t.get("yield_units", 0)) for t in tiles if t.get("kind") == "PLANT")
+            ready = sum(int(t.get("yield_units", 0)) for t in tiles if t.get("kind") == "PLANT"
+                        and nb["day"] - int(t.get("planted_day", nb["day"])) >= spec.CROPS[t["crop"]]["first_yield_day"])
             tile_days += crops
             free_tiles_seen += free
             if free > 0:
                 idle_cash += float(f["money"])
             harvest_waits.append(ready)
+            unwatered.append(unwatered_today)
             day_rows.append((last_day, f["money"], hands_seen, crops, anim, dict(unit_turns), dict(cur)))
             print(f"{last_day:3d} {f['money']:7,.0f} {hands_seen:5d} {crops:5d} {anim:4d} "
                   f"{unit_turns['pass']:16d} {unit_turns['move']:5d} {unit_turns['work']:5d}   "
-                  f"free {free:2d} ready {ready:3d}  {dict(cur)}")
+                  f"free {free:2d} harvestable {ready:3d} unwatered {unwatered_today:2d}  {dict(cur)}")
             cur.clear()
             unit_turns.clear()
             hands_seen = 0
@@ -118,7 +124,7 @@ def main():
     print(f"space : {len(plant_cycles)} tiles ever planted of {n_tiles}; plantings per tile "
           f"{collections.Counter(plant_cycles.values())}; occupancy {tile_days}/{n_tiles * a.days} tile-days "
           f"({100 * tile_days / (n_tiles * a.days):.0f}%)")
-    print(f"time  : units ready and waiting at day ends {harvest_waits}")
+    print(f"time  : harvestable units at day ends {harvest_waits}; crops unwatered at hour 23 {unwatered}")
     print(f"labour: unit-turns pass/move/work over the game "
           f"{sum(r[5].get('pass', 0) for r in day_rows)}/{sum(r[5].get('move', 0) for r in day_rows)}/"
           f"{sum(r[5].get('work', 0) for r in day_rows)}")
