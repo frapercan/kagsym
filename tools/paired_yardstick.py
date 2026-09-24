@@ -14,12 +14,46 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
 H, D, CASH = 24, 30, 3000
-SEEDS = list(range(9001, 9201))      # 200, fixed in advance
-PROCS = 6                            # training uses 11; do not choke it
+# BASE DE SEMILLAS CONFIGURABLE. La vara usaba 9001+ y `evalua.py` 7101+, sin
+# forma de alinearlas: dos instrumentos sobre conjuntos distintos dan cambios
+# distintos para los mismos dos checkpoints -medido el 2026-09-24: -2.197 $ en
+# 9001+ contra -9.025 $ en 7101+, una discrepancia de 6.800-. Con esto se puede
+# repetir el pareado sobre las MISMAS semillas que la evaluacion interna.
+_BASE = int(os.environ.get("KAG_SEED0", "9001"))
+SEEDS = list(range(_BASE, _BASE + 200))
+SEEDS = SEEDS[:int(os.environ.get("KAG_NSEEDS", len(SEEDS)))]
+PROCS = int(os.environ.get("KAG_PROCS", "6"))                            # training uses 11; do not choke it
+# la cadencia se pide por lado con el sufijo "@turno" en la ruta
 
 
 def _one(args):
     ckpt, s = args
+    # Sufijos, separados por coma tras "@":
+    #   turno        -> llamar a la red CADA TURNO (si no, una vez al dia)
+    #   macro=<ruta> -> los diales macro salen de OTRO checkpoint
+    # El segundo existe porque la cabeza macro NO se supervisa en clonacion:
+    # lee del tronco, asi que al soltar el tronco emite diales entrenados para
+    # una representacion que ya no existe. Esto separa "el micro clonado es
+    # malo" de "el micro clonado se llevo el macro por delante".
+    ckpt, _, _suf = ckpt.partition("@")
+    _fl = dict((x.split("=", 1) + [True])[:2] for x in _suf.split(",") if x)
+    # "turno" mueve LAS DOS cabezas a cadencia por turno; "turnomicro" y
+    # "turnomacro" mueven solo una. Hace falta separarlas porque reemitir el
+    # MACRO cada turno es un paseo aleatorio sobre la estrategia, y eso ya
+    # esta medido aqui: resamplear el macro a diario costo 40.972 -> 18.967 $
+    # (-54%). Sin separar, "por turno pierde" mezcla ese efecto con el del
+    # mapa micro, que es lo que la cinta dice que hay que refinar.
+    turno_mi = ("turno" in _fl) or ("turnomicro" in _fl)
+    turno_ma = ("turno" in _fl) or ("turnomacro" in _fl)
+    ck_macro = _fl.get("macro")
+    # "@hist0" reproduce el medidor viejo -historico a ceros y sin
+    # _destinations- para poder medir el sesgo en semillas pareadas.
+    _hist0 = "hist0" in _fl
+    # "@ruido" evalua la politica MUESTREADA en vez de la media. Sirve para
+    # separar "la politica es mala" de "la politica solo funciona con ruido":
+    # si el determinista se hunde y el muestreado no, lo aprendido vive en la
+    # exploracion y no en la media, que es justo lo que se desplegaria.
+    _ruido = "ruido" in _fl
     import torch
     # ONE THREAD PER PROCESS. Torch opens threads on its own: measured, each
     # worker took 1.6 cores, and added to training's 11 processes that was ~21
@@ -49,7 +83,26 @@ def _one(args):
             _CACHE[ckpt] = (net, ops)
         except NameError:
             _CACHE = {ckpt: (net, ops)}
+    net_macro = net
+    if ck_macro:
+        try:
+            net_macro = _CACHE[("macro", ck_macro)]
+        except Exception:
+            dm = torch.load(ck_macro, map_location="cpu", weights_only=False)
+            net_macro = E2EAgent(WorldConfig(device="cpu",
+                                             con_ops=bool((dm.get("cfg") or {}).get("con_ops", True))))
+            load_strict(net_macro, dm["sd"], ck_macro, macro_fields=dm.get("macro_fields"))
+            net_macro.eval()
+            _CACHE[("macro", ck_macro)] = net_macro
     spec.set_turns_per_day(H); spec.set_episode_steps(H * D); _M.HAND_CAP = None
+    # EL HISTORICO, que este medidor llevaba a CEROS. `forward` lo rellena con
+    # ceros si no llega, asi que toda evaluacion hecha aqui media una politica
+    # ciega al flujo del rival -N_HIST = 4 x N_PRODUCTS- mientras que el
+    # entrenamiento se lo daba lleno (`env.encode()` devuelve g, b, hf). Lo
+    # mismo con `_destinations`, que nuestro `encode_obs` si recibe.
+    # KAG_HIST=0 reproduce el comportamiento viejo para poder medir la
+    # diferencia en semillas pareadas.
+    _HIST_REAL = (not _hist0) and os.environ.get("KAG_HIST", "1") != "0"
     HIST = torch.zeros(1, M.N_HIST)
     env = FastEnv(configuration={"episodeSteps": H * D, "turnsPerDay": H,
                                  "startingMoney": CASH}, seed=s)
@@ -60,13 +113,61 @@ def _one(args):
     with torch.no_grad():
         while not env.done:
             ob = o[0]
-            if day != ob["day"]:
-                gr, b = O.encode_obs(ob)
+            # CADENCIA, pedida por lado con sufijos en la ruta. La cadencia diaria fue decision nuestra de RL (30
+            # pasos por episodio en vez de 720), no un limite del motor: el
+            # forward cuesta 6,30 ms a un hilo -4,54 s por los 720 turnos-
+            # contra 1000 ms de presupuesto POR TURNO. Medido en las
+            # repeticiones top, agregar el dia destruye la etiqueta: 2,16
+            # verbos distintos por casilla-dia, techo de acuerdo 64,1%; por
+            # turno son 1,02 verbos y el techo sube al 98,9%.
+            #
+            # PERO medido: mover prod entero a por turno cuesta -13.346 $
+            # (t -21,5). Se entreno a cadencia diaria y su mapa es un PLAN DEL
+            # DIA; reemitirlo desde observaciones de media tarde que nunca vio
+            # es otra distribucion. Por eso existen turnomicro/turnomacro.
+            # Mismo fichero y mismo camino de codigo para todas, a proposito.
+            _nuevo = day != ob["day"]
+            if _nuevo or turno_mi or turno_ma:
+                gr, b = O.encode_obs(
+                    ob, getattr(ag, "_destinations", None) if _HIST_REAL else None)
+                _h = (torch.from_numpy(
+                          np.asarray(O.rival_flow(ob), dtype=np.float32)).unsqueeze(0)
+                      if _HIST_REAL else HIST)
                 out = net(torch.from_numpy(gr).unsqueeze(0),
-                          torch.from_numpy(b).unsqueeze(0), HIST)
-                ag.macro = Macro.from_vector(torch.sigmoid(out["macro_mu"])[0].numpy())
-                mp = out["micro"][0].numpy()
-                ag.micro = (lambda _o, m=((mp[0], mp[1:]) if ops else mp): m)
+                          torch.from_numpy(b).unsqueeze(0), _h)
+                if _ruido and _nuevo:
+                    _epsr = torch.randn_like(out["macro_mu"])
+                    _epsu = torch.randn_like(out["micro"])
+                    out = dict(out)
+                    out["macro_mu"] = out["macro_mu"] + net.log_sigma.exp() * _epsr
+                    out["micro"] = out["micro"] + net.log_sigma_micro.exp() * _epsu
+                if _nuevo or turno_ma:
+                    _om = (out if net_macro is net else
+                           net_macro(torch.from_numpy(gr).unsqueeze(0),
+                                     torch.from_numpy(b).unsqueeze(0), _h))
+                    ag.macro = Macro.from_vector(torch.sigmoid(_om["macro_mu"])[0].numpy())
+                # ESTA GUARDA FALTABA. Sin ella "turnomacro" reescribia
+                # tambien el mapa cada turno y media exactamente lo mismo que
+                # "turno": -13.346 $ identico a cuatro cifras, que es como se
+                # detecto. "turnomicro" si era correcto porque el macro si
+                # estaba guardado.
+                if _nuevo or turno_mi:
+                    # `_split_micro`, EL CANONICO, no una particion a mano.
+                    #
+                    # Aqui habia `(mp[0], mp[1:])`, que mete TODO lo que no es
+                    # el canal de valor como logits de verbo. Pero el mapa es
+                    # `1 + N_OPS + 2K`: con 28 canales y N_OPS=19 sobran 8 que
+                    # son CLAVES y CONSULTAS de asignacion, y se le estaban
+                    # pasando al ejecutor como si fueran verbos.
+                    #
+                    # MEDIDO el 2026-09-24: el mismo checkpoint sobre las
+                    # MISMAS semillas daba 37.840 $ por `tools/evalua.py` -que
+                    # usa `_split_micro`- y 31.209 $ por esta vara. 6.631 $ de
+                    # diferencia, y la vara es el medidor principal del
+                    # proyecto desde que existen los canales de clave.
+                    from kagsym.environment import _split_micro as _sm
+                    mp = out["micro"][0].numpy()
+                    ag.micro = (lambda _o, m=_sm(mp): m)
                 day = ob["day"]
             try:
                 act_r = rv(o[1])
@@ -83,6 +184,10 @@ if __name__ == "__main__":
     t0 = time.time()
     print(f"PAIRED yardstick: {H}h x {D}d, cash {CASH}, against an uncapped "
           f"v48, {len(SEEDS)} seeds fixed in advance")
+    for _l, _c in (("A", A), ("B", B)):
+        print(f"  {_l} cadencia: "
+              f"{'POR TURNO' if 'turno' in _c else 'diaria'}"
+              + (f", macro de {_c.split('macro=')[1]}" if 'macro=' in _c else ""))
     print(f"  A = {A}\n  B = {B}\n")
     # PROGRESS. Without it there is no way to tell 40% from 95% done, and that
     # already cost throwing away a 15-minute measurement for lack of an ETA.

@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 
+_ARGV = list(sys.argv)          # `sys.argv` se pisa abajo para importar cem_diales
 DELTA = sys.argv[1]
 CKP   = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith("--") else "runs/partida_v2.pt"
 N     = int(os.environ.get("VAL_N", 200))
@@ -62,9 +63,9 @@ if __name__ == "__main__":
     print(f"  DIFERENCIA EMPAREJADA  {par.mean():+9,.0f} $ +- {se:,.0f}   "
           f"t = {t:+.2f}   n = {len(par)}")
     print(f"  gana en {100*(par>0).mean():.0f}% de los tableros")
-    if "--hornear" in sys.argv[2:] or "--hornear" in sys.argv:
+    if "--hornear" in _ARGV:
         import torch
-        dst = sys.argv[sys.argv.index("--hornear") + 1]
+        dst = _ARGV[_ARGV.index("--hornear") + 1]
         if t < 2.0:
             print(f"\n  NO se hornea: t={t:+.2f} < 2. No ha superado el ruido.")
             sys.exit(1)
