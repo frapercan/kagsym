@@ -69,10 +69,20 @@ if __name__ == "__main__":
         if t < 2.0:
             print(f"\n  NO se hornea: t={t:+.2f} < 2. No ha superado el ruido.")
             sys.exit(1)
+        from kagsym.rampa import es_rampa
         ck = torch.load(CKP, map_location="cpu", weights_only=False)
-        off = torch.zeros(ck["sd"]["macro_mu.bias"].shape)
-        off[C.VIVOS] = torch.from_numpy(d.astype(np.float32))
-        ck["sd"]["macro_mu.bias"] = ck["sd"]["macro_mu.bias"] + off
+        if es_rampa(d, C.VIVOS):
+            # RAMPA: depende del dia, asi que NO cabe en el bias -que es
+            # constante por construccion-. Viaja como campo del checkpoint y
+            # la aplica `submit_kagsym/main.py` con la MISMA funcion que la
+            # busqueda, `kagsym.rampa.offset`. Antes esto reventaba con
+            # "shape mismatch [98] en [49]": ruidoso, pero inservible.
+            ck["delta_rampa"] = {"delta": [float(x) for x in d],
+                                 "vivos": [int(i) for i in C.VIVOS]}
+        else:
+            off = torch.zeros(ck["sd"]["macro_mu.bias"].shape)
+            off[C.VIVOS] = torch.from_numpy(d.astype(np.float32))
+            ck["sd"]["macro_mu.bias"] = ck["sd"]["macro_mu.bias"] + off
         ck["delta_macro"] = {"origen": DELTA, "de": CKP,
                              "dif": float(par.mean()), "se": float(se), "n": len(par)}
         torch.save(ck, dst)

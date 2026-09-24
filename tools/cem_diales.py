@@ -64,27 +64,15 @@ def _red():
 
 
 def _offset(delta, progreso, N_MACRO, torch, np):
-    """El desplazamiento de HOY. Un vector de 2D es RAMPA, no constante.
+    """Delega en `kagsym.rampa.offset`, que es la UNICA definicion.
 
-    Medido en `partida_v3`: los dias 0-1 compramos 12 peones y 7 animales
-    contra 1 lote de semilla, mientras v48 compra 5, 1 y 7. Los dos nos
-    arruinamos el dia 5, pero su capital esta en simiente -que multiplica
-    x1,78 al dia con trigo- y el nuestro en plantilla y ganado. Resultado:
-    ocho dias sin sembrar, diez arruinados, y el dia 20 el va 49.897 a
-    nuestros 16.712.
-
-    Eso NO lo puede arreglar un desplazamiento constante, que es lo que
-    buscaban las rondas 1 y 2: el reparto optimo del dia 0 no es el del dia
-    20. Con `a + b*progreso` la busqueda puede decir "mas semilla al principio
-    y mas plantilla despues" con b=0 reproduciendo exactamente el caso
-    constante, asi que no se pierde nada de lo ya ganado.
+    Estaba aqui duplicada. El agente que se sube no podia reproducirla, asi
+    que la busqueda optimizaba algo indesplegable; y una segunda definicion es
+    exactamente como nacio el fallo del historico a ceros. Ahora la busqueda,
+    el validador y `submit_kagsym/main.py` importan la misma funcion.
     """
-    off = torch.zeros(N_MACRO)
-    d = np.asarray(delta, dtype=np.float32)
-    D = len(VIVOS)
-    v = d[:D] + d[D:2 * D] * progreso if len(d) >= 2 * D else d[:D]
-    off[VIVOS] = torch.from_numpy(np.asarray(v, dtype=np.float32))
-    return off
+    from kagsym.rampa import offset as _off
+    return torch.from_numpy(_off(delta, VIVOS, progreso, N_MACRO))
 
 
 def episodio(seed, delta):

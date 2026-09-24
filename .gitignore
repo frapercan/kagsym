@@ -38,6 +38,9 @@ kagsym/*
 !kagsym/macro.py
 # conformacion de recompensa
 !kagsym/potential.py
+# el desplazamiento del macro, UNA sola definicion: la comparten la
+# busqueda, el validador y el agente que se sube
+!kagsym/rampa.py
 # la recompensa
 !kagsym/reward.py
 # un paso = un dia
@@ -75,3 +78,12 @@ kagsym/tests/*
 *.bak_*
 *.pyc
 __pycache__/
+
+# ---- el agente que se SUBE ----
+# Estaba SIN VERSIONAR pese a ser lo unico que juega de verdad: la lista
+# blanca dice "se rescata solo lo que corre en produccion" y precisamente
+# eso se habia quedado fuera. El checkpoint no entra -pesa 31 MB y vive en
+# el disco de trabajo-, pero el envoltorio si.
+!submit_kagsym/
+submit_kagsym/*
+!submit_kagsym/main.py
