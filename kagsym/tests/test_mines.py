@@ -262,3 +262,15 @@ def test_offset_schedule_round_trip():
     assert pol.offset_for(3).delta[0] == 5.0
     assert pol.offset_for(12).delta[0] == 1.0
     assert pol.offset_for(20).delta[0] == 2.0
+
+
+# -- stage consistency: when nothing can pay, the policy must spend nothing --
+
+@pytest.mark.xfail(reason="measured 2026-09-24: hands are hired in games where nothing pays "
+                          "(3/9/22 HIRE in 2/3/5-day solitaires); hire_orders is a game file, "
+                          "to be fixed with its own ablation", strict=True)
+def test_idle_game_keeps_the_starting_cash():
+    from kagsym.tests.test_policy import _ckpt
+    import regret as R
+    final, _, orders = R.play_solitaire(_ckpt(), days=2, seed=7401)
+    assert final == 3000.0 and not orders, (final, orders)
