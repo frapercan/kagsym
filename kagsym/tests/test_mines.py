@@ -244,8 +244,21 @@ def test_windowed_offset_keeps_stored_offset_outside_window():
     assert pol.offset_for(8) is stored and pol.offset_for(29) is stored
     pol.offset = None                       # disabled on purpose: nothing applies
     assert pol.offset_for(3) is None and pol.offset_for(20) is None
-    pol.offset = stored                     # the checkpoint's own: everywhere
+    pol.offset = "stored"                   # the checkpoint's own: everywhere
     assert pol.offset_for(20) is stored
     closing = Offset(np.array([2.0, 2.0]), [0, 1], from_day=18)
     pol.offset = closing
     assert pol.offset_for(10) is stored and pol.offset_for(18) is closing
+
+
+def test_offset_schedule_round_trip():
+    from kagsym.policy import Policy
+    ck = {"offset": {"delta": [1.0, 1.0], "live": [0, 1], "ramp": False},
+          "offset_schedule": [{"delta": [5.0, 5.0], "live": [0, 1], "ramp": False, "until_day": 8},
+                              {"delta": [2.0, 2.0], "live": [0, 1], "ramp": False, "from_day": 18}]}
+    sched = Offset.schedule_from_checkpoint(ck)
+    assert [o.until_day for o in sched] == [8, None, None] and [o.from_day for o in sched] == [None, 18, None]
+    pol = Policy(net=None, offset="stored", stored_offset=sched)
+    assert pol.offset_for(3).delta[0] == 5.0
+    assert pol.offset_for(12).delta[0] == 1.0
+    assert pol.offset_for(20).delta[0] == 2.0

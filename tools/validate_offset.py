@@ -129,14 +129,11 @@ def main():
         _, ck = load_network(ckpt)
         ck.pop("delta_rampa", None)
         if cand.until_day is not None or cand.from_day is not None:
-            # A windowed offset is stored as a schedule next to the stored one:
-            # the policy applies the window's offset inside it, the stored one
-            # outside. (Policy.from_checkpoint reads `offset`; `offset_windows`
-            # is applied by tools that know about phases; until the policy
-            # reads schedules, refuse to bake a windowed offset.)
-            raise SystemExit("baking a windowed offset is not supported yet: the deployed policy "
-                             "reads a single stored offset (see docs/DEBT.md)")
-        if cand.ramp:
+            # A windowed offset joins the checkpoint's schedule, ahead of any
+            # earlier window; the unwindowed stored offset stays in `offset`
+            # and applies outside every window.
+            ck["offset_schedule"] = [cand.to_checkpoint()] + list(ck.get("offset_schedule") or [])
+        elif cand.ramp:
             ck["offset"] = cand.to_checkpoint()
         else:
             bias = ck["sd"]["macro_mu.bias"]

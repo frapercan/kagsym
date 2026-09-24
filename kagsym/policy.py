@@ -98,14 +98,27 @@ class Offset:
                 "ramp": bool(self.ramp), "until_day": self.until_day, "from_day": self.from_day}
 
     @staticmethod
-    def from_checkpoint(ck: dict) -> "Offset | None":
-        r = ck.get("offset") or ck.get("delta_rampa")   # old field name
-        if not r:
-            return None
+    def _from_record(r: dict) -> "Offset":
         live = [int(i) for i in r.get("live", r.get("vivos"))]
         delta = np.asarray(r["delta"], dtype=np.float32)
         ramp = bool(r["ramp"]) if "ramp" in r else len(delta) == 2 * len(live)
         return Offset(delta, live, ramp, r.get("until_day"), r.get("from_day"))
+
+    @staticmethod
+    def from_checkpoint(ck: dict) -> "Offset | None":
+        """The checkpoint's single stored offset (legacy field names accepted)."""
+        r = ck.get("offset") or ck.get("delta_rampa")   # old field name
+        return Offset._from_record(r) if r else None
+
+    @staticmethod
+    def schedule_from_checkpoint(ck: dict) -> "list[Offset]":
+        """Every stored offset, windowed ones first: `offset_schedule` (a list
+        of records, each with its window) followed by the single `offset`."""
+        out = [Offset._from_record(r) for r in (ck.get("offset_schedule") or [])]
+        single = Offset.from_checkpoint(ck)
+        if single is not None:
+            out.append(single)
+        return out
 
     # self-describing files: the vector never travels without its dial map
     def save(self, path: str, checkpoint_digest: str, **meta) -> None:
@@ -159,7 +172,9 @@ def load_network(path: str, strict: bool = False, verbose: bool = False):
 class Policy:
     net: Any
     offset: Offset | None = None            # the candidate under evaluation (may be windowed)
-    stored_offset: Offset | None = None     # what the checkpoint carries; in force outside the candidate's window
+    # What the checkpoint carries: a schedule of windowed offsets followed by
+    # the unwindowed one; in force wherever the candidate is not active.
+    stored_offset: "Offset | list[Offset] | None" = None
     steps: int = 720
     hours: int = 24
     hand_cap: int | None = None
@@ -174,9 +189,9 @@ class Policy:
         """`offset="checkpoint"` uses what the file carries; `None` disables it;
         an `Offset` overrides it (what a search does while exploring)."""
         net, ck = load_network(path, strict=strict, verbose=verbose)
-        stored = Offset.from_checkpoint(ck)
+        stored = Offset.schedule_from_checkpoint(ck)
         if offset == "checkpoint":
-            offset = stored
+            offset = "stored"
         return cls(net=net, offset=offset, stored_offset=stored)
 
     # -- episode lifecycle ----------------------------------------------------
@@ -237,16 +252,19 @@ class Policy:
             self._map = out["micro"][0].numpy()
 
     def offset_for(self, day: int) -> "Offset | None":
-        """The candidate inside its window; the stored offset elsewhere.
-        `offset=None` (explicitly disabled) means no offset at all."""
-        if self.offset is not None and self.offset.active(day):
-            return self.offset
-        if self.offset is None and self.stored_offset is None:
-            return None
+        """The candidate inside its window; otherwise the first stored offset
+        active on `day`. `offset=None` (explicitly disabled) means none at
+        all; `offset="stored"` means the checkpoint's schedule only."""
         if self.offset is None:
             return None            # disabled on purpose (PolicySpec offset=None)
-        if self.stored_offset is not None and self.stored_offset.active(day):
-            return self.stored_offset
+        if isinstance(self.offset, Offset) and self.offset.active(day):
+            return self.offset
+        stored = self.stored_offset
+        if stored is None:
+            return None
+        for off in (stored if isinstance(stored, list) else [stored]):
+            if off.active(day):
+                return off
         return None
 
     def act(self, obs) -> dict:

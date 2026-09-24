@@ -150,11 +150,11 @@ def _policy(spec: PolicySpec):
     if key not in _POLICY_CACHE:
         _POLICY_CACHE.clear()      # one live checkpoint per worker; old versions go
         pol = Policy.from_checkpoint(spec.path, offset="checkpoint")
-        _POLICY_CACHE[key] = (pol, pol.offset)
+        _POLICY_CACHE[key] = (pol, pol.stored_offset)
     pol, stored = _POLICY_CACHE[key]
     pol.stored_offset = stored
     if spec.offset == "checkpoint":
-        pol.offset = stored
+        pol.offset = "stored"
     elif spec.offset is None:
         pol.offset = None
     else:
