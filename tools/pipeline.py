@@ -9,9 +9,9 @@ next gate, on a clean tree, in a single command.
 
 Stages:
   0 tests            pytest kagsym/tests; refuses KAG_* game env variables
-  1 train            kagsym.cli.train from random init, seeded, on a reduced
-                     calendar (24h x 8d smoke, 24h x 14d full) against itself;
-                     the state after ONE update is kept as the starting point
+  1 train            kagsym.cli.train from random init, seeded, full calendar,
+                     two-seat self-play plus one anchor worker; the state after
+                     ONE update is kept as the starting point
   1b health          tools/health.py: which heads received gradient, sigmas alive,
                      fingerprint current
   1c progress        tools/evaluate.py: trained vs starting point, paired on
@@ -44,18 +44,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 PY = sys.executable
 
-# Training runs on a REDUCED CALENDAR against itself: fewer days (never fewer
-# hours per day: the engine's day structure is what the executor plays),
-# two-seat self-play on most workers (win rate 0.5 by construction, from
-# random weights to 68% of a trained policy in minutes), one worker against
-# the public anchor so the log keeps an absolute reference. Measurement
-# stages stay at full scale: the public agents die outside 24h x 30d, and a
-# number measured in the reduced world describes another game.
-SMOKE = dict(train_updates=8, envs=4, procs=4, hours=24, days=8, two_seat=3,
+# Training runs on the FULL calendar. Measured 2026-09-24 by this pipeline's
+# own progress gate: eight updates on an honest 24h x 8d game left the policy
+# 14,066 $ WORSE (t -10, worse on every board) at the full game than after
+# one update, because in a short game nothing pays and the gradient learns
+# inaction. The reduced calendar is a search laboratory (tools/search.py
+# --days k --agent-horizon 30) validated at full scale, not a training world.
+# Most workers play two-seat self-play (win rate 0.5 by construction); one
+# plays the public anchor so the log keeps an absolute reference.
+SMOKE = dict(train_updates=8, envs=4, procs=4, hours=24, days=30, two_seat=3,
              dials_n=1, search_gens=2, search_pop=6, search_elite=2, search_seeds=2,
              band_sample=2, validate_n=6, validate_band_n=1, band_n=1, band_limit=6,
              package_turns=48, progress_n=4, progress_t=0.0)
-FULL = dict(train_updates=300, envs=11, procs=11, hours=24, days=14, two_seat=8,
+FULL = dict(train_updates=300, envs=11, procs=11, hours=24, days=30, two_seat=8,
             dials_n=3, search_gens=30, search_pop=32, search_elite=8, search_seeds=4,
             band_sample=6, validate_n=200, validate_band_n=6, band_n=6, band_limit=0,
             package_turns=48, progress_n=60, progress_t=2.0)

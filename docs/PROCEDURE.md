@@ -224,3 +224,9 @@ Rules that come from what already failed:
   (a policy against itself reads 0.5) stays in the test suite as the null
   case.
 - The last rung is the only place where the band decides.
+
+**Training never runs on a short calendar.** Measured by the pipeline's
+progress gate: eight updates on an honest 24h x 8d game left the policy
+14,066 $ worse (t -10, worse on every board) at the full game than after one
+update. In a short game nothing pays and the gradient learns inaction. The
+universes are for search, validated at full scale.
