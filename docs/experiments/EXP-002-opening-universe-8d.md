@@ -102,3 +102,11 @@ its own rung.
 
 Band, paired on 900 boards: win 0.064 -> 0.066 (+0.002), beaten 5 -> 5.
 Gate REFUSED (money t -9.20). Not baked.
+
+## Re-validation with windowed semantics (2026-09-24 15:30)
+
+The first transfer measurement dropped v5's ramp after day 8 (instrument
+bug, fixed). With the opening replacing the stored offset only inside
+day < 8: money vs v48 on 200 clean seeds **-9,718 +- 1,355 (t -7.17)**,
+better on 30%; band 0.064 -> 0.070 (+0.006), beaten 5 -> 5. Same verdict:
+opening improved, game not; not baked. The closing is EXP-004.
