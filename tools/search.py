@@ -128,7 +128,8 @@ def main():
     p.add_argument("--from-day", type=int, default=None,
                    help="the offset applies only from this day on (a closing offset)")
     p.add_argument("--opponents", default=None,
-                   help="comma-separated public agents for value/margin; default: a band sample per generation")
+                   help="comma-separated public agents (or 'passive' for solitaire) for value/margin; "
+                        "default: a band sample per generation")
     p.add_argument("--opponent", default=E.V48.name, help="money objective opponent")
     p.add_argument("--band-sample", type=int, default=6, help="margin/win: opponents per generation")
     p.add_argument("--dials", default=None, help="live-dial json (default: <checkpoint>.dials.json)")
@@ -165,7 +166,8 @@ def main():
     names = E.public_names()
     world = {"hours": a.hours, "days": a.days, "agent_horizon_days": a.agent_horizon,
              "value_horizon_days": a.agent_horizon if a.objective == "value" else None}
-    fixed_opps = [E.public(n.strip()) for n in a.opponents.split(",")] if a.opponents else None
+    fixed_opps = ([E.passive() if n.strip() == "passive" else E.public(n.strip())
+                   for n in a.opponents.split(",")] if a.opponents else None)
     meta = {"checkpoint": os.path.relpath(ckpt_src, ROOT), "checkpoint_digest": digest,
             "live": live, "ramp": bool(a.ramp), "until_day": a.until_day, "from_day": a.from_day, "world": world,
             "dims": D, "objective": a.objective,

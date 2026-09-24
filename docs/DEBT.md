@@ -111,3 +111,13 @@ today. Each item says what it is, why it waits, and what unblocks it.
   nothing to do: fixed and validated) and invalid for strategy. The stage
   map is made on the full game against the real opponent (`tools/stage_map.py
   --days 30 --opponent v48-fast-routes`), where the rollouts stay exact.
+
+## The Rust simulator (kaggriculture-simulation, 2026-09-24)
+
+Byte-identical on a full game with our policy against v48 (48,747 /
+128,737, the same as FastEnv), so it is an independent fidelity check.
+Through its stdio JSON interface it is slower than FastEnv for our
+workload (4,272 engine steps/s against 37,152; a full game with our agent
+1.6 s against 0.9 s): its 550k steps/s live inside Rust, for tapes and
+batches. It would pay only with the executor ported to Rust. Binary and
+package under `archivo/kaggsim/` and `archivo/kaggriculture-simulation/`.
