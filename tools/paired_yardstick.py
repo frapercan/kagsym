@@ -98,6 +98,13 @@ def _one(args):
             cfg = WorldConfig(device="cpu", con_ops=True)
         net = E2EAgent(cfg)
         ops = bool(getattr(cfg, "con_ops", True))
+        # LA RAMPA. Vive en `ck["delta_rampa"]`, no en los pesos, asi que este
+        # bucle la ignoraba por completo: comparar un checkpoint con rampa
+        # contra su base daba +0 $ +- 0 con sd 0 -las dos partidas IDENTICAS-,
+        # y eso se lee como "no hay efecto" cuando en realidad es "no lo estoy
+        # midiendo". Casi tira un resultado bueno por el motivo equivocado.
+        from kagsym.rampa import del_checkpoint as _delck
+        net._rampa, net._rampa_vivos = _delck(d)
         load_strict(net, d["sd"], ckpt, macro_fields=d.get("macro_fields"))
         net.eval()
         try:
@@ -166,7 +173,15 @@ def _one(args):
                     _om = (out if net_macro is net else
                            net_macro(torch.from_numpy(gr).unsqueeze(0),
                                      torch.from_numpy(b).unsqueeze(0), _h))
-                    ag.macro = Macro.from_vector(torch.sigmoid(_om["macro_mu"])[0].numpy())
+                    _mm = _om["macro_mu"][0]
+                    _rp = getattr(net_macro, "_rampa", None)
+                    if _rp is not None:
+                        from kagsym.rampa import offset as _offr
+                        from kagsym.macro import N_MACRO as _NMv
+                        _mm = _mm + torch.from_numpy(_offr(
+                            _rp, getattr(net_macro, "_rampa_vivos", []) or [],
+                            float(ob["day"]) / max(1, D), _NMv))
+                    ag.macro = Macro.from_vector(torch.sigmoid(_mm).numpy())
                 # ESTA GUARDA FALTABA. Sin ella "turnomacro" reescribia
                 # tambien el mapa cada turno y media exactamente lo mismo que
                 # "turno": -13.346 $ identico a cuatro cifras, que es como se
