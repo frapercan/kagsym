@@ -52,3 +52,24 @@ vs 2945       seed 7101  10,540     33,262      0.32
 5. A gain at day 8 that does not survive the full game is recorded as
    "opening improved, game not": the next rung (14 days) then searches from
    the baked opening, not from v5.
+
+## Result, rung gate (2026-09-24 14:10)
+
+Search: 30 generations of 43 s; centre - base +3,580 +- 368 over the run
+(t +9.7), +4,985 +- 314 over the last 15; sigma 0.61 -> 0.30; no candidate
+disqualified.
+
+Rung gate on 30 RESERVED seeds, both opponents, both seats, paired against
+the base (partida_v5 with its own ramp), position value at day 8 with the
+30-day horizon:
+
+```
+                 our value            theirs     ratio          paired relative gain
+vs v48        13,292 -> 19,255       30,605   0.43 -> 0.63    +4,244 +- 515   t +8.2   better 87%
+vs 2945       13,732 -> 19,257       33,854   0.41 -> 0.57    +5,357 +- 503   t +10.7  better 90%
+both (n 120)  13,512 -> 19,256       32,230   0.42 -> 0.60    +4,801 +- 362   t +13.3  better 88%
+```
+
+Rule 3 (>= +3,000 at t >= 3) passes. The opening offset closes about a
+third of the day-8 gap. Rule 4 (transfer at full scale) runs next:
+`runs/search/exp002_validate.log`.
