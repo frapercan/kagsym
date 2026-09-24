@@ -23,6 +23,7 @@ is derived from the engine.
 from __future__ import annotations
 
 import math
+import os as _os_coord
 
 from .. import spec
 
@@ -627,6 +628,20 @@ def enable_mask(n_keys=0):
                         dtype=np.float32)
 
 
+def swap_mask(arr):
+    """Intercambia el acumulador de mascara y devuelve el anterior.
+
+    Con DOS ASIENTOS los dos agentes deciden en el mismo proceso y el
+    acumulador es un global del modulo: sin esto las dimensiones que decidio
+    el asiento 0 se mezclarian con las del 1 y la mascara de PPO ignoraria
+    ratios que si importan.
+    """
+    global MASK_ACC
+    prev = MASK_ACC
+    MASK_ACC = arr
+    return prev
+
+
 def collect_mask():
     global MASK_ACC
     m = MASK_ACC
@@ -641,6 +656,9 @@ def collect_mask():
 # was offered and the emitted value was not positive- and the number alone
 # does not separate them. Off by default; costs nothing when disabled.
 PASS_ACC = None
+# "multiplicativa" (historico) o "aditiva": ver la nota en _assign_hungarian
+_COORD = _os_coord.environ.get("KAG_COORD", "multiplicativa")
+_ESCALA_TURNO = [0.0]
 
 
 def enable_pass_stats():
@@ -1057,6 +1075,11 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
         _ux = np.fromiter((p[0] for p in units), int, len(units))
         _uy = np.fromiter((p[1] for p in units), int, len(units))
         _EZ = np.exp(np.clip(_qs[:, _uy, _ux].T @ _ks[:, _ty, _tx], -13.8, 13.8))
+    # mediana de los valores de tarea del turno: robusta a la cola larga que
+    # produce el expm1, y comun a todas las celdas
+    if _COORD == "aditiva" and tasks:
+        _vs = np.array([abs(tasks[t][0]) for t in tiles], dtype=float)
+        _ESCALA_TURNO[0] = float(np.median(_vs)) if len(_vs) else 0.0
     for i, pos in enumerate(units):
         row = value[i]
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
@@ -1106,6 +1129,7 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
             if PASS_ACC is not None:
                 PASS_ACC["offers"] += 1
             row[j] = v * (STEP_DISCOUNT ** dist(pos, tile))
+            _base_j = row[j]
             # PER-UNIT PREFERENCE. The value is the same for everybody, so
             # without this term the only thing telling two units apart is
             # distance, and when they want the same tile the loser takes the
@@ -1116,10 +1140,48 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
             # the unit's query with the tile's key starts at exactly 0 -the
             # head is zero-initialised- and exp(0) = 1 leaves the matrix
             # identical to the one before this existed.
-            if _EZ is not None:
-                row[j] *= float(_EZ[i, j])
-            if stickiness and previous is not None and previous.get(i) == tile:
-                row[j] *= (1.0 + stickiness)
+            # COORDINACION: MULTIPLICATIVA O ADITIVA.
+            #
+            # Medido el 2026-09-23: el valor de la tarea pasa por
+            # copysign(expm1(min(20,|r|)), r), o sea que puede llegar a 4,8e8,
+            # mientras los dos terminos de coordinacion son factores de orden
+            # uno -- el emparejamiento aprendido da _EZ entre 0,94 y 1,15, y la
+            # continuidad que la red emite es x1,02. No pueden competir: para
+            # cambiar una decision tendrian que valer tanto como una diferencia
+            # de dolares que ya paso por una exponencial.
+            #
+            # Con KAG_COORD=aditiva entran SUMANDO en la misma escala que el
+            # valor, como una fraccion de la celda base, para que puedan pelear
+            # de tu a tu. Sigue siendo la red quien decide cuanto: `_EZ` sale
+            # de sus claves y consultas, y la continuidad de su dial.
+            #
+            # AVISO: "mas coordinacion" NO es obviamente mejor -- forzar la
+            # continuidad a 0,25 perdio -1.828 $ (t -1,4, 60 semillas
+            # pareadas). Esto no sube el dial, le da ESCALA; solo se mide
+            # reentrenando.
+            _st = globals().get("_STICKY_FORZADO", None)
+            _st = stickiness if _st is None else _st
+            _mismo = previous is not None and previous.get(i) == tile
+            if _COORD == "aditiva":
+                # ESCALA GLOBAL DEL TURNO, no de la propia celda.
+                # Con `abs(_base_j)` esto era una IDENTIDAD ALGEBRAICA --
+                # row*(1+(EZ-1)) == row + row*(EZ-1) -- y el interruptor salia
+                # inerte: mismo dinero y mismas operaciones hasta el digito.
+                # Verificado y corregido el 2026-09-23.
+                #
+                # Con una escala comun del turno el bono es ABSOLUTO, que es
+                # lo que permite que una tarea CONTINUADA y barata gane a una
+                # NUEVA y cara. Si es proporcional a la celda, nunca puede.
+                _esc = _ESCALA_TURNO[0]
+                if _EZ is not None:
+                    row[j] += _esc * (float(_EZ[i, j]) - 1.0)
+                if _st and _mismo:
+                    row[j] += _esc * _st
+            else:
+                if _EZ is not None:
+                    row[j] *= float(_EZ[i, j])
+                if _st and _mismo:
+                    row[j] *= (1.0 + _st)
 
     # WHICH KEY DIMS DECIDED. Same rule as the verbs: a dimension only
     # counts if there was a COMPARISON. A tile wanted by a single unit, or a

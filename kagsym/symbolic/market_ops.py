@@ -75,11 +75,41 @@ def drain_rate(obs, product: str) -> float:
     return r
 
 
+# PRECIOS MEMOIZADOS. `market_price(item, inventory, params)` es pura, y
+# medido sobre un episodio completo `params` llega None en los 720 turnos, asi
+# que cae al MARKET_PARAMS global del motor y el precio depende solo de
+# (producto, inventario). Medido: 10.166 llamadas a `marginal_prices` sobre
+# 1.957 argumentos distintos, 80,7% redundante, 13,2% del tiempo del agente.
+#
+# Esto es EXACTO, no una aproximacion: se cachea una funcion pura. Con params
+# no nulo se salta la cache, por si alguna configuracion los trae.
+#
+# La cache se invalida si el motor cambia su tabla de parametros, que es lo
+# unico de lo que depende el resultado y no esta en la clave.
+_PRECIO: dict = {}
+_PRECIO_TABLA = None
+
+
+def _precio(product: str, inv: int, params) -> float:
+    if params is not None:
+        return spec.market_price(product, inv, params)
+    global _PRECIO_TABLA
+    _t = getattr(spec, "MARKET_PARAMS", None)
+    if _t is not _PRECIO_TABLA:
+        _PRECIO.clear()
+        _PRECIO_TABLA = _t
+    k = (product, inv)
+    v = _PRECIO.get(k)
+    if v is None:
+        v = _PRECIO[k] = spec.market_price(product, inv, None)
+    return v
+
+
 def marginal_prices(obs, product: str, k: int) -> list[float]:
     """What the engine pays for each of k units, in order."""
     inv = obs["market"]["inventory"][product]
     params = obs["market"].get("params")
-    return [spec.market_price(product, inv + j, params) for j in range(k)]
+    return [_precio(product, inv + j, params) for j in range(k)]
 
 
 def future_price(obs, product: str, horizon: int, opp_flow: float = 0.0) -> float:
@@ -92,7 +122,7 @@ def future_price(obs, product: str, horizon: int, opp_flow: float = 0.0) -> floa
     """
     inv = obs["market"]["inventory"][product]
     future = inv + (opp_flow - drain_rate(obs, product)) * horizon
-    return spec.market_price(product, int(round(future)), obs["market"].get("params"))
+    return _precio(product, int(round(future)), obs["market"].get("params"))
 
 
 def turns_left(obs) -> int:

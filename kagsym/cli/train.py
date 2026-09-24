@@ -294,6 +294,71 @@ def main():
                     help="weight of the AUXILIARY loss: predict the opponent's "
                          "supply at Fibonacci horizons, which forces the "
                          "encoder to model how their farm grows")
+    ap.add_argument("--espacial-weight", type=float, default=0.0,
+                    help="peso de la cabeza ESPACIAL: predecir el grid futuro "
+                         "casilla a casilla a los horizontes de Fibonacci. Es "
+                         "el unico objetivo con etiquetas exactas que llega a "
+                         "las casillas; todos los demas entran por mean/amax")
+    ap.add_argument("--seed0", type=int, default=None,
+                    help="primera semilla de entrenamiento. Por defecto se "
+                         "deriva de los updates que el checkpoint ya lleva, "
+                         "para que el flujo CONTINUE entre reanudaciones en "
+                         "vez de rebobinar a los mismos tableros.")
+    ap.add_argument("--eval-cada", type=int, default=0,
+                    help="cada cuantos updates evaluar la politica "
+                         "DETERMINISTA en semillas RESERVADAS (7101+) contra "
+                         "el agente publico sin capar. 0 = apagado. Con esto "
+                         "encendido, `--out` guarda el mejor POR ESA "
+                         "EVALUACION, no por el ancla: el ancla mide la "
+                         "politica muestreada y su calibracion con la "
+                         "determinista NO es estable -30% de diferencia "
+                         "medida-. Cuesta ~5 s cada vez.")
+    ap.add_argument("--eval-n", type=int, default=12,
+                    help="semillas reservadas por evaluacion")
+    ap.add_argument("--liga-dir", default=None,
+                    help="carpeta donde vive el pool compartido de la liga. "
+                         "Los linajes se entrenan POR TURNOS en procesos "
+                         "distintos, asi que el pool y las puntuaciones tienen "
+                         "que sobrevivir entre ellos.")
+    ap.add_argument("--rivales-liga", type=int, default=0,
+                    help="cuantos trabajadores juegan contra una instantanea "
+                         "de la liga, elegida por PFSP. ASIGNACION DIRECTA: el "
+                         "relevo por meritos solo dispara si ya ganas ese "
+                         "peldaño, y desde cero no ganas ninguno, asi que la "
+                         "liga no llegaria a jugarse nunca.")
+    ap.add_argument("--bloques", type=int, default=1,
+                    help="perturbar solo ~N_MACRO/K diales por episodio, "
+                         "rotando. 1 = todos (como hasta ahora). Ataca el "
+                         "reparto de credito: MEDIDO, con los 67 a la vez la "
+                         "señal/ruido del gradiente del sesgo es 0,074 y "
+                         "CERO diales superan el umbral resoluble.")
+    ap.add_argument("--antitetico", action="store_true",
+                    help="en los trabajadores de DOS ASIENTOS, el asiento 1 "
+                         "recibe -eps del asiento 0. Mismo tablero y misma "
+                         "semilla, perturbacion opuesta: la diferencia cancela "
+                         "el escenario, que es la varianza dominante.")
+    ap.add_argument("--antitetico-micro", action="store_true",
+                    help="aplicar tambien al ruido del mapa micro. Aparte "
+                         "porque el mapa es POR CASILLA y los dos asientos ven "
+                         "tableros distintos, asi que la simetria es menos "
+                         "clara que en el macro; se mide por separado.")
+    ap.add_argument("--linaje", type=int, default=0,
+                    help="identificador del linaje al que pertenece este "
+                         "entrenamiento. Va en cada instantanea de la liga: "
+                         "la diversidad viene de inicializaciones "
+                         "independientes, no de mas muestras de la misma "
+                         "trayectoria.")
+    ap.add_argument("--dos-asientos", type=int, default=0,
+                    help="los DOS jugadores los decide la red y los dos "
+                         "aportan gradiente. El motor y los dos ejecutores ya "
+                         "corrian en cada episodio y la trayectoria del "
+                         "asiento 1 se tiraba: esto es el doble de datos por "
+                         "segundo de simulacion, que es el cuello. Y el rival "
+                         "queda a nuestro nivel POR CONSTRUCCION. K = cuantos "
+                         "trabajadores lo usan (-1 = todos); el resto juega la "
+                         "escalera publica como ANCLA ABSOLUTA, porque el "
+                         "retorno en autojuego es relativo y deja de subir "
+                         "aunque los dos mejoren.")
     ap.add_argument("--rival-flow", action="store_true",
                     help="feed the `hist` input with the opponent IMMINENT SUPPLY"
                          "ceros. Esa entrada existia (N_HIST = 4 x productos) y "
@@ -349,8 +414,14 @@ def main():
     #
     # The critic predicts NORMALISED and is denormalised for GAE, which needs
     # raw units because `ret = adv + Vn` bootstraps from V.
-    _vmu, _vsd, _vn = 0.0, 1.0, 0
+    # EL NORMALIZADOR DE VALOR SOBREVIVE AL PROCESO. `_vmu/_vsd` escalan el
+    # objetivo del critico con una media movil; arrancar en (0, 1) tras cada
+    # reanudacion hace que el critico vea otra escala durante ~100 updates y
+    # sus ventajas valgan menos mientras reconverge. En la liga eso pasaba en
+    # CADA turno.
+    _vmu, _vsd, _vn = 0.0, 1.0, 0   # se restaura mas abajo, con d0 ya cargado
     _n_reused = _n_total = 0
+    _random_ = []     # tensores que quedaron al azar; vacio si no hay --resume
     d0 = {}
     if a.resume:
         # CONTINUE, do not restart. Each run used to start from the supervised
@@ -403,25 +474,54 @@ def main():
     #
     # Group 3 (critic, auxiliaries) is not policy: it generates no KL and is
     # not controlled by KL.
-    _g_macro, _g_micro, _g_otros, _trunk = [], [], [], []
-    for _n, _p in net.named_parameters():
+    def _grupo_de(_n):
+        """0 tronco | 1 macro | 2 micro | 3 critico+auxiliares.
+
+        Extraida de la construccion de grupos porque la restauracion del
+        optimizador necesita aplicar EXACTAMENTE el mismo reparto al
+        checkpoint viejo para poder emparejar momentos por nombre.
+        """
         _b = _n.split(".")[0]
         if _b in ("macro_mu", "log_sigma"):
-            _g_macro.append(_p)
-        elif _b in ("micro", "micro_ctx", "log_sigma_micro"):
-            _g_micro.append(_p)
-        elif _b in ("critic", "aux_rival", "jepa_proy", "jepa_pred"):
-            _g_otros.append(_p)
-        else:
-            _trunk.append(_p)
+            return 1
+        if _b in ("micro", "micro_ctx", "log_sigma_micro"):
+            return 2
+        if _b in ("critic", "aux_rival", "jepa_proy", "jepa_pred", "espacial"):
+            return 3
+        return 0
+
+    _g_macro, _g_micro, _g_otros, _trunk = [], [], [], []
+    _nm = ([], [], [], [])
+    for _n, _p in net.named_parameters():
+        _gi = _grupo_de(_n)
+        (_trunk, _g_macro, _g_micro, _g_otros)[_gi].append(_p)
+        _nm[_gi].append(_n)
     _heads = _g_macro + _g_micro + _g_otros
-    _rm_now = None
+    # El mismo orden que `[q for g in opt.param_groups for q in g["params"]]`.
+    _nombres_planos = _nm[0] + _nm[1] + _nm[2] + _nm[3]
     # SELF-PLAY RUNGS WITH THE FULL NETWORK. The opponent's identity lives in
     # the RUNG, not in the worker: the curriculum reassigns workers and without
     # this the frozen opponent would be lost on the first reallocation.
+    from kagsym.liga import Liga as _Liga
+    _RIVALES_LIGA = {}
+    _LIGA_DIR = a.liga_dir
+    _LIGA_KW = dict(maximo=int(os.environ.get("KAG_LIGA_MAX", "24")),
+                    recientes=int(os.environ.get("KAG_LIGA_RECIENTES", "3")),
+                    min_partidas=int(os.environ.get("KAG_LIGA_MINPART", "8")))
+    if _LIGA_DIR:
+        _TORNEO = _Liga.cargar(_LIGA_DIR, **_LIGA_KW)
+        print(f"liga desde {_LIGA_DIR}: {_TORNEO.resumen()}", flush=True)
+        _epl = _TORNEO.elo_por_linaje()
+        if _epl:
+            print("  elo por linaje: " + ", ".join(
+                f"L{k}={v:.0f}" for k, v in sorted(_epl.items())), flush=True)
+    else:
+        _TORNEO = _Liga(**_LIGA_KW)
+    _TORNEO_RIVAL = [None, []]
     _pool_net = set()
     _frozen_net = None
     _pool, _pool_p, _assign = [], [], []
+    _rival_cap = None
     _levels = ([int(x) for x in a.levels.split(',')] if a.levels else None)
     if _levels:
         from kagsym.environment import LADDER as _LADDER
@@ -458,44 +558,72 @@ def main():
     # and blows up later, inside the first step(), with "size of tensor a (124)
     # must match b (126)". If `--resume` could not reuse ALL tensors, the
     # network is a different one and the moments are worthless.
-    _same_arch = (not a.resume) or (_n_reused == _n_total)
-    if a.resume and "opt" in d0 and _same_arch:
+    # POR NOMBRE, no por posicion, y sin exigir que la arquitectura sea
+    # identica. Antes bastaba con que UN tensor no cargase -por ejemplo una
+    # cabeza auxiliar recien añadida, que por definicion no existe en ningun
+    # checkpoint- para que `_same_arch` fuese falso y se tirasen los momentos
+    # de TODOS los demas.
+    #
+    # MEDIDO el 2026-09-23 en este mismo fallo: la cabeza `espacial` son 2
+    # tensores de 71; al resumir se perdieron los 69 validos, el primer paso
+    # salio con kl/dim 7,98 contra un objetivo de 0,02 -399x, con el 100% del
+    # lote recortado- y el dinero cayo de 42.164 a 34.321 en cuatro updates.
+    # Ese es el escalon que aparece en las curvas cada vez que se reanuda.
+    #
+    # Emparejar por nombre lo resuelve de raiz, y ademas soporta insertar un
+    # parametro EN MEDIO, que el filtro por indice no soportaba: los indices
+    # de todo lo posterior se desplazan y los momentos se asignan al tensor
+    # equivocado en silencio.
+    if a.resume and "opt" in d0:
         try:
-            # MOMENTS PER TENSOR, not all-or-nothing. When a new constant is
-            # exposed the macro vector grows, and with it the head:
-            # `macro_mu.weight`, `macro_mu.bias` and `log_sigma` change shape.
-            # The other 66 tensors are identical and their moments remain
-            # valid -they are precisely what prevents the huge first step-.
-            # Throwing them all away for three that changed is what cost
-            # $20,957 -> $4,717 in five updates.
-            #
-            # The optimizer's `load_state_dict` does NOT validate shapes: it
-            # accepts the old moments and blows up later, inside step(). So
-            # they are filtered BEFORE, comparing against the parameter they
-            # belong to. Whatever is dropped, Adam reinitialises on its first
-            # step.
             _state = dict(d0["opt"])
             _ps = [q for g in opt.param_groups for q in g["params"]]
+            # Nombres del checkpoint VIEJO en el orden en que su optimizador
+            # los tenia. Si el checkpoint los trae, se usan tal cual; si no
+            # -los antiguos no los traen-, se reconstruyen: los parametros que
+            # el state_dict guardo, en orden de registro, repartidos en grupos
+            # con la MISMA funcion que arriba.
+            _viejos = d0.get("opt_nombres")
+            if not _viejos:
+                _act = set(_nombres_planos)
+                _ord = [_n for _n in (d0.get("sd") or {}) if _n in _act]
+                _viejos = [_n for _gi in range(4)
+                           for _n in _ord if _grupo_de(_n) == _gi]
+            _pos = {_n: _j for _j, _n in enumerate(_nombres_planos)}
             _outside = []
             _new_state = {}
             for _i, _v in (_state.get("state") or {}).items():
-                _j = int(_i)
-                _ok = _j < len(_ps)
+                _i = int(_i)
+                _n_v = _viejos[_i] if _i < len(_viejos) else None
+                _j = _pos.get(_n_v) if _n_v is not None else None
+                _ok = _j is not None
                 if _ok:
                     for _c in ("exp_avg", "exp_avg_sq"):
                         _t = _v.get(_c)
                         if _t is not None and tuple(_t.shape) != tuple(_ps[_j].shape):
                             _ok = False
                 if _ok:
-                    _new_state[_i] = _v
+                    _new_state[_j] = _v
                 else:
-                    _outside.append(_j)
-            _state["state"] = _new_state
+                    _outside.append(_i)
+            # Los GRUPOS se toman de ahora -asi nunca desencajan en numero- y
+            # solo se les copian los hiperparametros del checkpoint. Cargar
+            # los grupos viejos tal cual es lo que reventaba dentro de step()
+            # con "size of tensor a (124) must match b (126)".
+            _esq = opt.state_dict()
+            _pgv = _state.get("param_groups") or []
+            for _ix, _g in enumerate(_esq["param_groups"]):
+                if _ix < len(_pgv):
+                    for _k in ("lr", "betas", "eps", "weight_decay", "amsgrad"):
+                        if _k in _pgv[_ix]:
+                            _g[_k] = _pgv[_ix][_k]
+            _esq["state"] = _new_state
+            _state = _esq
             opt.load_state_dict(_state)
-            if _outside:
-                print(f"  moments reset on {len(_outside)} of {len(_ps)} "
-                      f"tensors (they changed shape); the rest keep Adam",
-                      flush=True)
+            print(f"  momentos de Adam: {len(_new_state)}/{len(_ps)} "
+                  f"tensores emparejados POR NOMBRE"
+                  + (f", {len(_outside)} sin pasado (nuevos o de otra forma)"
+                     if _outside else ""), flush=True)
             # Adam's MOMENTS are always restored -they are what prevents the
             # huge first step- but an explicitly requested lr OVERRIDES the
             # checkpoint's. Without this, restoring the optimizer silently
@@ -520,10 +648,25 @@ def main():
         except Exception as e:
             print(f"  WARNING: could not restore the optimizer ({e}); "
                   f"continuing with factory lrs", flush=True)
-    elif a.resume and "opt" in d0:
-        print(f"  optimizer NOT restored: the architecture changed "
-              f"({_n_reused}/{_n_total} tensors). Moments zeroed.", flush=True)
-    if a.resume and _n_reused < _n_total and getattr(net, "n_ops", 0):
+    # SOLO SI LO QUE QUEDO AL AZAR PUEDE LLEGAR AL MAPA. El rescate pisa el
+    # sesgo del canal de valor -un parametro APRENDIDO- con un 1,0 de
+    # fabrica. Tiene sentido cuando se reinicializan capas de ENTRADA, que
+    # meten ruido en la cabeza de valor. No lo tiene cuando lo unico nuevo es
+    # una cabeza de LECTURA: `espacial` es un conv 1x1 sobre `h` cuya salida
+    # solo consume la perdida, y `jepa_*`/`aux_rival` igual. Ninguna toca el
+    # camino de juego, asi que no pueden provocar el todos-PASS.
+    #
+    # Se disparo el 2026-09-23 por los 2 tensores de `espacial` y borro el
+    # sesgo de valor de una red entrenada, sumandose al escalon del resume.
+    _SOLO_LECTURA = ("espacial", "jepa_pred", "jepa_proy", "aux_rival")
+    _solo_lectura = bool(_random_) and all(
+        _t.split(".")[0] in _SOLO_LECTURA for _t in _random_)
+    if _solo_lectura:
+        print(f"  rescate de inaccion OMITIDO: lo unico sin cargar son "
+              f"cabezas de lectura ({', '.join(sorted(set(t.split('.')[0] for t in _random_)))}), "
+              f"no tocan el mapa", flush=True)
+    if (a.resume and _n_reused < _n_total and getattr(net, "n_ops", 0)
+            and not _solo_lectura):
         # INACTION RESCUE. If the architecture changed, the reinitialised
         # input layers send noise into the value head, which emits negatives;
         # the Hungarian prefers its dummy column and ALL units PASS. And
@@ -599,10 +742,81 @@ def main():
         print(f"MIXED GRID, {len(_grid)} rungs:", flush=True)
         for h, d, tp in _grid:
             print(f"   {h:>3}h x {d:>3}d = {h*d:>4} turns, cap {tp}", flush=True)
-    env = ParallelEnv(a.envs, n_procs=a.procs, steps=_steps,
+    # EL FLUJO DE SEMILLAS CONTINUA ENTRE TURNOS.
+    #
+    # `ParallelEnv` arranca en `seed0=1` con `ep=0`, y el entrenador nunca le
+    # pasaba otra cosa. Cada proceso -y en la liga cada TURNO es un proceso-
+    # recorria por tanto EXACTAMENTE las mismas semillas: con 180 updates y 11
+    # entornos, las ~1.980 primeras, una y otra vez.
+    #
+    # Con 12 ciclos eso son doce pasadas sobre los mismos tableros, y los tres
+    # linajes sobre los mismos entre si. Es sobreajuste a un conjunto fijo, y
+    # la firma encaja con lo observado: el dinero de entrenamiento se sostiene
+    # mientras la evaluacion en semillas RESERVADAS se degrada turno a turno.
+    #
+    # Se desplaza por los updates que el checkpoint ya lleva, asi que el
+    # reanudado sigue el flujo donde lo dejo en vez de rebobinar.
+    _upd_prev = 0
+    if a.resume:
+        try:
+            _upd_prev = int((d0 or {}).get("upd", 0) or 0)
+        except Exception:
+            _upd_prev = 0
+    _semilla0 = (a.seed0 if a.seed0 is not None
+                 else 1 + _upd_prev * max(1, a.envs))
+    # EL NORMALIZADOR DE VALOR, AQUI y no arriba. `_vmu/_vsd` escalan el
+    # objetivo del critico con una media movil; arrancar en (0, 1) tras cada
+    # reanudacion le da otra escala durante ~100 updates, y en la liga eso
+    # pasaba en CADA turno.
+    #
+    # Estaba junto a su inicializacion, VEINTE LINEAS ANTES de que `d0`
+    # existiera: NameError tragado por un except mudo, exactamente el mismo
+    # fallo que dejo MLflow apagado hace unas horas. Lo encontro la puerta de
+    # verificacion, no el razonamiento.
+    if a.resume:
+        try:
+            _nv = (d0 or {}).get("vnorm")
+            if _nv:
+                _vmu, _vsd, _vn = float(_nv[0]), float(_nv[1]), int(_nv[2])
+                print(f"  normalizador de valor restaurado: mu {_vmu:.3f} "
+                      f"sd {_vsd:.3f} ({_vn} lotes)", flush=True)
+            else:
+                print("  el checkpoint no trae normalizador de valor "
+                      "(es anterior a ese arreglo); arranca en (0, 1)",
+                      flush=True)
+        except Exception as _e_vn:
+            print(f"  AVISO: no se pudo restaurar el normalizador de valor: "
+                  f"{type(_e_vn).__name__}: {_e_vn}", flush=True)
+    if _upd_prev:
+        print(f"semillas de entrenamiento desde {_semilla0} "
+              f"(el checkpoint lleva {_upd_prev} updates)", flush=True)
+    env = ParallelEnv(a.envs, n_procs=a.procs, steps=_steps, seed0=_semilla0,
                           macro=Macro.from_vector(vec0),
                           level=(_levels if _levels else a.level),
-                          hand_cap=a.hand_cap, hours=_hours)
+                          hand_cap=a.hand_cap, hours=_hours,
+                          dos_asientos=a.dos_asientos)
+    _NF = env.n_filas
+    if env.dos:
+        _nd = sum(1 for d in env.dos_proc if d)
+        # LOS ROLES NO PUEDEN SOLAPARSE. `--dos-asientos K` toma los K
+        # primeros trabajadores y `--rivales-liga R` los R anteriores al
+        # ultimo; si K + R + 1 > n_procs se pisan, y un mismo trabajador queda
+        # a la vez en autojuego y con rival de liga. Peor: el ancla se queda
+        # sin trabajadores y el CRITERIO deja de medirse -- visto en la puerta
+        # de verificacion con 3 procesos, donde `ancla_se` desaparecia sin que
+        # nada avisara.
+        if _nd + a.rivales_liga + 1 > env.n_procs:
+            raise SystemExit(
+                f"REPARTO IMPOSIBLE: {_nd} de dos asientos + "
+                f"{a.rivales_liga} de liga + 1 ancla = "
+                f"{_nd + a.rivales_liga + 1} > {env.n_procs} trabajadores. "
+                f"Los roles se solaparian y el ancla -que es el criterio- se "
+                f"quedaria sin medir.")
+        _nl = min(a.rivales_liga, max(0, env.n_procs - 1 - _nd))
+        print(f"REPARTO: {_nd} trabajadores con DOS ASIENTOS ({_NF} filas/update), "
+              f"{_nl} contra instantaneas de la LIGA, "
+              f"{env.n_procs - _nd - _nl} contra la escalera publica (ancla absoluta)",
+              flush=True)
     if a.grid:
         env.set_rival_cap(_rival_cap)
         print(f"OPPONENT cap per rung: {_rival_cap}", flush=True)
@@ -640,7 +854,7 @@ def main():
     _GROUPS = None
     if a.grid and len(set(env.steps_proc)) > 1:
         _GROUPS, _o = [], 0
-        for _m in env.envs_per_proc:
+        for _m in env.filas_per_proc:
             _GROUPS.append((_o, _o + _m))
             _o += _m
         print(f"advantage normalised per rung: {len(_GROUPS)} groups "
@@ -651,21 +865,26 @@ def main():
             _t = _t.strip()
             _rm.append(None if _t in ("-", "") else list(np.load(_t)))
         env.set_rival_macro(_rm)
-        _rm_now = list(_rm)
-        # The POOL of rungs: (level, cap, macro). It starts with the initial
-        # assignment and the automatic curriculum redistributes workers among
-        # them according to how much information each one gives.
-        if _levels:
-            _pool = [(_levels[i % len(_levels)],
-                      _rival_cap[i % len(_rival_cap)],
-                      _rm[i % len(_rm)]) for i in range(len(_rm))]
-            _pool_p = [None] * len(_pool)
-            _assign = list(range(len(_pool)))
         print("opponents per worker (macro): " + ", ".join(
             ("public" if x is None else "OURS") for x in _rm), flush=True)
     elif a.rival_macro:
         env.set_rival_macro(list(np.load(a.rival_macro)))
         print(f"opponent = our executor with {a.rival_macro}", flush=True)
+    # EL POOL DE PELDAÑOS: (nivel, tope, macro). Se construye SIEMPRE que haya
+    # escalera. Vivia dentro de `if a.rival_macros`, de modo que sin esa
+    # bandera `_assign` quedaba vacia y el curriculo automatico calculaba un
+    # reparto de longitud 0: no reasignaba nunca. Es el mismo candado que
+    # tenia muerto el autoplay, matando un segundo mecanismo.
+    if _levels:
+        _cap0 = _rival_cap
+        _pool = [(_levels[i % len(_levels)],
+                  (_cap0[i % len(_cap0)] if _cap0 else None),
+                  (_rm[i % len(_rm)] if a.rival_macros else None))
+                 for i in range(len(_levels))]
+        _pool_p = [None] * len(_pool)
+        _assign = list(range(len(_pool)))
+        print(f"pool de peldaños: {len(_pool)} "
+              f"(niveles {[p[0] for p in _pool]})", flush=True)
     _league = a.league0
     _in_league = 0
     _RIV_ULT = [0.0]
@@ -695,11 +914,16 @@ def main():
         env.cerrar()
         env = _build_league(_league)
 
+    _EVALS = []
+    _MLF = [None]
+    _DIAGMAC = os.environ.get("KDIAGMAC", "") == "1"
+    _DIAGMAC_G = []
     try:
         import mlflow
         mlflow.set_tracking_uri("sqlite:///data/mlflow.db")
         mlflow.set_experiment("kaggriculture-world-model")
         mlflow.start_run(run_name=a.run_name)
+        _MLF[0] = mlflow
         mlflow.log_params(vars(a))
         # The exam itself. It is set from outside through the environment, so
         # without this a run could not be told apart from another trained on a
@@ -720,13 +944,76 @@ def main():
             "ref_experto_2945_vs_v48": 82382,
         })
         use_mlflow = True
-    except Exception:
+    except Exception as _e_ml:
+        # NUNCA EN SILENCIO. Este except apagaba MLflow entero sin una
+        # palabra: un NameError en una linea nueva dejo dos runs con CERO
+        # metricas y solo se noto al consultar la base a mano.
+        import traceback as _tbm
+        print(f"  MLFLOW APAGADO: {type(_e_ml).__name__}: {_e_ml}", flush=True)
+        _tbm.print_exc()
         use_mlflow = False
 
     # PERTURBATION PER EPISODE, not per day. Measured: resampling every day
     # costs 54% of the return ($40,972 fixed -> $18,967 sampled), because 30
     # days of random jitter destroy the farm's coherence.
-    eps = torch.randn(a.envs, N_MACRO, device=dev)
+    # PAREJAS ANTITETICAS EN LOS DOS ASIENTOS. El gradiente de un dial del
+    # macro es (eps_i/sigma)*A con `eps` sorteado UNA VEZ POR EPISODIO: una
+    # sola muestra por dial y episodio. MEDIDO el 2026-09-24 sobre 99 pasos y
+    # 67 diales: señal/ruido mediana 0,074 y CERO diales por encima del umbral
+    # resoluble -- el sesgo no aprende, hace un paseo aleatorio (0,0005 de
+    # desplazamiento en 300 updates).
+    #
+    # Los dos asientos juegan el MISMO tablero con la MISMA semilla, asi que
+    # dandole a uno +eps y al otro -eps la diferencia de resultados cancela el
+    # escenario, que es la varianza dominante. MEDIDO en semillas pareadas: sd
+    # 13.776 $ entre niveles contra 2.186 $ entre diferencias, un factor 6.
+    #
+    # No estrecha la exploracion -cada asiento explora con la misma sigma- asi
+    # que no choca con que "estrechar perjudica": cambia la ATRIBUCION, no la
+    # busqueda.
+    def _antitetico(t, filas=None):
+        """En cada trabajador de dos asientos, la mitad 1 = -mitad 0."""
+        if not (a.antitetico and env.dos):
+            return t
+        off = 0
+        for k, m in enumerate(env.envs_per_proc):
+            nf = env.filas_per_proc[k]
+            if env.dos_proc[k]:
+                for j in range(m):
+                    if filas is None or (off + m + j) in filas:
+                        t[off + m + j] = -t[off + j]
+            off += nf
+        return t
+
+    # EXPLORACION POR BLOQUES. Perturbar los 67 diales a la vez obliga a
+    # repartir el credito de UN resultado entre 67 causas. Con `--bloques K`
+    # cada episodio perturba solo ~N_MACRO/K diales y deja el resto en su
+    # media, asi que las muestras por dial perturbado se multiplican por K.
+    #
+    # Los bloques son ALEATORIOS y disjuntos, rotando por episodio: agruparlos
+    # "por subsistema" exigiria una taxonomia escrita a mano, y lo que importa
+    # es CUANTOS se perturban a la vez, no cuales van juntos.
+    #
+    # RIESGO A MEDIR, no lo doy por bueno: con eps=0 el dial queda en su media
+    # y no genera gradiente de politica -correcto-, pero en la fase de update
+    # `macro_logprob` recompone desde la accion y produce un termino que atrae
+    # mu hacia su valor viejo. Es una presion de region de confianza extra
+    # sobre los diales no perturbados. Por eso va apagado por defecto.
+    def _mascara(n_filas):
+        if a.bloques <= 1:
+            return None
+        k = max(1, N_MACRO // a.bloques)
+        m = torch.zeros(n_filas, N_MACRO, device=dev)
+        for i in range(n_filas):
+            idx = torch.randperm(N_MACRO, device=dev)[:k]
+            m[i, idx] = 1.0
+        return m
+
+    _msk = _mascara(_NF)
+    eps = torch.randn(_NF, N_MACRO, device=dev)
+    if _msk is not None:
+        eps = eps * _msk
+    eps = _antitetico(eps)
     # Per-channel floor for the micro sigma, as a fraction of its own
     # initialisation -- see the clamp below for why it is a relation.
     _FLOOR_FRAC = float(a.sigma_floor) / 0.35
@@ -748,20 +1035,59 @@ def main():
     # update, a graph that no longer corresponds.
     def SIG():
         return net.log_sigma_micro.exp()
-    eps_u = torch.randn(a.envs, *_U_SHAPE, device=dev)
+    eps_u = torch.randn(_NF, *_U_SHAPE, device=dev)
+    # EL LISTON SOBREVIVE AL TURNO. Cada turno de la liga es un proceso
+    # NUEVO, asi que `best` arrancaba en -infinito y la PRIMERA evaluacion del
+    # turno sobrescribia siempre `--out`, aunque fuera peor que lo que ese
+    # fichero ya contenia. MEDIDO el 2026-09-24: L0 cerro el ciclo 1 en
+    # 53.872 $ y el ciclo 2 reescribio su fichero con 35.944.
+    #
+    # Es el mismo fallo que costo perder el pico de la liga de anoche, y lo
+    # habia reintroducido. Un json al lado, independiente del formato del
+    # checkpoint, para que el liston persista.
     best = -1e18
+    _MEJOR_JSON = (a.out + ".mejor.json") if a.out else None
+    if _MEJOR_JSON and os.path.exists(_MEJOR_JSON):
+        try:
+            import json as _js0
+            best = float(_js0.load(open(_MEJOR_JSON))["mejor"])
+            print(f"  liston heredado de {_MEJOR_JSON}: {best:.0f} $",
+                  flush=True)
+        except Exception:
+            pass
+    # Estado del ancla: media movil exponencial y numero de lecturas.
+    _ancla_ema, _ancla_n = [0.0], [0]
+    _ANCLA_MIN = 10
     # SAFETY NET against collapse. Measured: one update with kl 25.7 took the
     # cash from $34,900 to $3 in fifteen updates and the controller reacted too
     # late. It keeps the last GOOD state and restores it if the return
     # collapses, also halving the pace.
+    # EL SALVAVIDAS ARRANCA SEMBRADO. Guarda el ultimo estado BUENO para
+    # restaurarlo si el retorno se desploma; con `sd=None` el primer colapso
+    # de un turno no tenia a donde volver. El checkpoint reanudado ES un
+    # estado bueno por definicion -es de donde partimos-, asi que se siembra
+    # con el, y su retorno con el que el checkpoint trae.
     _lifeline = {"ret": None, "sd": None, "opt": None, "rescates": 0}
+    if a.resume:
+        try:
+            _lifeline["sd"] = {k: v.detach().cpu().clone()
+                               for k, v in net.state_dict().items()}
+            _lifeline["opt"] = opt.state_dict()
+            _rr = (d0 or {}).get("ret")
+            if _rr is not None and float(_rr) == float(_rr):
+                _lifeline["ret"] = float(_rr)
+            print(f"  salvavidas sembrado con el checkpoint reanudado"
+                  + (f" (retorno {_lifeline['ret']:.1f})"
+                     if _lifeline["ret"] is not None else ""), flush=True)
+        except Exception:
+            pass
     _grad_norms = []
     _sig_grads = []
     _prev_sd = None
     _outer_last = None
     _last_promo = -10**9
     ret_ep = []          # returns of CLOSED EPISODES, not per-update sums
-    accum = np.zeros(a.envs, dtype=np.float64)
+    accum = np.zeros(_NF, dtype=np.float64)
 
     if a.selfplay:
         # Against a full-power public agent we lose 100%: the terminal is -1
@@ -846,6 +1172,7 @@ def main():
         LPMA, LPMI = [], []          # log-prob per head, for the factored ratio
         HF = []                      # opponent supply per day (auxiliary target)
         JZ = []                      # JEPA projections per day (target, stopped)
+        GG = []                      # grid por dia, blanco de la cabeza espacial
         for _ in range(a.days):
             g, b, hf = env.encode()
             # The `hist` input carried ZEROS from the start despite being
@@ -854,8 +1181,10 @@ def main():
             # mechanism by which they affect us -they dump produce, the
             # marginal price falls, our income drops-.
             h = (hf if a.rival_flow
-                 else np.zeros((a.envs, N_HIST), dtype=np.float32))
+                 else np.zeros((_NF, N_HIST), dtype=np.float32))
             HF.append(torch.from_numpy(np.asarray(hf, dtype=np.float32)).to(dev))
+            if a.espacial_weight > 0:
+                GG.append(torch.from_numpy(g).to(dev))
             tg = torch.from_numpy(g).to(dev)
             tb = torch.from_numpy(b).to(dev)
             th = torch.from_numpy(h).to(dev)
@@ -887,8 +1216,19 @@ def main():
                 ret_ep.append(float(accum[k])); accum[k] = 0.0
             if fin.any():
                 idx = torch.from_numpy(np.nonzero(fin)[0]).to(dev)
-                eps[idx] = torch.randn(len(idx), N_MACRO, device=dev)
+                _e = torch.randn(len(idx), N_MACRO, device=dev)
+                if a.bloques > 1:
+                    _mm = _mascara(len(idx))
+                    if _mm is not None:
+                        _e = _e * _mm
+                eps[idx] = _e
                 eps_u[idx] = torch.randn(len(idx), *_U_SHAPE, device=dev)
+                # los dos asientos cierran a la vez, asi que basta reimponer
+                # la simetria sobre las filas que se acaban de resortear
+                _fset = set(int(x) for x in idx.detach().cpu().numpy())
+                eps = _antitetico(eps, _fset)
+                if a.antitetico_micro:
+                    eps_u = _antitetico(eps_u, _fset)
             G.append(g); B.append(b); H.append(h)
             AM.append(am); AU.append(au); LP.append(lp)
             LPMA.append(lp_m); LPMI.append(_lp_mi)
@@ -896,8 +1236,14 @@ def main():
             R.append(rec); D.append(fin)
         with torch.no_grad():
             g, b, hf = env.encode()
+            # CON EL HISTORICO. Cogia `hf` y no se lo pasaba: el valor de
+            # arranque de GAE -el unico que cierra la ventana- se calculaba
+            # con la entrada a CEROS mientras los 30 valores anteriores del
+            # episodio la llevaban llena. Sesgo sistematico en el termino de
+            # bootstrap de todas las actualizaciones.
             _s_ult = net(torch.from_numpy(g).to(dev),
-                         torch.from_numpy(b).to(dev))
+                         torch.from_numpy(b).to(dev),
+                         torch.from_numpy(hf).to(dev))
             ult = _s_ult["value"] * _vsd + _vmu
 
         R = np.array(R); D = np.array(D); Vn = torch.stack(V).cpu().numpy()
@@ -1010,6 +1356,14 @@ def main():
             _fjz = torch.cat([
                 torch.stack([JZ[min(t + k, _njz - 1)] for k in _HZ], dim=1)
                 for t in range(_njz)])
+        # BLANCO ESPACIAL: para el dia t, el grid de t+k. Exacto, no estimado.
+        _fgg = None
+        if a.espacial_weight > 0 and GG:
+            from kagsym.obs import AUX_HORIZONS as _HZE
+            _ngg = len(GG)
+            _fgg = torch.cat([
+                torch.stack([GG[min(t + k, _ngg - 1)] for k in _HZE], dim=1)
+                for t in range(_ngg)])
         _fhf = None
         if HF:
             from kagsym.obs import AUX_HORIZONS, RIVAL_WINDOWS
@@ -1111,6 +1465,14 @@ def main():
                     _t = _fhf[_sel] if _nm > 1 else _fhf
                     l_aux = torch.nn.functional.smooth_l1_loss(
                         s["rival"], torch.sign(_t) * torch.log1p(_t.abs()))
+                l_esp = torch.zeros((), device=dev)
+                if a.espacial_weight > 0 and _fgg is not None:
+                    _te = _fgg[_sel] if _nm > 1 else _fgg
+                    # symlog, como el resto de entradas: los canales del grid
+                    # van de 0 a decenas y un error de 30 no puede pesar treinta
+                    # veces uno de 1
+                    l_esp = torch.nn.functional.smooth_l1_loss(
+                        s["espacial"], torch.sign(_te) * torch.log1p(_te.abs()))
                 l_jepa = torch.zeros((), device=dev)
                 if a.jepa_weight > 0 and _fjz is not None:
                     _tj = _fjz[_sel] if _nm > 1 else _fjz
@@ -1131,10 +1493,35 @@ def main():
                     #
                     # The value head IS trained: it is what the policy will
                     # need on day one and costs nothing to have ready.
-                    loss = a.value_weight * l_v + a.jepa_weight * l_jepa
+                    #
+                    # AND `l_aux` TOO, which this phase used to leave out. The
+                    # omission is not neutral: the phase exists to shape the
+                    # representation, and `l_aux` is the only objective here
+                    # with EXACT labels about the half of the world that is
+                    # not our own farm -what the opponent will have ready at
+                    # 1, 2, 3, 5, 8 and 13 days-. JEPA predicts our own future
+                    # embedding, so it can only sharpen what the encoder
+                    # already chose to keep; it cannot add a quantity the
+                    # encoder never represented.
+                    #
+                    # Measured, this matters: in the shipped checkpoint
+                    # `aux_rival` sits at its initialisation -sd 0.03594
+                    # against 0.03641 fresh, ratio 0.987- so it never received
+                    # a single gradient, and across 375 logged runs
+                    # `aux_weight` was non-zero in 2.
+                    loss = (a.value_weight * l_v + a.jepa_weight * l_jepa
+                            + a.aux_weight * l_aux
+                            + a.espacial_weight * l_esp)
                 else:
                     loss = (l_pi + a.value_weight * l_v + a.aux_weight * l_aux
-                               + a.jepa_weight * l_jepa)
+                               + a.jepa_weight * l_jepa
+                               + a.espacial_weight * l_esp)
+                if os.environ.get("KDIAGAUX") == "1":
+                    print(f"    [aux] l_esp={float(l_esp):.6f} "
+                          f"l_aux={float(l_aux):.6f} l_jepa={float(l_jepa):.6f} "
+                          f"fgg={'si' if _fgg is not None else 'NO'} "
+                          f"fhf={'si' if _fhf is not None else 'NO'} "
+                          f"fjz={'si' if _fjz is not None else 'NO'}", flush=True)
                 opt.zero_grad(); loss.backward()
                 if a.jepa_warmup < upd <= a.jepa_warmup + a.freeze_trunk:
                     # MIND THE INTERVAL: it freezes AFTER the warmup, not
@@ -1173,6 +1560,16 @@ def main():
                     float(_sm_g[1:].norm()) if _sm_g is not None and _sm_g.shape[0] > 1 else 0.0))
                 _gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 0.5)
                 _grad_norms.append(float(_gn))
+                if _DIAGMAC:
+                    # ¿El sesgo del macro recibe SEÑAL o ruido? Su gradiente es
+                    # (eps_i/sigma)*A con eps sorteado UNA VEZ POR EPISODIO, o
+                    # sea una correlacion estimada con tantas muestras como
+                    # episodios haya en el lote -- y hay 67 diales. Si la media
+                    # entre updates es pequeña frente a su desviacion, el sesgo
+                    # hace un paseo aleatorio y no aprende.
+                    _gb = net.macro_mu.bias.grad
+                    if _gb is not None:
+                        _DIAGMAC_G.append(_gb.detach().cpu().clone())
                 opt.step()
                 if a.sigma_floor > 0:
                     with torch.no_grad():
@@ -1444,10 +1841,66 @@ def main():
         _wpp_ref = None
         if upd % max(1, a.refresh) == 0:
             _wpp_ref = env.win_rate_per_rung()
-        if _rm_now and upd % max(1, a.refresh) == 0:
+        # ---------------- RIVALES DE LIGA, asignacion DIRECTA ----------------
+        # El relevo por meritos de mas abajo solo dispara en peldaños que YA
+        # ganas por encima del 50%. Desde cero no ganas ninguno, asi que la
+        # liga no llegaria a jugarse nunca. Aqui se asigna a dedo: los ultimos
+        # trabajadores -antes del ancla absoluta- juegan contra una instantanea
+        # elegida por PFSP, y se reasignan cada `refresh`.
+        if a.rivales_liga > 0 and upd % max(1, a.refresh) == 0:
+            try:
+                _wpr = (list(_wpp_ref) if _wpp_ref is not None
+                        else env.win_rate_per_rung())
+                # el ULTIMO trabajador es el ancla absoluta y no se toca
+                _base = max(0, env.n_procs - 1 - a.rivales_liga)
+                _kws = [_base + _t for _t in range(a.rivales_liga)
+                        if _base + _t < env.n_procs - 1]
+                # 1. puntuar a los SALIENTES antes de tocar el pool: `añadir`
+                #    puede desalojar y los indices se moverian.
+                for _kw in _kws:
+                    _iv = _RIVALES_LIGA.get(_kw)
+                    if (_iv is not None and _iv < len(_TORNEO)
+                            and _kw < len(_wpr) and _wpr[_kw] == _wpr[_kw]):
+                        _TORNEO.resultado(_iv, float(_wpr[_kw]))
+                # 2. entra la politica actual, con su linaje
+                _TORNEO.añadir(net.state_dict(), upd, linaje=a.linaje)
+                # 3. rivales nuevos, uno por trabajador
+                _RIVALES_LIGA.clear()
+                for _kw in _kws:
+                    _iv = _TORNEO.elegir()
+                    if _iv is None:
+                        continue
+                    _rn = E2EAgent(cfg)
+                    _rn.load_state_dict(_TORNEO.pool[_iv]["sd"])
+                    env.set_selfplay_on([_kw], _rn)
+                    env.forget_results([_kw])
+                    _RIVALES_LIGA[_kw] = _iv
+                _det = ", ".join(
+                    f"w{_kw}<-L{_TORNEO.pool[_i]['linaje']}u{_TORNEO.pool[_i]['upd']}"
+                    + (f"(p={_TORNEO.p(_i):.2f})" if _TORNEO.p(_i) is not None
+                       else "(sin medir)")
+                    for _kw, _i in sorted(_RIVALES_LIGA.items()))
+                print(f"  [liga] {_TORNEO.resumen()}  ::  {_det}", flush=True)
+                if _LIGA_DIR:
+                    _TORNEO.guardar(_LIGA_DIR)
+            except Exception as _e_lg:
+                import traceback as _tbl
+                print(f"  [liga] FALLO: {type(_e_lg).__name__}: {_e_lg}",
+                      flush=True)
+                _tbl.print_exc()
+        # CUALQUIER peldaño que dominemos, no solo los de vector macro.
+        # El relevo vivia detras de `--rival-macros` y ademas solo miraba los
+        # peldaños cuyo rival era un VECTOR. Los peldaños de agente publico
+        # -que son todos los de una escalera normal- no entraban nunca, asi
+        # que el autoplay no podia dispararse aunque estuviese cableado.
+        # `set_selfplay_on` trabaja por TRABAJADOR y no necesita ningun
+        # vector, de modo que la condicion sobraba entera.
+        # El relevo por MERITOS queda apagado si hay asignacion directa de
+        # liga: los dos escriben en los mismos trabajadores y se pisarian.
+        if (a.rivales_liga == 0 and upd % max(1, a.refresh) == 0 and _wpp_ref):
             try:
                 _wpp3 = list(_wpp_ref)
-                _ours = [i for i, v in enumerate(_rm_now) if v is not None]
+                _ours = list(range(len(_wpp3)))
                 # THRESHOLD 0.5, and it is not a hand-set constant: it is the
                 # definition of "we are better than that version". It used to
                 # use `a.slide`, which defaults to 0, so `0% >= 0` was true and
@@ -1457,32 +1910,63 @@ def main():
                               if i < len(_wpp3) and _wpp3[i] == _wpp3[i]
                               and _wpp3[i] > 0.5]
                 if _dominated:
-                    _new = fam.mean(0).detach().cpu().numpy().tolist()
-                    # the most dominated of all gives up its slot
+                    # el mas dominado de todos cede su hueco
                     _k_ref = max(_dominated, key=lambda i: _wpp3[i])
-                    _rm_now[_k_ref] = _new
-                    env.set_rival_macro(_rm_now)
-                    # THE WHOLE NETWORK, not the macro vector.
-                    # `set_rival_macro` sends a vector, i.e. OUR EXECUTOR WITH
-                    # THE BOARD HEURISTIC and no micro head; that removes
-                    # precisely the component that carries the value.
-                    #
-                    # Measured with the SAME macro on both sides, 5 seeds of
-                    # 24h x 30d: the network $64,762 against the vector
-                    # opponent's $29,924 -+116%, 5 of 5-. That is why the
-                    # relief replaced it 105 times in one night without it ever
-                    # ceasing to lose: it could not win, it was missing half
-                    # the agent.
+                    # LA RED ENTERA, nunca el vector macro. Aqui se escribia
+                    # ademas `set_rival_macro`, que manda UN VECTOR: nuestro
+                    # ejecutor con la heuristica de tablero y sin cabeza
+                    # micro, o sea justo el componente que lleva el valor.
+                    # Medido con el MISMO macro en los dos lados, 5 semillas
+                    # de 24h x 30d: la red 64.762 $ contra 29.924 $ del rival
+                    # de vector -+116%, 5 de 5-. Por eso el relevo lo sustituyo
+                    # 105 veces en una noche sin dejar de perder nunca: no
+                    # podia ganar, le faltaba medio agente. Y la linea era
+                    # ademas INUTIL, porque `set_selfplay_on` la pisaba dos
+                    # sentencias despues en el mismo trabajador.
+                    # TORNEO, en vez de "mi yo de hace cinco minutos".
+                    # Guardar UNA sola copia y sobrescribirla es donde el
+                    # autoplay se cicla: A bate a B, B bate a C, C bate a A.
+                    # El pool puntuado elige rival por NIVEL, que es el unico
+                    # rango donde hay gradiente -- medido hoy en los dos
+                    # extremos: win 0,98 no transfiere (-444 $) y win 0,00
+                    # degrada (29.732 -> 25.739).
+                    # SE PUNTUA AL SALIENTE, y una sola vez. Puntuar cada
+                    # N updates con la tasa CORRIENTE del trabajador cuenta
+                    # los mismos episodios muchas veces: `g` dice "8 partidas"
+                    # cuando son 8 lecturas de la misma media movil, y
+                    # `min_partidas` deja de significar nada. Al relevar, esa
+                    # media cubre exactamente el turno del rival saliente
+                    # -`forget_results` la reinicio al instalarlo-, asi que es
+                    # UNA lectura limpia sobre ~refresh episodios.
+                    if _TORNEO_RIVAL[0] is not None and _TORNEO_RIVAL[1]:
+                        _wsal = [_wpp3[_k] for _k in _TORNEO_RIVAL[1]
+                                 if _k < len(_wpp3) and _wpp3[_k] == _wpp3[_k]]
+                        if _wsal:
+                            _TORNEO.resultado(_TORNEO_RIVAL[0],
+                                              float(np.mean(_wsal)))
                     _frozen_net = E2EAgent(cfg)
-                    _frozen_net.load_state_dict(
-                        {k: v.detach().cpu().clone()
-                         for k, v in net.state_dict().items()})
+                    _TORNEO.añadir(net.state_dict(), upd, linaje=a.linaje)
+                    _iriv = _TORNEO.elegir()
+                    _frozen_net.load_state_dict(_TORNEO.pool[_iriv]["sd"])
+                    _TORNEO_RIVAL[0] = _iriv
+                    _q = _TORNEO.pool[_iriv]
+                    _pv = _TORNEO.p(_iriv)
+                    print(f"  [liga] {_TORNEO.resumen()}  -> rival #{_iriv} "
+                          f"(elo {_q['elo']:.0f}, linaje {_q['linaje']}, "
+                          f"del upd {_q['upd']}, "
+                          + (f"p={_pv:.2f} en {_q['g']} partidas)"
+                             if _pv is not None else f"sin medir)"), flush=True)
                     _j_ref = _assign[_k_ref] if _assign and _k_ref < len(_assign) else _k_ref
                     _pool_net.add(_j_ref)
-                    env.set_selfplay_on(
-                        [k for k, j in enumerate(_assign or [])
-                         if j == _j_ref] or [_k_ref], _frozen_net)
-                    env.forget_results()
+                    _trab = [k for k, j in enumerate(_assign or [])
+                             if j == _j_ref] or [_k_ref]
+                    env.set_selfplay_on(_trab, _frozen_net)
+                    # SOLO los trabajadores cuyo rival ha cambiado. Borrar los
+                    # once dejaba la tasa agregada en nan y ademas hacia que
+                    # este mismo bloque releyese el peldaño con dos episodios y
+                    # lo viese al 100% otra vez, releva que te releva.
+                    env.forget_results(_trab)
+                    _TORNEO_RIVAL[1] = list(_trab)
                     print(f"  [upd {upd}] rung {_k_ref} was being won at "
                           f"{_wpp3[_k_ref]:.0%}: relieved by OUR current policy. "
                           f"The rest are kept because they still teach",
@@ -1658,7 +2142,25 @@ def main():
             wr = env.win_rate()
             rv = env.rival_stats()
             ret = float(np.mean(ret_ep[-80:])) if ret_ep else float("nan")
+            # ANCLA: TODOS los trabajadores que juegan al agente publico, no
+            # solo el ultimo. Es el criterio de guardado y de seleccion, asi
+            # que su precision manda: promediar n trabajadores divide su ruido
+            # por raiz de n y sale gratis, porque ya estan jugando.
+            _dw = env.money_per_worker()
+            _rw = env.rival_per_rung() if hasattr(env, "rival_per_rung") else []
+            _anc_ws = [_k for _k in range(env.n_procs)
+                       if not env.dos_proc[_k] and _k not in _RIVALES_LIGA]
+            if not _anc_ws:
+                _anc_ws = [env.n_procs - 1]
+            _vv = [_dw[_k] for _k in _anc_ws if _k < len(_dw) and _dw[_k] == _dw[_k]]
+            _vr = [_rw[_k] for _k in _anc_ws if _k < len(_rw) and _rw[_k] == _rw[_k]]
+            _anc = float(np.mean(_vv)) if _vv else float("nan")
+            _anc_r = float(np.mean(_vr)) if _vr else float("nan")
+            _anc_m = (100.0 * (_anc - _anc_r) / _anc_r
+                      if _anc_r == _anc_r and _anc_r > 0 else float("nan"))
             print(f"upd {upd:4d}/{a.updates}  win={wr:.3f}  ret={ret:7.2f}  "
+                  + (f"ANCLA {_anc:6.0f} vs {_anc_r:6.0f} ({_anc_m:+.0f}%)  "
+                     if _anc == _anc else "")
                   + (f"[KL cut {kl_cuts}] " if kl_cuts else "")
                   + f"$={env.mean_money():7.0f} vs {rv['money']:7.0f}  "
                   f"cult={rv['crops']:4.1f}r  uds={rv['units']:4.1f}r  "
@@ -1934,6 +2436,113 @@ def main():
                         # how much of the macro depends on the STATE. If it is
                         # ~0 the head emits a constant and conditions nothing.
                         _m["2_health/macro_w_norm"] = float(net.macro_mu.weight.norm())
+                    try:
+                        # LA MISMA ancla que se imprime y que decide el
+                        # guardado: media de TODOS los trabajadores del rival
+                        # externo. Esto publicaba `_dw2[-1]` -UN trabajador, UN
+                        # episodio, sd ~13.000 $/semilla-, asi que la curva del
+                        # panel rebotaba mientras la de consola subia suave. La
+                        # misma metrica contando dos cosas distintas.
+                        _dw2 = env.money_per_worker()
+                        _rw2 = env.rival_per_rung()
+                        _ws2 = [_k for _k in range(env.n_procs)
+                                if not env.dos_proc[_k]
+                                and _k not in _RIVALES_LIGA] or [env.n_procs - 1]
+                        _v2 = [_dw2[_k] for _k in _ws2
+                               if _k < len(_dw2) and _dw2[_k] == _dw2[_k]]
+                        _r2v = [_rw2[_k] for _k in _ws2
+                                if _k < len(_rw2) and _rw2[_k] == _rw2[_k]]
+                        if _v2:
+                            _m["1_result/ancla_dinero"] = float(np.mean(_v2))
+                            # dispersion: sin ella no se puede distinguir un
+                            # movimiento real de un rebote de una muestra.
+                            if len(_v2) > 1:
+                                _m["1_result/ancla_se"] = float(
+                                    np.std(_v2, ddof=1) / len(_v2) ** 0.5)
+                            _m["1_result/ancla_suavizada"] = float(_ancla_ema[0])
+                            if _r2v and np.mean(_r2v) > 0:
+                                _m["1_result/ancla_margen_pct"] = float(
+                                    100.0 * (np.mean(_v2) - np.mean(_r2v))
+                                    / np.mean(_r2v))
+                    except Exception:
+                        pass
+                    # SATURACION DEL DIAL: cuanto de lo que el macro pide
+                    # llega a ejecutarse. Si el cociente se aleja de 1, esa
+                    # parte del rango del dial es inerte y el gradiente la
+                    # esta premiando o culpando en balde.
+                    try:
+                        _pd, _rl = env.manos_pedidas_reales()
+                        if _pd == _pd and _rl == _rl:
+                            _m["2_health/manos_pedidas"] = float(_pd)
+                            _m["2_health/manos_reales"] = float(_rl)
+                            _m["2_health/manos_saturacion"] = float(
+                                _rl / max(_pd, 1e-6))
+                    except Exception:
+                        pass
+                    # 6_PRODUCTO: unidades vendidas de cada producto, SOLO en
+                    # los trabajadores del rival externo. El 84% del hueco
+                    # contra v48 son fresa (0 unidades contra 430) y leche (72
+                    # contra 335), y hasta ahora ninguna metrica lo mostraba:
+                    # las mejoras genericas se juzgaban contra un agregado que
+                    # reparte el merito sobre todo el problema.
+                    try:
+                        _pp = env.producto_medio(_ws2)
+                        _uds = _pp.get("uds") or {}
+                        _ing = _pp.get("ing") or {}
+                        for _k6, _v6 in _uds.items():
+                            _m[f"6_producto/{_k6.lower()}"] = float(_v6)
+                        for _k6, _v6 in _ing.items():
+                            _m[f"6_ingreso/{_k6.lower()}"] = float(_v6)
+                        if _uds:
+                            _m["6_producto/TOTAL"] = float(sum(_uds.values()))
+                        if _ing and sum(_ing.values()) > 0:
+                            _m["6_ingreso/TOTAL"] = float(sum(_ing.values()))
+                            # VARIEDAD EFECTIVA = exp(entropia de las cuotas de
+                            # INGRESO. Sin umbral y sin constantes: dice
+                            # "cuantos productos EQUIPONDERADOS darian esta
+                            # concentracion". La version anterior contaba
+                            # productos con >= 1 unidad, un umbral elegido a
+                            # ojo que daba 9 de 9 con una venta accidental de
+                            # cada cosa -- y ademas en unidades, cuando el
+                            # precio por unidad va de ~45 a ~180 $.
+                            #
+                            # Y OJO con leerla como virtud: v48 esta MAS
+                            # concentrado que nosotros -65% de su ingreso en
+                            # fresa y leche- y gana 3x. Es un descriptor de la
+                            # cartera, no un objetivo.
+                            _sh = np.array([v for v in _ing.values()
+                                            if v > 0], dtype=float)
+                            _sh = _sh / _sh.sum()
+                            _m["6_ingreso/variedad_efectiva"] = float(
+                                np.exp(-(_sh * np.log(_sh)).sum()))
+                            _m["6_ingreso/cuota_top2"] = float(
+                                100.0 * np.sort(_sh)[-2:].sum())
+                    except Exception:
+                        pass
+                    # 3_TORNEO: sin esto el autoplay es invisible en el panel,
+                    # que es donde se mira. `duelo_win` es la tasa del
+                    # trabajador que juega contra la instantanea -no la
+                    # agregada- y es la unica que dice si el rival esta a
+                    # nuestro nivel: 0,5 significa que si.
+                    if len(_TORNEO):
+                        _elos = [q["elo"] for q in _TORNEO.pool]
+                        _m["3_liga/elo_actual"] = float(_TORNEO.elo_actual)
+                        _m["3_liga/instantaneas"] = float(len(_TORNEO))
+                        _pm = [_TORNEO.p(_i) for _i in range(len(_TORNEO))]
+                        _pm = [x for x in _pm if x is not None]
+                        if _pm:
+                            # cuanto ENSEÑA el pool: media de p(1-p).
+                            _m["3_liga/info_media"] = float(
+                                np.mean([x * (1 - x) for x in _pm]))
+                            _m["3_liga/medidas"] = float(len(_pm))
+                        _m["3_liga/elo_rango"] = float(max(_elos) - min(_elos))
+                        _m["3_liga/peldanos_autojuego"] = float(len(_pool_net))
+                        if _TORNEO_RIVAL[1]:
+                            _wpr_m = env.win_rate_per_rung()
+                            _wd = [_wpr_m[k] for k in _TORNEO_RIVAL[1]
+                                   if k < len(_wpr_m) and _wpr_m[k] == _wpr_m[k]]
+                            if _wd:
+                                _m["3_liga/duelo_win"] = float(np.mean(_wd))
                         if getattr(net, "n_ops", 0):
                             _m["2_health/verb_signal_noise"] = float(
                                 net.micro.bias[1:].abs().max()) / max(1e-9, cfg.sigma_ops)
@@ -1949,12 +2558,68 @@ def main():
         # against a strong public agent improved from -98.7% to -82.8% over
         # that same stretch-. Without this, an unattended night accumulates
         # nothing.
+        # ---------- EVALUACION RESERVADA, DETERMINISTA ----------
+        # Es el unico criterio honesto: la politica que se despliega es la
+        # MEDIA, en semillas que el entrenamiento nunca ha visto. Corre en un
+        # subproceso para no tocar el estado del entrenador ni sus globales
+        # per-proceso (`spec`, `HAND_CAP`), que es exactamente donde este
+        # proyecto ya se ha cortado varias veces.
+        if a.eval_cada > 0 and (upd % a.eval_cada == 0 or upd == a.updates):
+            try:
+                torch.save({"sd": net.state_dict(), "cfg": vars(cfg),
+                            "init": vec0, "macro_fields": _MACRO_FIELDS,
+                            "upd": upd, "fingerprint": fingerprint(),
+                            "model_fingerprint": model_fingerprint(),
+                            "opt": opt.state_dict(),
+                            "opt_nombres": _nombres_planos,
+                            "vnorm": (_vmu, _vsd, _vn)}, a.out + ".ultimo")
+                import subprocess as _sp, json as _js
+                _r = _sp.run([sys.executable, "tools/evalua.py", a.out + ".ultimo",
+                              "--n", str(a.eval_n), "--procs", "4"],
+                             capture_output=True, text=True, timeout=600,
+                             cwd=os.path.dirname(os.path.dirname(
+                                 os.path.dirname(os.path.abspath(__file__)))))
+                _ln = [l for l in _r.stdout.splitlines() if l.startswith("EVAL ")]
+                if _ln:
+                    _ev = _js.loads(_ln[-1][5:])
+                    _EVALS.append((upd, _ev["dinero"]))
+                    _mejor = " "
+                    if _ev["dinero"] > best:
+                        best = _ev["dinero"]
+                        import shutil as _sh
+                        _sh.copyfile(a.out + ".ultimo", a.out)
+                        _mejor = "*"
+                        if _MEJOR_JSON:
+                            try:
+                                _js.dump({"mejor": best, "upd": _upd0 + upd},
+                                         open(_MEJOR_JSON, "w"))
+                            except Exception:
+                                pass
+                    print(f"  [eval]{_mejor} upd {upd}: {_ev['dinero']:.0f} $ "
+                          f"(se {_ev['se']:.0f}) vs {_ev['rival']:.0f} "
+                          f"({_ev['margen_pct']:+.1f}%)  mejor {best:.0f}  "
+                          f"[{_ev['seg']}s]", flush=True)
+                    if _MLF[0] is not None:
+                        try:
+                            _MLF[0].log_metrics(
+                                {"1_result/eval_dinero": _ev["dinero"],
+                                 "1_result/eval_se": _ev["se"],
+                                 "1_result/eval_margen_pct": _ev["margen_pct"],
+                                 "1_result/eval_mejor": best}, step=_upd0 + upd)
+                        except Exception:
+                            pass
+                else:
+                    print(f"  [eval] FALLO: {(_r.stderr or '')[-200:]}", flush=True)
+            except Exception as _e_ev:
+                print(f"  [eval] FALLO: {type(_e_ev).__name__}: {_e_ev}", flush=True)
         if upd % 10 == 0 or upd == a.updates:
             torch.save({"sd": net.state_dict(), "cfg": vars(cfg), "init": vec0,
                         "macro_fields": _MACRO_FIELDS,
                         "upd": upd, "fingerprint": fingerprint(),
                         "model_fingerprint": model_fingerprint(),
-                        "opt": opt.state_dict()}, a.out + ".ultimo")
+                        "opt": opt.state_dict(),
+                        "opt_nombres": _nombres_planos,
+                            "vnorm": (_vmu, _vsd, _vn)}, a.out + ".ultimo")
         # --- OUTER LEVEL: the kl target, set by measured money ---
         if a.outer_every > 0 and upd % a.outer_every == 0:
             try:
@@ -2004,15 +2669,59 @@ def main():
                                      for k, v in net.state_dict().items()}
                 _lifeline["opt"] = opt.state_dict()
 
-        if ret_ep and len(ret_ep) >= 20:
-            r80 = float(np.mean(ret_ep[-80:]))
-            if r80 > best:
-                best = r80
+        # EL MEJOR ES EL DEL ANCLA, y el ancla es DINERO contra el rival
+        # EXTERNO. Ni el retorno ni el Elo del pool sirven: los dos son
+        # RELATIVOS y en autojuego suben contra una referencia que retrocede.
+        #
+        # MEDIDO el 2026-09-23 en una liga de 12 ciclos: el Elo subio monotono
+        # de 988 a 1730 mientras el ancla tocaba techo en el ciclo 5 (29.828 $)
+        # y se desplomaba en el 10 (10.341 $). Guardando por retorno se perdio
+        # el pico: el checkpoint "mejor por retorno" dio 20.353 $ y el ultimo
+        # 20.539 $, indistinguibles y los dos muy por debajo del maximo real.
+        #
+        # El ancla es UN trabajador, asi que es ruidosa: se suaviza con una
+        # media movil exponencial antes de decidir, y no se guarda nada hasta
+        # tener `_ANCLA_MIN` lecturas, para que el ruido inicial no clave un
+        # "mejor" falso del que ya no se sale.
+        _dwb = env.money_per_worker()
+        _wsb = [_k for _k in range(env.n_procs)
+                if not env.dos_proc[_k] and _k not in _RIVALES_LIGA] or [env.n_procs - 1]
+        _vb = [_dwb[_k] for _k in _wsb if _k < len(_dwb) and _dwb[_k] == _dwb[_k]]
+        _ab = float(np.mean(_vb)) if _vb else float("nan")
+        if _ab == _ab:
+            _ancla_n[0] += 1
+            _w_a = 1.0 / min(_ancla_n[0], 10)
+            _ancla_ema[0] = (1 - _w_a) * _ancla_ema[0] + _w_a * _ab
+            if (a.eval_cada <= 0
+                    and _ancla_n[0] >= _ANCLA_MIN and _ancla_ema[0] > best):
+                best = _ancla_ema[0]
                 torch.save({"sd": net.state_dict(), "cfg": vars(cfg),
-                            "init": vec0, "macro_fields": _MACRO_FIELDS, "ret": r80, "upd": upd,
+                            "init": vec0, "macro_fields": _MACRO_FIELDS,
+                            "ancla": float(_ancla_ema[0]), "upd": upd,
+                            "ret": float(np.mean(ret_ep[-80:])) if ret_ep else float("nan"),
                             "fingerprint": fingerprint(),
                             "model_fingerprint": model_fingerprint(),
-                            "opt": opt.state_dict()}, a.out)
+                            "opt": opt.state_dict(),
+                            "opt_nombres": _nombres_planos,
+                            "vnorm": (_vmu, _vsd, _vn)}, a.out)
+                if upd % 20 == 0:
+                    print(f"  [mejor] ancla {_ancla_ema[0]:.0f} $ en el upd "
+                          f"{upd} -> {a.out}", flush=True)
+
+    if _DIAGMAC and _DIAGMAC_G:
+        import numpy as _np
+        G = torch.stack(_DIAGMAC_G).numpy()
+        mu_, sd_ = G.mean(0), G.std(0)
+        snr = _np.abs(mu_) / _np.maximum(sd_, 1e-12)
+        print(f"\n[DIAGMAC] {G.shape[0]} pasos, {G.shape[1]} diales")
+        print(f"  |media| del gradiente   mediana {_np.median(_np.abs(mu_)):.3e}")
+        print(f"  desviacion entre pasos  mediana {_np.median(sd_):.3e}")
+        print(f"  SEÑAL/RUIDO por dial    mediana {_np.median(snr):.3f}  "
+              f"max {snr.max():.3f}")
+        print(f"  diales con snr > 1      {int((snr > 1).sum())} de {G.shape[1]}")
+        print(f"  (snr = |media| / desviacion. Por debajo de ~1/sqrt(n) "
+              f"= {1/_np.sqrt(G.shape[0]):.3f} es indistinguible de cero)",
+              flush=True)
 
 
 if __name__ == "__main__":
