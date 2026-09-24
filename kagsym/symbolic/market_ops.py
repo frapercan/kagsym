@@ -301,7 +301,8 @@ def unit_value(obs, product: str) -> float:
     return float(obs["market"]["prices"].get(product, 1))
 
 
-def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
+def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None,
+                planned_seeds: int = 0) -> list:
     """Hire while a hand costs less than it returns in a day.
 
     The cost of the n-th hand of the day is `fib(n)` and resets daily. A hand
@@ -336,7 +337,9 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
     # otherwise hiring for "plantable" tiles pays for intentions. Counting zero
     # empty tiles created the opposite deadlock: no seed means no tasks, no
     # tasks means no hands, no hands means no planting, and it never starts.
-    seeds_in_hand = sum(int(v) for v in obs["private"].get("seeds", {}).values())
+    # Seed being bought THIS turn counts as work: hiring and buying seed are
+    # decided together, and hiring first is right only if the seed follows.
+    seeds_in_hand = sum(int(v) for v in obs["private"].get("seeds", {}).values()) + int(planned_seeds)
     tasks = 0
     for row in farm["tiles"]:
         for t in row:
@@ -359,12 +362,18 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
     # BUDGET cap: it self-limits, scales with wealth and presumes nothing about
     # how the policy organises the work.
     # The target is set by the policy; the engine sets the hard limit.
+    # THE MACRO'S TARGET, NOT A DEMAND CAP. Measured 2026-09-24: capping
+    # hires by the work executable now (tiles with seed in hand, unwatered
+    # plants, unfed animals) made a 5-day solitaire consistent (0 idle hires)
+    # and cost -39,212 $ (t -22, worse on every one of 60 boards) in the full
+    # game. Hands create the work of a growing farm -building, land, moving-
+    # and "executable now" does not see it. The macro's target stands.
+    per_unit = max(1, spec.TURNS_PER_DAY // 3)
     if macro is not None:
         from ..macro import target_hands
         n_max = min(n_max, target_hands(obs, macro))
     else:
         STARTUP_HANDS = 2
-        per_unit = max(1, spec.TURNS_PER_DAY // 3)
         n_max = min(n_max, max(STARTUP_HANDS, -(-max(tasks, 1) // per_unit)))
     budget = max(LABOUR_FLOOR, money * LABOUR_BUDGET_FRACTION)
 
@@ -394,7 +403,20 @@ def _value_per_action(obs) -> float:
             continue
         turns = cycle_days(c) + 3          # water daily + plant + harvest
         best = max(best, cycle_profit(obs, c) / turns)
-    return max(1.0, best)
+    # THE WORK THAT ALREADY EXISTS. A unit-turn is worth what the best crop
+    # cycle yields per turn OR what realising the standing position yields
+    # per unit-turn left: harvests, feeding, sales. The old floor of $1
+    # stood in for the second term and hired hands with nothing to do in
+    # short solitaires (3/9/22 hires in 2/3/5 days); removing it alone lost
+    # $3,509 (t -11.5) in the full game because late hands harvest and sell.
+    # `liquidation` counts exactly what has time to pay, so it is the right
+    # measure of pending work; in a game where nothing pays it is the cash.
+    from ..potential import liquidation
+    farm = obs["farms"][int(obs["player"])]
+    pending = liquidation(obs, int(obs["player"]), obs.get("private")) - float(farm["money"])
+    units = 1 + len(farm["hands"]) + int(farm.get("hires_today", 0))
+    per_unit_turn = max(0.0, pending) / max(1, units * max(1, turns_left(obs)))
+    return max(best, per_unit_turn)
 
 
 def quadrant_of_xy(x: int, y: int) -> str:
