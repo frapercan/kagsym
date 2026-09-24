@@ -57,10 +57,13 @@ class Offset:
     delta: np.ndarray
     live: list[int]
     ramp: bool = False
-    # An OPENING offset applies only while day < until_day (None = whole
-    # episode). It lets the first days be searched in a reduced calendar and
-    # deployed unchanged inside the full game.
+    # A WINDOWED offset applies only while from_day <= day < until_day (None
+    # = no bound). Inside its window it REPLACES the checkpoint's stored
+    # offset; outside it the stored offset stays in force. An opening offset
+    # once replaced the stored ramp for the whole game and the "base" of two
+    # searches was not the checkpoint it claimed to be.
     until_day: int | None = None
+    from_day: int | None = None
 
     def __post_init__(self):
         self.delta = np.asarray(self.delta, dtype=np.float32).reshape(-1)
@@ -78,7 +81,9 @@ class Offset:
         return self.ramp
 
     def active(self, day: int) -> bool:
-        return self.until_day is None or int(day) < int(self.until_day)
+        day = int(day)
+        return ((self.from_day is None or day >= int(self.from_day))
+                and (self.until_day is None or day < int(self.until_day)))
 
     def vector(self, progress: float, n_macro: int) -> np.ndarray:
         out = np.zeros(int(n_macro), dtype=np.float32)
@@ -90,7 +95,7 @@ class Offset:
 
     def to_checkpoint(self) -> dict:
         return {"delta": [float(x) for x in self.delta], "live": list(self.live),
-                "ramp": bool(self.ramp), "until_day": self.until_day}
+                "ramp": bool(self.ramp), "until_day": self.until_day, "from_day": self.from_day}
 
     @staticmethod
     def from_checkpoint(ck: dict) -> "Offset | None":
@@ -100,13 +105,14 @@ class Offset:
         live = [int(i) for i in r.get("live", r.get("vivos"))]
         delta = np.asarray(r["delta"], dtype=np.float32)
         ramp = bool(r["ramp"]) if "ramp" in r else len(delta) == 2 * len(live)
-        return Offset(delta, live, ramp, r.get("until_day"))
+        return Offset(delta, live, ramp, r.get("until_day"), r.get("from_day"))
 
     # self-describing files: the vector never travels without its dial map
     def save(self, path: str, checkpoint_digest: str, **meta) -> None:
         tmp = path + ".tmp"
         np.savez(tmp, delta=self.delta, live=np.asarray(self.live, dtype=np.int64),
                  ramp=np.asarray(self.ramp), until_day=np.asarray(-1 if self.until_day is None else int(self.until_day)),
+                 from_day=np.asarray(-1 if self.from_day is None else int(self.from_day)),
                  checkpoint_digest=np.asarray(checkpoint_digest), meta=np.asarray(json.dumps(meta)))
         os.replace(tmp + ".npz" if not tmp.endswith(".npz") else tmp, path)
 
@@ -114,7 +120,9 @@ class Offset:
     def load(path: str) -> "tuple[Offset, str, dict]":
         z = np.load(path, allow_pickle=False)
         until = int(z["until_day"]) if "until_day" in z else -1
-        off = Offset(z["delta"], z["live"].tolist(), bool(z["ramp"]), None if until < 0 else until)
+        frm = int(z["from_day"]) if "from_day" in z else -1
+        off = Offset(z["delta"], z["live"].tolist(), bool(z["ramp"]), None if until < 0 else until,
+                     None if frm < 0 else frm)
         meta = json.loads(str(z["meta"])) if "meta" in z else {}
         return off, str(z["checkpoint_digest"]), meta
 
@@ -150,7 +158,8 @@ def load_network(path: str, strict: bool = False, verbose: bool = False):
 @dataclass
 class Policy:
     net: Any
-    offset: Offset | None = None
+    offset: Offset | None = None            # the candidate under evaluation (may be windowed)
+    stored_offset: Offset | None = None     # what the checkpoint carries; in force outside the candidate's window
     steps: int = 720
     hours: int = 24
     hand_cap: int | None = None
@@ -165,9 +174,10 @@ class Policy:
         """`offset="checkpoint"` uses what the file carries; `None` disables it;
         an `Offset` overrides it (what a search does while exploring)."""
         net, ck = load_network(path, strict=strict, verbose=verbose)
+        stored = Offset.from_checkpoint(ck)
         if offset == "checkpoint":
-            offset = Offset.from_checkpoint(ck)
-        return cls(net=net, offset=offset)
+            offset = stored
+        return cls(net=net, offset=offset, stored_offset=stored)
 
     # -- episode lifecycle ----------------------------------------------------
     def configure(self, config: Any = None) -> None:
@@ -220,11 +230,24 @@ class Policy:
                            torch.from_numpy(hf).unsqueeze(0))
             mu = out["macro_mu"][0]
             day = int(obs["day"])
-            if self.offset is not None and self.offset.active(day):
-                mu = mu + torch.from_numpy(
-                    self.offset.vector(day / self.days, M.N_MACRO))
+            off = self.offset_for(day)
+            if off is not None:
+                mu = mu + torch.from_numpy(off.vector(day / self.days, M.N_MACRO))
             self._agent.macro = M.Macro.from_vector(torch.sigmoid(mu).numpy())
             self._map = out["micro"][0].numpy()
+
+    def offset_for(self, day: int) -> "Offset | None":
+        """The candidate inside its window; the stored offset elsewhere.
+        `offset=None` (explicitly disabled) means no offset at all."""
+        if self.offset is not None and self.offset.active(day):
+            return self.offset
+        if self.offset is None and self.stored_offset is None:
+            return None
+        if self.offset is None:
+            return None            # disabled on purpose (PolicySpec offset=None)
+        if self.stored_offset is not None and self.stored_offset.active(day):
+            return self.stored_offset
+        return None
 
     def act(self, obs) -> dict:
         if self._agent is None:

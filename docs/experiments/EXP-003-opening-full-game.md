@@ -49,3 +49,14 @@ against v48 and the 2945 expert as objective transfer to the criterion?
    opening as well: the next step is the closing logic of the executor
    (selling and feeding with a large farm), measured on the day 20 to 30
    window.
+
+## Stopped at generation 10: instrument bug, not a result reading (2026-09-24 15:05)
+
+A windowed candidate offset (`until_day 8`) REPLACED the checkpoint's stored
+offset for the whole game, so from day 8 on partida_v5's validated ramp was
+gone. The "base" of this search (and the transfer measurement of EXP-002)
+was not v5. Ten generations read centre - base -2,669 +- 1,311 under that
+handicap; they say nothing about the question. Fixed: a windowed offset
+replaces the stored one only inside its window (`Policy.offset_for`,
+tested). EXP-002's opening is re-validated with the correct semantics
+before this search is relaunched.

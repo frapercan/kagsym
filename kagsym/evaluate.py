@@ -118,7 +118,9 @@ class PolicySpec:
     """A picklable description of the policy under evaluation.
 
     `offset` is "checkpoint" (use what the file carries), None (disable), or
-    a tuple (delta, live, ramp[, until_day]) for a candidate a search is trying.
+    a tuple (delta, live, ramp[, until_day[, from_day]]) for a candidate a
+    search is trying; a windowed candidate replaces the stored offset only
+    inside its window.
     """
     path: str
     offset: Any = "checkpoint"
@@ -150,6 +152,7 @@ def _policy(spec: PolicySpec):
         pol = Policy.from_checkpoint(spec.path, offset="checkpoint")
         _POLICY_CACHE[key] = (pol, pol.offset)
     pol, stored = _POLICY_CACHE[key]
+    pol.stored_offset = stored
     if spec.offset == "checkpoint":
         pol.offset = stored
     elif spec.offset is None:
@@ -158,7 +161,8 @@ def _policy(spec: PolicySpec):
         delta, live = spec.offset[0], spec.offset[1]
         ramp = spec.offset[2] if len(spec.offset) > 2 else (len(delta) == 2 * len(live))
         until = spec.offset[3] if len(spec.offset) > 3 else None
-        pol.offset = Offset(np.asarray(delta, dtype=np.float32), list(live), bool(ramp), until)
+        frm = spec.offset[4] if len(spec.offset) > 4 else None
+        pol.offset = Offset(np.asarray(delta, dtype=np.float32), list(live), bool(ramp), until, frm)
     return pol
 
 

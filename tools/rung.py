@@ -43,7 +43,7 @@ def main():
     if digest != E.file_digest(ckpt):
         raise SystemExit(f"{a.which} was searched on digest {digest}; {ckpt} has {E.file_digest(ckpt)}")
     base = E.PolicySpec(ckpt)
-    new = E.PolicySpec(ckpt, offset=(tuple(float(x) for x in off.delta), tuple(off.live), off.ramp, off.until_day))
+    new = E.PolicySpec(ckpt, offset=(tuple(float(x) for x in off.delta), tuple(off.live), off.ramp, off.until_day, off.from_day))
     world = {"hours": 24, "days": a.days, "agent_horizon_days": a.horizon, "value_horizon_days": a.horizon}
     opps = [E.public(n.strip()) for n in a.opponents.split(",")]
     seeds = S.RESERVED.seeds(a.n)

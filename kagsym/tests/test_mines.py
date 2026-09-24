@@ -231,3 +231,21 @@ def test_checkpoint_opponent_keeps_the_episode_calendar():
     assert spec.EPISODE_STEPS == 48, spec.EPISODE_STEPS
     rival = E._opponent_callable(E.checkpoint(path))
     assert rival.policy.steps == 48
+
+
+# -- a windowed candidate offset replaces the stored one only in its window --
+
+def test_windowed_offset_keeps_stored_offset_outside_window():
+    from kagsym.policy import Policy
+    stored = Offset(np.array([1.0, 1.0]), [0, 1])
+    cand = Offset(np.array([5.0, 5.0]), [0, 1], until_day=8)
+    pol = Policy(net=None, offset=cand, stored_offset=stored)
+    assert pol.offset_for(3) is cand
+    assert pol.offset_for(8) is stored and pol.offset_for(29) is stored
+    pol.offset = None                       # disabled on purpose: nothing applies
+    assert pol.offset_for(3) is None and pol.offset_for(20) is None
+    pol.offset = stored                     # the checkpoint's own: everywhere
+    assert pol.offset_for(20) is stored
+    closing = Offset(np.array([2.0, 2.0]), [0, 1], from_day=18)
+    pol.offset = closing
+    assert pol.offset_for(10) is stored and pol.offset_for(18) is closing

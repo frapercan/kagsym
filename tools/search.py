@@ -125,6 +125,8 @@ def main():
                    help="days our policy believes the game lasts (the first k days of a 30-day game)")
     p.add_argument("--until-day", type=int, default=None,
                    help="the offset applies only while day < until_day (an opening offset)")
+    p.add_argument("--from-day", type=int, default=None,
+                   help="the offset applies only from this day on (a closing offset)")
     p.add_argument("--opponents", default=None,
                    help="comma-separated public agents for value/margin; default: a band sample per generation")
     p.add_argument("--opponent", default=E.V48.name, help="money objective opponent")
@@ -165,7 +167,7 @@ def main():
              "value_horizon_days": a.agent_horizon if a.objective == "value" else None}
     fixed_opps = [E.public(n.strip()) for n in a.opponents.split(",")] if a.opponents else None
     meta = {"checkpoint": os.path.relpath(ckpt_src, ROOT), "checkpoint_digest": digest,
-            "live": live, "ramp": bool(a.ramp), "until_day": a.until_day, "world": world,
+            "live": live, "ramp": bool(a.ramp), "until_day": a.until_day, "from_day": a.from_day, "world": world,
             "dims": D, "objective": a.objective,
             "args": vars(a), "provenance": provenance(),
             "started": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -210,7 +212,7 @@ def main():
             pick = rng.choice(len(names), size=min(a.band_sample, len(names)), replace=False)
             opps, seats = [E.public(names[i]) for i in sorted(pick)], (0, 1)
         cand = [base.copy(), mu.copy()] + [rng.normal(mu, sd) for _ in range(a.pop - 2)]
-        specs = [E.PolicySpec(ckpt, offset=(tuple(float(x) for x in c), tuple(live), bool(a.ramp), a.until_day))
+        specs = [E.PolicySpec(ckpt, offset=(tuple(float(x) for x in c), tuple(live), bool(a.ramp), a.until_day, a.from_day))
                  for c in cand]
         todo = [(specs[i], o, s, seat, i, world) for i in range(len(cand))
                 for o in opps for s in seeds for seat in seats]
@@ -240,8 +242,8 @@ def main():
                      "search/best": row["best"], "search/population_mean": row["mean"],
                      "search/sigma": row["sd"], "search/disqualified": disqualified,
                      "search/seconds": row["seconds"]}, step=g)
-        Offset(mu, live, bool(a.ramp), a.until_day).save(os.path.join(out, "offset.npz"), digest, generation=g, world=world)
-        Offset(best, live, bool(a.ramp), a.until_day).save(os.path.join(out, "best.npz"), digest, generation=g, world=world)
+        Offset(mu, live, bool(a.ramp), a.until_day, a.from_day).save(os.path.join(out, "offset.npz"), digest, generation=g, world=world)
+        Offset(best, live, bool(a.ramp), a.until_day, a.from_day).save(os.path.join(out, "best.npz"), digest, generation=g, world=world)
         _write_json(os.path.join(out, "history.json"), history)
         fmt = "{:9.3f}" if a.objective == "win" else "{:9,.0f}"
         print(f"  gen {g:3d}  base " + fmt.format(row["base"]) + "  CENTRE "

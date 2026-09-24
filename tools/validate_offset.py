@@ -91,7 +91,7 @@ def main():
     cand, meta = load_search(os.path.abspath(a.search_dir), ckpt, a.allow_unfinished, a.which)
     base = E.PolicySpec(ckpt, offset="checkpoint")
     new = E.PolicySpec(ckpt, offset=(tuple(float(x) for x in cand.delta), tuple(cand.live), cand.ramp,
-                                     cand.until_day))
+                                     cand.until_day, cand.from_day))
     print(f"[validate] {a.search_dir}/{a.which} ({'ramp' if cand.ramp else 'constant'}, "
           f"{len(cand.live)} dials{f', opening day < {cand.until_day}' if cand.until_day else ''}, "
           f"generation {meta.get('generation')}) on {ckpt}; validation plays the FULL game")
@@ -128,6 +128,14 @@ def main():
         import torch
         _, ck = load_network(ckpt)
         ck.pop("delta_rampa", None)
+        if cand.until_day is not None or cand.from_day is not None:
+            # A windowed offset is stored as a schedule next to the stored one:
+            # the policy applies the window's offset inside it, the stored one
+            # outside. (Policy.from_checkpoint reads `offset`; `offset_windows`
+            # is applied by tools that know about phases; until the policy
+            # reads schedules, refuse to bake a windowed offset.)
+            raise SystemExit("baking a windowed offset is not supported yet: the deployed policy "
+                             "reads a single stored offset (see docs/DEBT.md)")
         if cand.ramp:
             ck["offset"] = cand.to_checkpoint()
         else:
