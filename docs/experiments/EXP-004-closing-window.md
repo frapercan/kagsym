@@ -51,3 +51,23 @@ given the opening.
 partida_v5              band win 0.064, beaten 5 of 74; money vs v48 (200 clean) reference
 partida_v5 + opening    money vs v48 (200 clean, paired vs v5): -9,718 +- 1,355 (t -7.2)
 ```
+
+## Result (2026-09-24 17:05)
+
+Search: 30 generations of ~120 s; centre - base +1,192 +- 165 on the
+search seeds (t 7.2), last 15 generations +1,399; sigma 0.35 -> 0.38 (no
+contraction: the elite never agreed on a direction).
+
+Validation (a), the closing window against its base (v5 + opening), 200
+CLEAN seeds against v48, paired: **+235 +- 161 $ (t 1.46), better on 50%
+of boards.** Gate refused; nothing baked; step (b) not reached.
+
+Verdict (rule 3): the closing window recovers a fraction of the opening's
+-9,718 $, not the loss and not more. The offset space of the macro is closed
+around partida_v5 for the opening (EXP-002/003), the closing (EXP-004) and
+the whole game (EXP-001). What the dials cannot express is how the harvest
+is converted into cash: the executor sells a large harvest in bursts and
+crashes its own price. That is executor logic (`market_ops.sell_orders`),
+and it is the next experiment: sell steadily against the marginal price
+with the opponent's supply forecast, measured on the day 18-30 window of
+the full game, paired, with the opening of EXP-002 as the stress case.
