@@ -83,7 +83,13 @@ def _rollout_from(pol, env, first_macro):
     return float(env2.rewards()[0])
 
 
-def oracle_solitaire(policy_path: str, days: int, seed: int, k: int = 16, hours: int = 24):
+def _rollout_task(task):
+    pol, env, cand = task
+    return _rollout_from(pol, env, cand)
+
+
+def oracle_solitaire(policy_path: str, days: int, seed: int, k: int = 16, hours: int = 24,
+                     procs: int = 1):
     """The policy improved by exact rollout search over its own macro
     Gaussian at every day boundary (k candidates, index 0 = the mean). With
     the exact engine and a passive opponent a rollout is not a prediction.
@@ -100,11 +106,16 @@ def oracle_solitaire(policy_path: str, days: int, seed: int, k: int = 16, hours:
     obs = env.reset()
     gen = torch.Generator().manual_seed(seed)
     wins, null_err, forced = [], None, None
+    import multiprocessing as mp
+    pool = mp.get_context("fork").Pool(procs) if procs > 1 else None
     while not env.done:
         ob = obs[0]
         if ob["hour"] == 0:
             cands = pol.macro_candidates(ob, k, gen)
-            vals = [_rollout_from(pol, env, c) for c in cands]
+            if pool is not None:
+                vals = pool.map(_rollout_task, [(pol, env, c) for c in cands], chunksize=1)
+            else:
+                vals = [_rollout_from(pol, env, c) for c in cands]
             if ob["day"] == 0:
                 null_err = vals[0] - plain
             i = max(range(len(vals)), key=lambda j: vals[j])
@@ -114,13 +125,16 @@ def oracle_solitaire(policy_path: str, days: int, seed: int, k: int = 16, hours:
         a = pol.act(ob, macro_override=forced)
         forced = None
         obs, _ = env.step([a, dict(E.PASS_ACTION)])
+    if pool is not None:
+        pool.close()
+        pool.join()
     return float(env.rewards()[0]), plain, wins, null_err
 
 
-def scenario_oracle(policy_path: str, days: int, seeds, k: int = 16):
+def scenario_oracle(policy_path: str, days: int, seeds, k: int = 16, procs: int = 1):
     rows = []
     for s in seeds:
-        oracle, plain, wins, null_err = oracle_solitaire(policy_path, days, s, k)
+        oracle, plain, wins, null_err = oracle_solitaire(policy_path, days, s, k, procs=procs)
         rows.append({"seed": s, "final": plain, "optimum": oracle, "regret": oracle - plain,
                      "consistency": {}, "orders": {"search_won_on_days": [d for d, _ in wins],
                                                    "null_error": null_err}})
@@ -143,12 +157,15 @@ def main():
     p.add_argument("checkpoint")
     p.add_argument("--scenarios", default="idle-1,idle-2,idle-3")
     p.add_argument("--seeds", type=int, default=3)
+    p.add_argument("--k", type=int, default=16, help="oracle candidates per day")
+    p.add_argument("--procs", type=int, default=1)
     a = p.parse_args()
     seeds = S.DIALS.seeds(a.seeds)
     worst = 0.0
     for name in a.scenarios.split(","):
         fn, arg = SCENARIOS[name]
-        rows = fn(os.path.abspath(a.checkpoint), arg, seeds)
+        rows = (fn(os.path.abspath(a.checkpoint), arg, seeds, a.k, a.procs) if fn is scenario_oracle
+                else fn(os.path.abspath(a.checkpoint), arg, seeds))
         reg = [r["regret"] for r in rows]
         worst = max(worst, max(reg))
         print(f"[{name}] policy {sum(r['final'] for r in rows) / len(rows):,.0f} $  optimum "
