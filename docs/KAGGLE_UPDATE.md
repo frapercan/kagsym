@@ -105,6 +105,26 @@ The auxiliary heads (opponent model, JEPA predictor) never received a gradient
 in any checkpoint. The test for that does not need a fresh initialisation: a
 parameter with no Adam state in the optimiser has never had a gradient.
 
+## Trick 18: a rung's yardstick must predict the final score, or it promotes the wrong thing
+
+To learn fast I built a ladder of universes: the first `k` days of a 30-day
+game, the episode cut at day `k` while the policy keeps valuing 30 days
+(an honest 8-day game is a different problem: nothing pays, the optimal
+policy is inaction, and an earlier ladder of short horizons promoted inert
+policies for exactly that reason). Each rung has a fixed external yardstick:
+the public agents' position at day `k`, valued by exact liquidation.
+
+The first rung worked as a rung: a search over the opening (30 generations
+of 43 seconds) lifted our day-8 position from 0.42 to 0.60 of the
+opponent's on 30 reserved seeds, t = 13.3, better on 88% of boards. At full
+scale it lost 13,300 $ (t -9.2). The trace says why: the searched opening is
+ahead until day 20 and then dumps a larger strawberry harvest into a shared
+market, and the price falls from 156 to 49 in two days. The day-8 position
+at marginal prices predicts day 20, not day 30. The rung passed, the game
+lost, and only the full-scale validation between rungs caught it. The next
+search uses the true objective on the full game; it costs twice as much per
+generation, not four times, and a proxy that does not transfer costs more.
+
 ## What is next
 
 The gap is production (10 tiles under crop against 42) and the opening (day 0-1
