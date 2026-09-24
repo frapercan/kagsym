@@ -58,7 +58,7 @@ def main():
     delta = np.load(a.offset)
     cand = Offset(np.asarray(delta, dtype=np.float32), live)
     base = E.PolicySpec(ckpt, offset="checkpoint")
-    new = E.PolicySpec(ckpt, offset=(delta.tolist(), live))
+    new = E.PolicySpec(ckpt, offset=(tuple(float(x) for x in delta), tuple(live)))
     print(f"[validate] {a.offset} ({'ramp' if cand.is_ramp else 'constant'}, {len(live)} dials) on {ckpt}")
 
     fam = S.family(a.family)

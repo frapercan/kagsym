@@ -52,9 +52,19 @@ def live_dials(path):
 
 
 def initial_offset(ckpt, live, ramp):
-    """The offset the checkpoint carries, expressed on `live` (padded for a ramp)."""
+    """The offset the checkpoint carries, expressed on `live` (padded for a ramp).
+
+    Dials the stored offset touches are kept live even if the probe called
+    them dead, so generation 0 reproduces the checkpoint exactly.
+    """
     _, ck = load_network(ckpt)
     stored = Offset.from_checkpoint(ck)
+    if stored is not None:
+        extra = [i for i in stored.live if i not in live]
+        if extra:
+            print(f"[search] stored offset touches dials the probe called dead: "
+                  f"{extra}; kept live", flush=True)
+            live = sorted(set(live) | set(extra))
     n = len(live)
     mu = np.zeros(2 * n if ramp else n)
     if stored is not None:
@@ -65,11 +75,7 @@ def initial_offset(ckpt, live, ramp):
             mu[n:] = full_b[live]
         elif np.abs(full_b).max() > 0:
             raise SystemExit("checkpoint carries a ramp; search it with --ramp")
-        missing = [i for i in stored.live if i not in live]
-        if missing:
-            print(f"[search] WARNING stored offset touches dials not in the live "
-                  f"list: {missing}; they are dropped", flush=True)
-    return mu
+    return mu, live
 
 
 def score(episodes, objective):
@@ -103,9 +109,8 @@ def main():
     a = p.parse_args()
 
     ckpt = os.path.abspath(a.checkpoint)
-    live = live_dials(a.live)
+    mu, live = initial_offset(ckpt, live_dials(a.live), a.ramp)
     D = len(live) * (2 if a.ramp else 1)
-    mu = initial_offset(ckpt, live, a.ramp)
     base = mu.copy()
     sd = np.full(D, a.sigma)
     rng = np.random.default_rng(a.rng)
@@ -125,13 +130,13 @@ def main():
             pick = rng.choice(len(names), size=min(a.band_sample, len(names)), replace=False)
             opps, seats = [E.public(names[i]) for i in sorted(pick)], (0, 1)
         cand = [base.copy(), mu.copy()] + [rng.normal(mu, sd) for _ in range(a.pop - 2)]
-        specs = [E.PolicySpec(ckpt, offset=(c.tolist(), live)) for c in cand]
-        todo = [(specs[i], o, s, seat) for i in range(len(cand))
+        specs = [E.PolicySpec(ckpt, offset=(tuple(float(x) for x in c), tuple(live)))
+                 for c in cand]
+        todo = [(specs[i], o, s, seat, i) for i in range(len(cand))
                 for o in opps for s in seeds for seat in seats]
         by_cand = {i: [] for i in range(len(cand))}
-        index = {id(sp): i for i, sp in enumerate(specs)}
         for task, ep in E.run_tasks(todo, procs=a.procs):
-            by_cand[index[id(task[0])]].append(ep)
+            by_cand[task[4]].append(ep)
         scores = np.array([score(by_cand[i], a.objective) for i in range(len(cand))])
         order = np.argsort(-scores)
         elite = [cand[i] for i in order[:a.elite]]

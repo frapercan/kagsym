@@ -49,7 +49,8 @@ def main():
         for v in EXTREMES:
             aa, bb = base_a.copy(), base_b.copy()
             aa[d] += v
-            spec = E.PolicySpec(ckpt, offset=(np.concatenate([aa, bb]).tolist(), all_dials))
+            spec = E.PolicySpec(ckpt, offset=(tuple(float(x) for x in np.concatenate([aa, bb])),
+                                              tuple(all_dials)))
             todo += [(spec, E.V48, s, 0) for s in seeds]
     print(f"[live] {ckpt}: {N_MACRO} dials x 2 extremes x {a.n} seeds = {len(todo)} episodes",
           flush=True)

@@ -212,7 +212,7 @@ def play(spec: PolicySpec, opp: Opponent, seed: int, seat: int = 0,
 
 
 def _play_task(task):
-    spec, opp, seed, seat = task
+    spec, opp, seed, seat = task[:4]          # extra elements are caller tags
     try:
         return play(spec, opp, seed, seat)
     except OpponentLoadError as e:
@@ -233,10 +233,11 @@ def tasks(spec: PolicySpec, opponents: Sequence[Opponent], seeds: Sequence[int],
 
 def run_tasks(todo: Sequence[tuple], procs: int | None = None,
               progress: bool = False) -> list[tuple[tuple, Episode]]:
-    """Play arbitrary (spec, opponent, seed, seat) tasks in parallel.
+    """Play arbitrary (spec, opponent, seed, seat, *tags) tasks in parallel.
 
-    Returns (task, episode) pairs so callers with several policies (a search
-    population) can group the records themselves.
+    Returns (task, episode) pairs; extra elements of a task come back
+    untouched so callers with several policies (a search population) can
+    group the records by their own tag.
     """
     import multiprocessing as mp
     procs = procs or max(1, (os.cpu_count() or 2) - 1)
