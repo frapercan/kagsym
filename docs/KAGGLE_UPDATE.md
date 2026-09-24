@@ -127,22 +127,25 @@ generation, not four times, and a proxy that does not transfer costs more.
 
 ## What is next
 
-The gap is production (10 tiles under crop against 42) and the opening (day 0-1
-capital goes to staff and livestock instead of seed, which compounds).
+Four searches in one day, all on the same instrument and the same seed
+families, say the same thing: the strategy vector's offset space is closed
+around this checkpoint. A whole-game ramp with the margin against the band
+as objective (null at the power available); an opening searched in the
+8-day universe (+4,800 $ of position at day 8, -9,700 $ at day 30); the
+same opening searched on the full game (stopped for an instrument bug and
+not worth relaunching after the next result); a closing window from day 18
+searched on the full game from that opening (+1,200 $ on the search seeds,
++235 +- 161 $ on 200 fresh seeds). What the dials cannot express is how a
+harvest becomes cash: the executor sells a large harvest in bursts and
+crashes its own price. The next experiment is executor logic, not a dial:
+sell steadily against the marginal price with the opponent's supply
+forecast, measured on the last twelve days of the full game, paired, with
+the searched opening as the stress case.
 
-I tried the cheap thing first: a search on the strategy offset with the
-opponent's **margin** as objective (ours minus theirs against samples of the
-public band, both seats), preregistered as EXP-001. Seven generations in, the
-centre of the search sat 3,200 +- 2,600 $ below its starting point and the
-population 12,000 $ below it in every generation; the opponent sample alone
-moved the baseline by 22,000 $ between generations. With a 60,000-80,000 $ gap
-per board, a margin gain of a few thousand dollars cannot buy a win, so I
-stopped it on a power reading and wrote that down as a deviation from its own
-rule. The offset space cannot buy wins at this scale. The next experiments go
-to the executor, trained fast on a reduced calendar (24 hours a day, fewer
-days) against itself, and measured at full scale against the band.
-
-Repository state: `main` is the rebuilt tree (one policy, one evaluator, seed
-families, English docs, tests). The earlier Spanish state documents are in
-`docs/archive/`, and `docs/DEBT.md` lists what is known to be wrong and why it
-waits.
+Repository state: `main` is the rebuilt tree (one policy, one evaluator,
+seed families, a one-launch pipeline with a gate between stages, English
+docs, 35 tests that trip on the silent failures found so far). The earlier
+Spanish state documents are in `docs/archive/`, every experiment has a
+preregistration in `docs/experiments/` written before launch and its result
+appended after, and `docs/DEBT.md` lists what is known to be wrong and why
+it waits.
