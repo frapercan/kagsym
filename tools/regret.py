@@ -131,6 +131,71 @@ def oracle_solitaire(policy_path: str, days: int, seed: int, k: int = 16, hours:
     return float(env.rewards()[0]), plain, wins, null_err
 
 
+def oracle_global_solitaire(policy_path: str, days: int, seed: int, pop: int = 32, gens: int = 3,
+                            sigma0: float = 0.8, hours: int = 24, procs: int = 1):
+    """A GLOBAL per-day oracle: at every day boundary a small CEM over the
+    macro (pop x gens candidates around the policy's mean in logit space,
+    wide sigma, exact rollouts to the end) chooses the day's vector. Unlike
+    the local oracle it can leave the policy's neighbourhood: it measures
+    what the executor's interface can express with near-perfect daily
+    decisions, not what the policy almost does."""
+    import torch
+    from kagsym import obs as O
+    cfg = {"episodeSteps": hours * days, "turnsPerDay": hours, "startingMoney": CASH}
+    plain, _, _ = play_solitaire(policy_path, days, seed, hours)
+    pol = Policy.from_checkpoint(policy_path)
+    pol.configure(cfg)
+    pol.reset()
+    env = FastEnv(configuration=cfg, seed=seed)
+    obs = env.reset()
+    rng = np.random.default_rng(seed)
+    import multiprocessing as mp
+    pool = mp.get_context("fork").Pool(procs) if procs > 1 else None
+    wins, forced, null_err = [], None, None
+    while not env.done:
+        ob = obs[0]
+        if ob["hour"] == 0:
+            mean_vec = pol.macro_candidates(ob, 1)[0]
+            mu = np.log(np.clip(mean_vec, 1e-4, 1 - 1e-4)) - np.log1p(-np.clip(mean_vec, 1e-4, 1 - 1e-4))
+            sd = np.full(N_MACRO, sigma0)
+            best_vec, best_val, base_val = mean_vec, -np.inf, None
+            for g in range(gens):
+                cands = [mean_vec] if g == 0 else []
+                cands += [1.0 / (1.0 + np.exp(-(mu + sd * rng.standard_normal(N_MACRO)))) for _ in range(pop - len(cands))]
+                tasks = [(pol, env, c.astype(np.float32)) for c in cands]
+                vals = pool.map(_rollout_task, tasks, chunksize=1) if pool else [_rollout_task(t) for t in tasks]
+                if g == 0:
+                    base_val = vals[0]
+                    if ob["day"] == 0:
+                        null_err = vals[0] - plain
+                order = np.argsort(vals)[::-1]
+                elite = [cands[i] for i in order[:max(2, pop // 4)]]
+                if vals[order[0]] > best_val:
+                    best_val, best_vec = vals[order[0]], cands[order[0]]
+                el = np.array([np.log(np.clip(e, 1e-4, 1 - 1e-4)) - np.log1p(-np.clip(e, 1e-4, 1 - 1e-4)) for e in elite])
+                mu, sd = el.mean(0), el.std(0) + 0.05
+            if best_val > base_val:
+                wins.append((int(ob["day"]), best_val - base_val))
+            forced = best_vec.astype(np.float32)
+        a = pol.act(ob, macro_override=forced)
+        forced = None
+        obs, _ = env.step([a, dict(E.PASS_ACTION)])
+    if pool is not None:
+        pool.close()
+        pool.join()
+    return float(env.rewards()[0]), plain, wins, null_err
+
+
+def scenario_oracle_global(policy_path: str, days: int, seeds, k: int = 32, procs: int = 1):
+    rows = []
+    for s in seeds:
+        oracle, plain, wins, null_err = oracle_global_solitaire(policy_path, days, s, pop=k, procs=procs)
+        rows.append({"seed": s, "final": plain, "optimum": oracle, "regret": oracle - plain,
+                     "consistency": {}, "orders": {"search_won_on_days": [d for d, _ in wins],
+                                                   "gain_by_day": [round(g) for _, g in wins], "null_error": null_err}})
+    return rows
+
+
 def scenario_oracle(policy_path: str, days: int, seeds, k: int = 16, procs: int = 1):
     rows = []
     for s in seeds:
@@ -150,6 +215,7 @@ SCENARIOS = {f"idle-{k}": (scenario_idle, k) for k in (1, 2, 3)}
 # search on the exact engine (a lower bound on the optimum, and the same
 # search that was worth +37% in the full game before the time budget).
 SCENARIOS.update({f"oracle-{k}": (scenario_oracle, k) for k in (5, 8, 14, 30)})
+SCENARIOS.update({f"global-{k}": (scenario_oracle_global, k) for k in (5, 8, 14, 30)})
 
 
 def main():
@@ -164,7 +230,8 @@ def main():
     worst = 0.0
     for name in a.scenarios.split(","):
         fn, arg = SCENARIOS[name]
-        rows = (fn(os.path.abspath(a.checkpoint), arg, seeds, a.k, a.procs) if fn is scenario_oracle
+        rows = (fn(os.path.abspath(a.checkpoint), arg, seeds, a.k, a.procs)
+                if fn in (scenario_oracle, scenario_oracle_global)
                 else fn(os.path.abspath(a.checkpoint), arg, seeds))
         reg = [r["regret"] for r in rows]
         worst = max(worst, max(reg))
