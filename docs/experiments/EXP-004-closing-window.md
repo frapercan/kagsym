@@ -71,3 +71,6 @@ crashes its own price. That is executor logic (`market_ops.sell_orders`),
 and it is the next experiment: sell steadily against the marginal price
 with the opponent's supply forecast, measured on the day 18-30 window of
 the full game, paired, with the opening of EXP-002 as the stress case.
+
+Band (paired, 900 boards): win 0.070 -> 0.069 (-0.001), beaten 5 -> 5.
+Gate REFUSED. Chain ended at (a).
