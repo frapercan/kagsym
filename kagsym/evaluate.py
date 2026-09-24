@@ -458,7 +458,7 @@ def record(kind: str, spec: PolicySpec, opponents: Sequence[Opponent],
         "summary": summary(episodes),
     }
     if extra:
-        entry.update(extra)
+        entry.update({k: v for k, v in extra.items() if k not in entry})
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -477,11 +477,11 @@ def _track(kind, spec, opponents, seeds, episodes, entry, extra) -> None:
         params={"checkpoint": entry["checkpoint"], "offset": entry["offset"],
                 "opponents": len(opponents), "seeds": entry["seeds"][2],
                 "seed_first": entry["seeds"][0], "seats": sorted({e.seat for e in episodes}),
-                "hours": entry["world"]["hours"], "days": entry["world"]["days"],
-                "agent_horizon_days": entry["world"]["agent_horizon_days"], "cash": CASH},
+                "hours": entry.get("world", {}).get("hours"), "days": entry.get("world", {}).get("days"),
+                "agent_horizon_days": entry.get("world", {}).get("agent_horizon_days"), "cash": CASH},
         tags=context_tags("evaluation", checkpoint=spec.path, opponent=opp_label,
                           seed_family=fams, measurement=kind,
-                          world=f"{entry['world']['hours']}hx{entry['world']['days']}d"),
+                          world=f"{entry.get('world', {}).get('hours')}hx{entry.get('world', {}).get('days')}d"),
         description=describe([
             f"`{kind}` of {spec.label} against {opp_label} on {entry['seeds'][2]} {fams} seeds.",
             "Deterministic policy, the same code the submission runs (kagsym.policy).",

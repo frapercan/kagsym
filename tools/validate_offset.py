@@ -111,7 +111,7 @@ def main():
           f"{sb['money_mean']:,.0f} -> {sn['money_mean']:,.0f}   {d['money_diff']:+,.0f} "
           f"+- {d['money_se']:,.0f}   t {d['t']:+.2f}   better on {100 * d['boards_better']:.0f}%"
           f"{'   DEGENERATE' if d['degenerate'] else ''}")
-    E.record("validate-money", new, [opp], seeds, eps_n, extra={"paired_vs_checkpoint": d, "world": world})
+    E.record("validate-money", new, [opp], seeds, eps_n, extra={"paired_vs_checkpoint": d, "world_args": world})
 
     w, n_band = None, 0
     if a.band_n > 0:
