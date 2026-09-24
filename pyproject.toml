@@ -12,6 +12,7 @@ dependencies = [
 [project.optional-dependencies]
 ladder = ["kaggle"]          # CLI and API for replays and the leaderboard
 tracking = ["mlflow"]        # experiment tracking (optional, degrades to a no-op)
+dev = ["pytest", "scipy", "pyflakes"]   # tests: the assignment oracle and the undefined-name sweep
 
 [tool.setuptools.packages.find]
 include = ["kagsym*"]

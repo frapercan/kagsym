@@ -60,7 +60,7 @@ MOV = {"NORTH", "SOUTH", "EAST", "WEST"}
 # salto por encima de ella. Entrenando en el 5 el win saturaba en 0,98 y la
 # mejora NO transferia (-444 $, t -0,58 contra el v48 entero); saltando a los
 # sin capar el win era 0,00 y el dinero BAJABA (29.732 -> 25.739 en 45 updates).
-LADDER_CAPS = [None, 3, 5, 6, 7, 8, None]
+_LADDER_CAPS_HEAD = [None, 3, 5, 6, 7, 8, None]
 
 LADDER = [
     None,                                              # pasivo
@@ -102,6 +102,11 @@ LADDER = [
     "kaggriculture-v45-first-turn-wheat-round-trip",    #  186625 $, score 2498
     "your-market-list-is-an-order-book",                #  188274 $, score 2671
 ]
+# One cap per rung, explicitly. The list used to be shorter than LADDER and
+# every rung past it fell back to the last cap in silence; the extra public
+# agents are played uncapped.
+LADDER_CAPS = _LADDER_CAPS_HEAD + [None] * (len(LADDER) - len(_LADDER_CAPS_HEAD))
+assert len(LADDER_CAPS) == len(LADDER), (len(LADDER_CAPS), len(LADDER))
 
 def public_with_cap(name_, max_hands: int):
     """A public agent limited in how many hands it may hire.

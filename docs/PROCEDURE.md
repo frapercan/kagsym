@@ -36,18 +36,26 @@ ignored the ramp stored in the checkpoint and counted `shop-router-0909`
 
 ## 2. The loop
 
-**Step 1 - live dials.** Which macro dials change the game for this checkpoint.
+Every stage is a separate tool; `tools/pipeline.py` runs the whole chain in
+one launch with a gate between stages (`--smoke` in minutes to prove the
+chain, `--full` for the sizes below).
+
+**Step 1 - live dials.** Which macro dials change the game for this
+checkpoint. The list is written next to the checkpoint with its digest and
+refused for any other checkpoint.
 
 ```
-python tools/live_dials.py runs/model.pt --n 3      # -> runs/live_dials.json
+python tools/live_dials.py runs/model.pt --n 3      # -> runs/model.pt.dials.json
 ```
 
 **Step 2 - search.** CEM over the offset of the live dials, starting from the
-offset the checkpoint carries. Constant first (a null is interpretable), then
-the ramp (a strict superset: `b = 0` reproduces the constant).
+offset the checkpoint carries, into a directory that must not exist. The
+search freezes a copy of the checkpoint, writes `meta.json` first (digest,
+dials, provenance) and `done.json` only at the end; `offset.npz` carries the
+vector with its dial map, ramp flag and digest.
 
 ```
-python tools/search.py runs/model.pt --out runs/search/name --gens 40
+python tools/search.py runs/model.pt --out runs/search/name --gens 40 --experiment EXP-00x
 python tools/search.py runs/model.pt --out runs/search/name_ramp --ramp --gens 60
 ```
 
@@ -57,20 +65,21 @@ margin does, and it rewards sinking their market as much as growing ours.
 `money` against v48 is the old objective; `win` is the criterion itself.
 
 Reading the log: CENTRE minus BASE on the same seeds is the only informative
-column. "best" is the expected maximum of ~30 noisy draws (+4,600 to +6,800 $
-with 16 seeds) and is never a result. The mean of the population is not the
-centre.
+column. "best" is the expected maximum of ~30 noisy draws and is never a
+result. The mean of the population is not the centre. A candidate with any
+failed episode is disqualified (`dq` column), never averaged.
 
 **Step 3 - validate and bake.** The optimum on the search seeds is a
-hypothesis. It is measured paired on reserved seeds with two instruments,
-and baked only if the money instrument passes t >= 2 and the band instrument
-has the same sign.
+hypothesis. It is measured paired with two instruments, and baked only if
+the gate passes: finite t, every board played, non-degenerate, money t >= 2
+and the band win-rate difference not negative. The gate is written
+positively: NaN refuses.
 
 ```
-python tools/validate_offset.py runs/search/name_mu.npy runs/model.pt --bake runs/new.pt
+python tools/validate_offset.py runs/search/name runs/model.pt --family clean --n 200 --band-n 6 --bake runs/new.pt
 ```
 
-**Step 4 - the criterion.** The new checkpoint against the band, and paired
+**Step 4 - the criterion.** The new checkpoint against the band, paired
 against the previous one.
 
 ```
@@ -80,7 +89,16 @@ python tools/band.py runs/new.pt --against runs/model.pt --n 6
 A checkpoint that gains money and not wins has not gained anything.
 
 **Step 5 - deploy.** Copy to `submit_kagsym/model.pt`, run the gate again,
-package `submit_kagsym/` with the `kagsym/` package.
+package and play under the real Kaggle runner:
+
+```
+python tools/check_submission.py submit_kagsym/model.pt --n 6
+python tools/package_submission.py
+```
+
+Every measurement lands in `runs/ledger.jsonl` (`python tools/ledger.py`)
+and in MLflow (`docs/MLFLOW.md`) with the commit, whether the tree was dirty,
+the game fingerprint, the checkpoint digest and the seed family.
 
 ## 3. Sample sizes, fixed before looking
 
@@ -116,8 +134,17 @@ or on `clean`.
 - **The population mean is not the centre** of a CEM. `mu` is evaluated as a
   candidate so the intermediate reading measures what is validated.
 - **A blind instrument says "no effect" in the same words as a real null.**
-  An evaluator that ignored the ramp returned +0 +- 0. Every evaluator goes
-  through `Policy`, which is the reason it cannot happen again.
+  An evaluator that ignored the ramp returned +0 +- 0, and `nan < 2.0` is
+  False, so the bake gate accepted it. Every evaluator goes through `Policy`,
+  `paired` flags a degenerate comparison, and the gate requires a finite t.
+- **Global files are shared state.** A single `live_dials.json` let one probe
+  redefine the search space of every later search. Dial lists live next to
+  their checkpoint with its digest; searches freeze their checkpoint and
+  write self-describing artefacts.
+- **`KAG_*` environment variables change the agent.** None is set on Kaggle.
+  The gate refuses to run with any set, and every ledger line lists them.
+- **Nothing seeded torch.** `--seed` seeds the trainer and every worker;
+  `--seed0` only seeds the boards.
 - **A broken opponent is a weak opponent.** Exceptions are counted, never
   swallowed, and an opponent that throws on most turns is excluded.
 - **Order matters on Kaggle.** Only two submissions count; the second

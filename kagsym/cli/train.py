@@ -934,6 +934,8 @@ def main():
         env = _build_league(_league)
 
     _EVALS = []
+    _DIAGMAC = os.environ.get("KDIAGMAC", "") == "1"
+    _DIAGMAC_G = []
     from kagsym.tracking import Tracker, context_tags, describe
     from kagsym import reward as _Rw
     _TR = Tracker(
@@ -2222,7 +2224,7 @@ def main():
                     # which is whatever sits above doing nothing.
                     _ceiling_l = LEAGUES[_league][4]
                     _target_inaction = 1.0 + CEILING_FRAC * max(0.0, _ceiling_l - 1.0)
-                    _margin_now = _money - _RIV_ULT[0]
+                    _margin_now = env.mean_money() - _RIV_ULT[0]
                     if _inaction >= _target_inaction and _league < len(LEAGUES) - 1:
                         _league += 1
                         print(f"  [upd {upd}] PROMOTED: x_inaction "

@@ -182,3 +182,40 @@ def test_tracker_is_a_noop_when_disabled(monkeypatch):
         t.log({"band/win_mean": 0.1})
     with pytest.raises(ValueError):
         Tracker("bogus", "x")
+
+
+# -- the opponent ladder is complete and loads ---------------------------------
+
+def test_ladder_has_one_cap_per_rung_and_every_agent_loads():
+    from kagsym.environment import LADDER, LADDER_CAPS, load_public
+    assert len(LADDER) == len(LADDER_CAPS)
+    if not os.path.isdir(os.path.join(ROOT, "agents_pub")):
+        pytest.skip("agents_pub/ not downloaded")
+    for name in {n for n in LADDER if n}:
+        assert callable(load_public(name)), name
+
+
+def test_missing_opponent_raises_instead_of_pass():
+    from kagsym.environment import load_public
+    with pytest.raises(Exception):
+        load_public("this-agent-does-not-exist")
+
+
+# -- no undefined names anywhere: a NameError in a rarely taken branch signs --
+
+def test_no_undefined_names():
+    """pyflakes F821 over the package and the tools. A NameError inside a
+    `try: ... except Exception: pass` once switched MLflow off for two runs
+    without a word; an undefined name is a mine whatever branch it is in."""
+    pyflakes = pytest.importorskip("pyflakes.api")
+    from pyflakes.reporter import Reporter
+    import io
+    out, err = io.StringIO(), io.StringIO()
+    n = 0
+    for sub in ("kagsym", "tools", "submit_kagsym"):
+        for dirpath, _, files in os.walk(os.path.join(ROOT, sub)):
+            for f in files:
+                if f.endswith(".py"):
+                    n += pyflakes.checkPath(os.path.join(dirpath, f), Reporter(out, err))
+    undefined = [l for l in out.getvalue().splitlines() if "undefined name" in l]
+    assert not undefined, "\n".join(undefined)

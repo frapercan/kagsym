@@ -16,6 +16,14 @@ today. Each item says what it is, why it waits, and what unblocks it.
   same money and opponent money on 3 seeds. A dial could change operations
   without changing money; the previous tool also compared action counts.
   Cheap to add back through `Episode` if it ever matters.
+- **`macro.apply_params` writes 37 module globals** in three modules on every
+  turn and never restores them. Safe today because every evaluator plays
+  episodes serially and re-applies before acting; a threaded evaluator would
+  cross-contaminate candidates. The fix is threading the macro through the
+  signatures, a game-file change.
+- **Nine `KAG_*` variables are read at import time** by the game layer.
+  They are now listed in every ledger line and refused by the gate; removing
+  them (making the switches explicit arguments) is a game-file change.
 - **Sales revenue is paid twice in the training reward** (dense term plus
   terminal potential) and `--gamma` does not reach the shaping, which reads
   `KAG_GAMMA`. Training is only used to leave random initialisation, so it
@@ -41,6 +49,11 @@ today. Each item says what it is, why it waits, and what unblocks it.
 - `LADDER_CAPS` changed shape in the last uncommitted work
   (`[None,3,5,8,None]` to `[None,3,5,6,7,8,None]`): `--level 3/4` in old
   logs mean different opponents than today.
+- **Worker processes are not owned:** `parallel_env` never closes the child
+  end of its pipes and `cerrar()` cannot kill a worker stuck in a public
+  agent; a dead trainer can leave orphans. Kill by recorded PID.
+- **The `.mejor.json` bar is keyed by `--out` only** (no digest, no commit).
+  `--out` now defaults to the run name so two trainers no longer share it.
 
 ## Evaluation
 
