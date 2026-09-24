@@ -274,15 +274,6 @@ def main():
                          "trunk keeps what is relevant. Watch "
                          "`2_health/jepa_sd`: if it falls to zero, "
                          "the representation has collapsed")
-    ap.add_argument("--outer-every", type=int, default=0,
-                    help="updates between OUTER checks: the kl target is "
-                         "raised or lowered by a PAIRED comparison of the "
-                         "policy against itself N updates ago, on fixed "
-                         "seeds against a fixed opponent. 0 = off, and the "
-                         "target stays the hand-picked constant")
-    ap.add_argument("--outer-seeds", type=int, default=24,
-                    help="seeds per outer check; paired, so the scenario "
-                         "variance cancels and a few dozen suffice")
     ap.add_argument("--keys", type=int, default=4,
                     help="K assignment keys and K queries per tile: the term "
                          "that lets the network prefer a tile FOR A UNIT. "
@@ -299,6 +290,9 @@ def main():
                          "casilla a casilla a los horizontes de Fibonacci. Es "
                          "el unico objetivo con etiquetas exactas que llega a "
                          "las casillas; todos los demas entran por mean/amax")
+    ap.add_argument("--merit-relief", action="store_true",
+                    help="swap workers that beat their opponent >50%% to a frozen "
+                         "self-play snapshot every --refresh updates (off by default)")
     ap.add_argument("--seed0", type=int, default=None,
                     help="primera semilla de entrenamiento. Por defecto se "
                          "deriva de los updates que el checkpoint ya lleva, "
@@ -359,10 +353,6 @@ def main():
                          "escalera publica como ANCLA ABSOLUTA, porque el "
                          "retorno en autojuego es relativo y deja de subir "
                          "aunque los dos mejoren.")
-    ap.add_argument("--rival-flow", action="store_true",
-                    help="feed the `hist` input with the opponent IMMINENT SUPPLY"
-                         "ceros. Esa entrada existia (N_HIST = 4 x productos) y "
-                         "nuestro ingreso en un mercado compartido.")
     ap.add_argument("--factored-ratio", action="store_true",
                     help="un cociente de importancia POR CABEZA (macro y micro) "
                          "macro -cuyo condicionamiento aporta +1 $ de 953- ")
@@ -762,8 +752,13 @@ def main():
             _upd_prev = int((d0 or {}).get("upd", 0) or 0)
         except Exception:
             _upd_prev = 0
+    # Training seeds come from the TRAINING family (100000+), which is disjoint
+    # from every evaluation family by construction: with `seed0=1` a run
+    # entered the reserved range 7101-7300 after ~645 updates at 11 envs and
+    # then selected checkpoints on boards it had trained on.
+    from kagsym import seeds as _S
     _semilla0 = (a.seed0 if a.seed0 is not None
-                 else 1 + _upd_prev * max(1, a.envs))
+                 else _S.TRAINING.start + _upd_prev * max(1, a.envs))
     # EL NORMALIZADOR DE VALOR, AQUI y no arriba. `_vmu/_vsd` escalan el
     # objetivo del critico con una media movil; arrancar en (0, 1) tras cada
     # reanudacion le da otra escala durante ~100 updates, y en la liga eso
@@ -1084,7 +1079,6 @@ def main():
     _grad_norms = []
     _sig_grads = []
     _prev_sd = None
-    _outer_last = None
     _last_promo = -10**9
     ret_ep = []          # returns of CLOSED EPISODES, not per-update sums
     accum = np.zeros(_NF, dtype=np.float64)
@@ -1180,8 +1174,7 @@ def main():
             # what belongs there: the opponent's imminent supply, which is the
             # mechanism by which they affect us -they dump produce, the
             # marginal price falls, our income drops-.
-            h = (hf if a.rival_flow
-                 else np.zeros((_NF, N_HIST), dtype=np.float32))
+            h = hf   # the opponent's imminent supply, exactly as the deployed policy sees it
             HF.append(torch.from_numpy(np.asarray(hf, dtype=np.float32)).to(dev))
             if a.espacial_weight > 0:
                 GG.append(torch.from_numpy(g).to(dev))
@@ -1897,7 +1890,11 @@ def main():
         # vector, de modo que la condicion sobraba entera.
         # El relevo por MERITOS queda apagado si hay asignacion directa de
         # liga: los dos escriben en los mismos trabajadores y se pisarian.
-        if (a.rivales_liga == 0 and upd % max(1, a.refresh) == 0 and _wpp_ref):
+        # OPT-IN. This used to fire by default every `--refresh` updates and the
+        # anchor lists did not exclude relieved workers, so the money printed
+        # as "anchor" could be self-play without saying so.
+        if (a.merit_relief and a.rivales_liga == 0
+                and upd % max(1, a.refresh) == 0 and _wpp_ref):
             try:
                 _wpp3 = list(_wpp_ref)
                 _ours = list(range(len(_wpp3)))
@@ -2387,9 +2384,6 @@ def main():
                             if _explore == _explore:
                                 _m["2_health/verb_explore_pct"] = 100.0 * _explore
                             _m["2_health/kl_target"] = float(a.kl_target)
-                            if _outer_last and _outer_last[0] is not None:
-                                _m["1_result/outer_paired_diff"] = float(_outer_last[0])
-                                _m["1_result/outer_money"] = float(_outer_last[2])
                             _m["2_health/kl_macro"] = float(kl_ma)
                             _m["2_health/kl_micro"] = float(kl_mi)
                             _m["4_diag/lr_macro"] = float(opt.param_groups[1]["lr"])
@@ -2621,26 +2615,6 @@ def main():
                         "opt_nombres": _nombres_planos,
                             "vnorm": (_vmu, _vsd, _vn)}, a.out + ".ultimo")
         # --- OUTER LEVEL: the kl target, set by measured money ---
-        if a.outer_every > 0 and upd % a.outer_every == 0:
-            try:
-                from kagsym import outer as _out
-                import os as _os
-                _sds = list(range(9301, 9301 + int(a.outer_seeds)))
-                _pas = bool(int(_os.environ.get("KAG_VARA_PASIVO", "0")))
-                _dif, _se, _now = _out.check(
-                    net, _prev_sd, cfg, _sds, spec.TURNS_PER_DAY,
-                    spec.EPISODE_STEPS // spec.TURNS_PER_DAY, 3000, _pas)
-                _new, _why = _out.new_target(a.kl_target, _dif, _se)
-                if _new != a.kl_target:
-                    print(f"  [upd {upd}] OBJETIVO KL {a.kl_target:.4f} -> "
-                          f"{_new:.4f} ({_why}: {_dif:+,.0f} +- {_se:,.0f})",
-                          flush=True)
-                a.kl_target = _new
-                _prev_sd = {k: v.detach().cpu().clone()
-                            for k, v in net.state_dict().items()}
-                _outer_last = (_dif, _se, _now)
-            except Exception as _e:
-                print(f"  warning: outer check failed ({_e})", flush=True)
 
         # --- safety net: check and, if due, rescue ---
         if ret_ep and len(ret_ep) >= 40:

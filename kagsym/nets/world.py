@@ -131,9 +131,12 @@ class CodificadorMundo(nn.Module):
         self.resumen = nn.Sequential(
             nn.Linear(O.N_GLOBAL + N_HIST, cfg.hidden), nn.GELU())
 
-    def forward(self, grid, glob, hist=None):
+    def forward(self, grid, glob, hist):
+        # No default. A silent zeros fallback here is how the agent was once
+        # measured blind to the opponent's supply ($76,607 -> $25,335 on the
+        # same board). Every caller passes `obs.rival_flow`.
         if hist is None:
-            hist = torch.zeros(glob.shape[0], N_HIST, device=glob.device, dtype=glob.dtype)
+            raise ValueError("hist is required: pass obs.rival_flow(obs), never zeros")
         g = symlog(torch.cat([glob, hist], dim=-1))
         h = self.stem(symlog(grid))
         scale, sesgo = self.glob_enc(g).chunk(2, dim=-1)
