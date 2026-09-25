@@ -181,10 +181,13 @@ def grid_plans(days: int, seeds, pool, top: int = 5) -> list:
     return [_as_plan(r["plan"]) for r in rows[:top]]
 
 
-def start_plans(days: int, seeds, pool) -> list:
+def start_plans(days: int, seeds, pool, extra: list | None = None) -> list:
     """Day-0 alternatives: the ladder's schedule for this horizon if there is
-    one, the grid's top plans, and the nearest lower rung's schedule padded."""
-    out = []
+    one, the grid's top plans, the nearest lower rung's schedule padded, and
+    any `extra` plans (the protocol passes the previous rung's schedule:
+    without it, rung 8 searched to 6,733 while the 7-day plan padded gave
+    6,756)."""
+    out = list(extra or [])
     for suffix in ("_mix_schedule", "_schedule"):
         p = f"runs/ladder/plan_{days}d{suffix}.json"
         if os.path.exists(p):
@@ -206,13 +209,15 @@ def main():
     ap.add_argument("--procs", type=int, default=8)
     ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--start-json", default=None, help="a plan (dict) to include among the day-0 alternatives")
     a = ap.parse_args()
+    extra = [_as_plan(json.load(open(a.start_json)))] if a.start_json else []
     out = a.out or f"runs/ladder/daysearch_{a.days}d.jsonl"
     seeds = RESERVED.seeds(a.seeds, a.offset)
     t0 = time.time()
     finals = []
     with get_context("fork").Pool(a.procs) as pool, open(out, "a") as fo:
-        starts = start_plans(a.days, seeds, pool)
+        starts = start_plans(a.days, seeds, pool, extra)
         print(f"{a.days} days, seeds {seeds[0]}..{seeds[-1]}, {len(starts)} day-0 alternatives "
               f"(grid {time.time() - t0:.0f}s); best start {starts[0].to_dict()}", flush=True)
         for s in seeds:

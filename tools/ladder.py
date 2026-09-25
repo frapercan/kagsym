@@ -91,6 +91,9 @@ def run_rung(days: int, procs: int, prev: Plan | None, commit: str) -> Plan:
     if os.path.exists(out):
         os.remove(out)
     cmd = [sys.executable, "tools/plan_daysearch.py", "--days", str(days), "--seeds", "5", "--procs", str(procs), "--out", out]
+    if prev is not None:                       # the previous rung's schedule competes on day 0
+        json.dump(padded(prev, days).to_dict(), open("runs/ladder/prev_plan.json", "w"))
+        cmd += ["--start-json", "runs/ladder/prev_plan.json"]
     log = open(f"runs/ladder/daysearch_{days}d.log", "w")
     subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, check=True, cwd=ROOT)
     records = [json.loads(l) for l in open(out)]
