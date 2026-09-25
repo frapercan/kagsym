@@ -25,7 +25,7 @@ from multiprocessing import get_context
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kagsym import evaluate as E, spec  # noqa: E402
+from kagsym import spec  # noqa: E402
 from kagsym.fastenv import FastEnv  # noqa: E402
 from kagsym.plan import Plan, active, plan_macro, set_plan  # noqa: E402
 from kagsym.seeds import RESERVED  # noqa: E402
@@ -95,6 +95,22 @@ def candidates(plan: Plan, day: int, days: int, rng=None, pairs: int = 12) -> li
     return out
 
 
+OPPONENT = None       # a recorded rival ("replay:<file>") inside the rollouts: state-free, so a rollout can branch mid-game
+
+
+def _rival_for(seed: int):
+    from kagsym.plan import _TAPES
+    from kagsym.evaluate import PASS_ACTION
+    import json
+    if not OPPONENT:
+        return lambda ob: dict(PASS_ACTION)
+    tape = _TAPES.get(OPPONENT)
+    if tape is None:
+        tape = _TAPES[OPPONENT] = json.load(open(OPPONENT[len("replay:"):]))
+    acts = tape[str(seed)]
+    return lambda ob, _a=acts: _a[int(ob["step"])] if int(ob["step"]) < len(_a) else dict(PASS_ACTION)
+
+
 def _rollout(task):
     ag, env, plan = task
     # THE CALENDAR IS PROCESS STATE. A forked worker carries whatever
@@ -107,9 +123,10 @@ def _rollout(task):
     with active(plan):
         env2 = env.clone()
         ag2 = copy.deepcopy(ag)
+        rival = _rival_for(int(env.info.get("seed", 0)) if hasattr(env, "info") else env.seed)
         while not env2.done:
-            ob = env2.observations()[0]
-            env2.step([ag2(ob), dict(E.PASS_ACTION)])
+            obs2 = env2.observations()
+            env2.step([ag2(obs2[0]), rival(obs2[1])])
         return float(env2.rewards()[0])
 
 
@@ -136,6 +153,7 @@ def search_game(seed: int, days: int, starts: list, pool, rounds: int = 2, hours
     env = FastEnv(configuration=cfg, seed=seed)
     obs = env.reset()
     ag = Agent(episode_steps=steps, macro=plan_macro(starts[0]))
+    rival = _rival_for(seed)
     # Day 0: the whole-schedule alternatives compete first.
     vals = pool.map(_rollout, [(ag, env, p) for p in starts], chunksize=1)
     plan = starts[max(range(len(vals)), key=lambda i: vals[i])]
@@ -165,7 +183,7 @@ def search_game(seed: int, days: int, starts: list, pool, rounds: int = 2, hours
                 if log:
                     print(f"  seed {seed} day {day}: {base:,.0f} -> {best:,.0f}  {records[-1]['plan']}", file=log, flush=True)
             a = ag(ob)
-            obs, _ = env.step([a, dict(E.PASS_ACTION)])
+            obs, _ = env.step([a, rival(obs[1])])
         return float(env.rewards()[0]), plan, records
     finally:
         set_plan(None)
@@ -221,7 +239,10 @@ def main():
     ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--out", default=None)
     ap.add_argument("--start-json", default=None, help="a plan (dict) to include among the day-0 alternatives")
+    ap.add_argument("--opponent", default=None, help="replay:<tape.json> (tools/record_rival.py); passive if omitted")
     a = ap.parse_args()
+    global OPPONENT
+    OPPONENT = a.opponent
     extra = [_as_plan(json.load(open(a.start_json)))] if a.start_json else []
     out = a.out or f"runs/ladder/daysearch_{a.days}d.jsonl"
     seeds = RESERVED.seeds(a.seeds, a.offset)
