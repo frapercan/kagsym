@@ -102,10 +102,24 @@ class Plan:
         shed (measured, EXP-007 part 6)."""
         day = int(obs["day"])
         farm = obs["farms"][int(obs["player"])]
+        from . import spec
         unlocked = sum(1 for row in farm["tiles"] for t in row if t != "LOCKED")
-        housed = sum(1 for row in farm["tiles"] for t in row
-                     if isinstance(t, dict) and t.get("kind") in ("COOP", "PASTURE"))
-        housing = max(0, self.animals_on(day) - housed)
+        built = {"COOP": 0, "PASTURE": 0}
+        for row in farm["tiles"]:
+            for t in row:
+                if isinstance(t, dict) and t.get("kind") in built:
+                    built[t["kind"]] += 1
+        # Housing BY KIND: a sheep needs a pasture, a free coop is no use to
+        # it (block C: 5 sheep in the shed for ten days with three coops
+        # free). Without kinds, the count is the plan's total.
+        want = self.animal_targets(day)
+        if want is None:
+            housing = max(0, self.animals_on(day) - built["COOP"] - built["PASTURE"])
+        else:
+            need = {"COOP": 0, "PASTURE": 0}
+            for kind, n in want.items():
+                need[spec.ANIMALS[kind]["structure"]] += int(n)
+            housing = sum(max(0, need[k] - built[k]) for k in need)
         return max(0, min(self.tiles_on(day), unlocked - housing))
 
     def to_dict(self) -> dict:

@@ -509,6 +509,12 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
             animals = [a for a in ctx.pending_animals if spec.ANIMALS[a]["structure"] == kind]
             if animals and ctx.free_slots.get(kind, 0) <= 0:
                 v = max(animal_value(ctx, a, macro) for a in animals)
+                if _under_plan():
+                    # UNDER A PLAN the pen is worth the animal waiting for it:
+                    # in the shed it earns nothing (block C: five sheep ten
+                    # days in the shed, coops free, no pasture built, the
+                    # build worth ~100 $ a turn against a 250 $ watering).
+                    return (v, ["BUILD_" + kind])
                 return (max(1.0, v / ctx.days), ["BUILD_" + kind])
         if free_capacity <= 0:
             return None
@@ -619,6 +625,8 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
             if candidates:
                 best = max(candidates,
                             key=lambda a: animal_value(ctx, a, macro))
+                if _under_plan():
+                    return (animal_value(ctx, best, macro), ["PLACE", best, 1])
                 return (max(1.0, animal_value(ctx, best, macro) / ctx.days),
                         ["PLACE", best, 1])
             return None
