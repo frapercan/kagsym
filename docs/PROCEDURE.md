@@ -278,3 +278,38 @@ its last step, gated by the validation:
 Selection is by step 5 alone. The short training evaluation is
 anticorrelated with the truth (memory: no elegir checkpoint), and a plan
 that wins alone can lose in the duel (EXP-007 part 7).
+
+## Exploration, search and learning: who does what
+
+Three clocks, three mechanisms, and one executor underneath.
+
+- **Micro (the turn)** is the symbolic executor: exact legality, a
+  Hungarian assignment of units to tasks, and the tactical rules the
+  ladder debugged against hand bounds (last-day logistics, DROP, the
+  deadline, load). It is not learned. Measured: 98 % of the bound at
+  4 days, 1.22 moves per work action against v48's 1.08. The network's
+  value map (v5) is a learned micro on top of it: +5.6 k on 10 seeds,
+  with a variance that spans -30 k to +17 k per seed.
+- **Macro (the day)** is the plan: eight fields per day, executed
+  literally. The day-by-day search decides it with the state in hand
+  (exact rollouts to the end); the plan head learns to emit it from the
+  state (imitation of the search). This is where learning has room:
+  a head conditioned on the shops and the rival's sales can do what no
+  fixed plan can, and its target is exact.
+- **Strategy (the game)** is the portfolio: sixteen numbers that shape
+  the 30-day plan. Evolution over portfolios is the EXPLORATION engine:
+  it finds basins no local move reaches (melon, livestock, the
+  expansion timing were all found by the global stage, never by
+  refinement). Consolidation on 20 seeds is what makes a found basin
+  real rather than a lottery win.
+
+How they couple in the loop: exploration (1) proposes basins; search (3)
+refines them with the state and produces the dataset; learning (4)
+amortises the search into a policy that runs in microseconds at play
+time (1 s a turn on Kaggle: no rollouts there); the head's plans then
+seed the next exploration's population and the day-0 alternatives of the
+next search, and the head's regret per horizon says where the search was
+local (the head beat the search at 18-25 days in the first climb: a
+signal to re-explore, not a success). Precision of the macro comes from
+the rollouts; precision of the micro from the rules measured against
+bounds; the head carries the first, the executor the second.
