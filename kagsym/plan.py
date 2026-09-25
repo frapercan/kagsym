@@ -155,7 +155,16 @@ def demand_mix(obs, total: int) -> dict:
     viable = [c for c in spec.CROP_LIST if plantable(obs, c)]
     if not viable or total <= 0:
         return {}
-    w = {c: dem.get(c, 0.0) * float(prices.get(c, 1)) for c in viable}
+    # THE RIVAL'S SUPPLY IS VISIBLE: its planted tiles are in the observation.
+    # The demand a rival already serves is not ours to take (part 7: a fixed
+    # plan sold what v48 sold, wool 217 -> 18, and collapsed).
+    other = obs["farms"][1 - int(obs["player"])]
+    rival = {}
+    for row in other["tiles"]:
+        for t in row:
+            if isinstance(t, dict) and t.get("kind") == "PLANT":
+                rival[t["crop"]] = rival.get(t["crop"], 0) + 1
+    w = {c: dem.get(c, 0.0) * float(prices.get(c, 1)) / (1.0 + rival.get(c, 0) / 10.0) for c in viable}
     tot = sum(w.values())
     if tot <= 0:
         return {viable[0]: total}
