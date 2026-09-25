@@ -504,3 +504,12 @@ Up to four units now fetch a share of the wheat at once, one per access
 tile. The expansion blocks at discount 0.65, 5 seeds, with everything of
 part 10: A 48.9k, B 80.0k (escapes 6), C 91.8k (escapes 20), the v48
 shape 99.7k (escapes 12).
+
+**The rival's supply is visible** (14:15). The demand mix now divides a
+crop's weight by (1 + rival's planted tiles of it / 10): P6's plan with
+its mix replaced by DEMAND goes from 62.7k to 65.6k against the hamburger
+tape and from 65.6k to 73.4k against the v48 tape (5 seeds). P8 searches
+with it. Strawberry itself is right in the executor now: the engine gives
+a plant four productions (one every two days from day 10) and then ends
+it, so 430 strawberries a game means sowing from day 0 and replanting at
+day 16, which is the search's decision, not the executor's.
