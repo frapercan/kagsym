@@ -46,3 +46,17 @@ Bars on the same yardstick: prod 62,309; v48 makes 120-190 k in those games.
 
 - "before the expansion ladder": commit 85fd055 (animal kinds, housing cap, placement valued).
 - "expansion ladder": commits up to the Plan.discount one (ranked shed, feed chain and pickup valued by the animals, feed cash reserve, pens and placement worth the animal, housing by kind, zones, discount). EXP-007 part 9.
+
+## Wins panel (2026-09-25 13:15; 20 seeds, seat 0, live public agents)
+
+| rival (ladder position) | P5 wins | P5 money | prod wins | prod money | rival's money vs P5 |
+|---|---|---|---|---|---|
+| finding-conditiona (143) | 0/20 | 55,167 | 0/20 | 48,027 | 124,726 |
+| testkaggriculture-hamburger (154) | 4/20 | 70,394 | 4/20 | 68,901 | 72,837 |
+| v53-opening-signature | 0/20 | 60,247 | 0/20 | 43,347 | 147,862 |
+| v48-fast-routes (top) | 0/20 | 64,660 | 0/20 | 62,309 | 135,692 |
+
+Same duel (seed 7106), P5 78,347 against v48 153,374: v48 has 3 quadrants,
+60 tiles and 15 animals by day 12 with 12 hands (P5: 2 quadrants, 25
+tiles, 10 animals, 10 hands, 19 % of its unit-turns idle); its revenue is
+strawberry 88 k and milk 76 k against P5's 14 k and 42 k.
