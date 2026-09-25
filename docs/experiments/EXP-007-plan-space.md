@@ -377,3 +377,30 @@ search now runs with v48 as the opponent (`--opponent`), seeded with the
 consolidated elite (`--init`); the state-conditioned answer is the
 day-by-day refinement and, after it, the plan head with the shops and the
 rival's sales in its state.
+
+## Part 8: the state decides (2026-09-25, 11:37)
+
+Same seeds, same yardstick. "Refined" is the day-by-day search from a
+fixed portfolio with the state in hand (rollouts against a passive
+opponent); the duel is played live against v48 afterwards.
+
+```
+seed   solo fixed  solo refined  v5 solo  |  duel fixed  duel refined  v5 duel
+7106       70,936        93,771  104,307  |      48,559        74,882   76,961
+7107      101,228       120,665   87,006  |      22,350        42,932   23,871
+```
+
+Conditioning on the state adds 19-23 k alone and 21-26 k in the duel,
+and the refined plan matches v5 in the duel although it never saw a
+rival. Fixed portfolios do not: the search run with v48 as the opponent
+overfits its five seeds (71,700 there, 43,071 unseen) and, consolidated
+on 20 seeds against the live rival, its best makes 55,281 against v5's
+62,309 (-7,028, better on 9 of 20).
+
+A recorded rival (`tools/record_rival.py`, replayed turn by turn) is
+exact for the plan it was recorded against and a rough proxy for others
+(about 10 k per seed, +6 % on the mean); it costs nothing and has no
+state, so it can sit inside the rollouts of the day search
+(`--opponent replay:`). The dataset of EXP-008 is now generated that way:
+20 seeds, the state with shops and the rival's sales, one decision per
+day, rollouts that feel the shared market.
