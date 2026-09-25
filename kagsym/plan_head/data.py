@@ -16,6 +16,8 @@ import numpy as np
 from .. import spec
 
 CROPS = list(spec.CROP_LIST)
+ANIMALS = list(spec.ANIMALS)
+SHOP_NAMES = ["BAKERY", "PIZZA_SHOP", "BRUNCH_SPOT", "YARN_STORE", "ICE_CREAM_SHOP", "PET_CAFE", "SMOOTHIE_SHOP", "FARMERS_MARKET"]
 import itertools as _it
 CROP_CLASSES = list(CROPS)
 for k in (2, 3):
@@ -55,6 +57,18 @@ def features(state: dict, days: int) -> np.ndarray:
          state["cash"] / 10000.0, state["hands"] / 8.0, state["quadrants"] / 4.0,
          sum(state["seeds"].values()) / 50.0, sum(state["shed"].values()) / 100.0]
     x += [state["prices"].get(c, 0) / 250.0 for c in CROPS]
+    # Demand and rival (absent in the first climb's records: zeros then).
+    products = list(spec.PRODUCTS)
+    x += [state.get("prices", {}).get(k, 0) / 250.0 for k in products if k not in CROPS]
+    x += [state.get("inventory", {}).get(k, 0) / 200.0 for k in products]
+    shops = state.get("shops", [])
+    x += [sum(1 for s_ in shops if s_ == name) / 3.0 for name in SHOP_NAMES]
+    an = state.get("animals", {})
+    x += [an.get(a, 0) / 8.0 for a in ANIMALS]
+    rv = state.get("rival", {})
+    x += [rv.get("money", 0) / 10000.0, rv.get("hands", 0) / 12.0, rv.get("quadrants", 1) / 4.0]
+    x += [rv.get("planted", {}).get(c, 0) / 25.0 for c in CROPS]
+    x += [rv.get("animals", {}).get(a, 0) / 8.0 for a in ANIMALS]
     grid = np.zeros((len(CROPS), MAX_AGE), dtype=np.float32)
     for k, n in state["planted"].items():
         c, age = k.split("@")
