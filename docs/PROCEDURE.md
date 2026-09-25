@@ -230,3 +230,26 @@ progress gate: eight updates on an honest 24h x 8d game left the policy
 14,066 $ worse (t -10, worse on every board) at the full game than after one
 update. In a short game nothing pays and the gradient learns inaction. The
 universes are for search, validated at full scale.
+
+## The ladder protocol (`tools/ladder.py`)
+
+The reduced worlds are climbed one day at a time, 1 to 30, with the code
+frozen for the whole climb (the report carries the commit; if the search or
+the executor changes, the ladder starts again at 1). For every horizon:
+
+1. **Search** on seeds 7101-7105: the constant-plan grid, then day-by-day
+   refinement with exact rollouts (`tools/plan_daysearch.py`). Every
+   decision is recorded: state at the day boundary, the day's plan, money.
+2. **Check** the searched schedule on five seeds the search never saw
+   (7106-7110). This is the number reported.
+3. **Audit** the plan's execution (`tools/plan_audit.py`): produced, sold,
+   lost (tiles, hands, shed overflow), crew turns split into work, needed
+   moves, excess, orphan and pass.
+4. **Compare** with the previous rung's schedule padded by one day on the
+   same unseen seeds: what the extra day buys, and which plan fields
+   changed. That is the decision the new day adds.
+5. **Write** a section in `runs/ladder/report.md` and a row in
+   `runs/ladder/ladder.jsonl` before starting the next rung.
+
+The records of the climb are the dataset of the plan head (EXP-008),
+which trains only after the ladder is complete.
