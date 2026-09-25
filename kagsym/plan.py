@@ -137,19 +137,26 @@ def plan_macro(plan: Plan):
     return m
 
 
-def play_plan(plan: Plan, seed: int, days: int = 8, hours: int = 24, cash: int = 3000) -> float:
-    """One solitaire game under `plan`, deterministic; returns the final cash."""
-    from . import spec
+def play_plan(plan: Plan, seed: int, days: int = 8, hours: int = 24, cash: int = 3000,
+              opponent: str | None = None, seat: int = 0) -> float:
+    """One game under `plan`, deterministic; returns our final cash. The
+    opponent is passive by default, or a public agent by name (the market
+    is shared: what the rival sells moves our prices)."""
     from .fastenv import FastEnv
     from .symbolic.executor import Agent
-    from .evaluate import PASS_ACTION
+    from .evaluate import PASS_ACTION, _opponent_callable, public
     steps = hours * days
     spec.set_turns_per_day(hours)
     spec.set_episode_steps(steps)
+    rival = _opponent_callable(public(opponent)) if opponent else (lambda ob: dict(PASS_ACTION))
+    other = 1 - seat
     with active(plan):
         env = FastEnv(configuration={"episodeSteps": steps, "turnsPerDay": hours, "startingMoney": cash}, seed=seed)
         obs = env.reset()
         ag = Agent(episode_steps=steps, macro=plan_macro(plan))
         while not env.done:
-            obs, _ = env.step([ag(obs[0]), dict(PASS_ACTION)])
-        return float(env.rewards()[0])
+            actions = [None, None]
+            actions[seat] = ag(obs[seat])
+            actions[other] = rival(obs[other])
+            obs, _ = env.step(actions)
+        return float(env.rewards()[seat])
