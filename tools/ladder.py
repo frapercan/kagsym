@@ -37,7 +37,7 @@ from plan_audit import audit  # noqa: E402
 
 SEARCH_SEEDS = RESERVED.seeds(5)          # 7101-7105: what the search sees
 UNSEEN_SEEDS = RESERVED.seeds(5, 5)       # 7106-7110: the report's check
-FIELDS = ("crop", "tiles", "hands", "load", "water_last", "selling", "land")
+FIELDS = ("crop", "tiles", "hands", "load", "water_last", "selling", "land", "animals")
 
 
 def schedule_of(records, seed: int, days: int) -> Plan:
@@ -45,7 +45,7 @@ def schedule_of(records, seed: int, days: int) -> Plan:
     assert len(rows) == days, (len(rows), days)
     return Plan(crop=tuple(r["plan"]["crop"] for r in rows), tiles=tuple(r["plan"]["tiles"] for r in rows),
                 hands=tuple(r["plan"]["hands"] for r in rows), land=tuple(r["plan"]["land"] for r in rows),
-                animals=0, selling=tuple(r["plan"]["selling"] for r in rows),
+                animals=tuple(r["plan"].get("animals", 0) for r in rows), selling=tuple(r["plan"]["selling"] for r in rows),
                 load=tuple(r["plan"]["load"] for r in rows), water_last=tuple(r["plan"]["water_last"] for r in rows))
 
 
@@ -54,7 +54,7 @@ def padded(plan: Plan, days: int) -> Plan:
         v = list(v) if isinstance(v, (tuple, list)) else [v]
         return tuple(v + [v[-1]] * (days - len(v)))
     return Plan(crop=pad(plan.crop), tiles=pad(plan.tiles), hands=pad(plan.hands), land=pad(plan.land),
-                animals=0, selling=pad(plan.selling), load=pad(plan.load), water_last=pad(plan.water_last))
+                animals=pad(plan.animals), selling=pad(plan.selling), load=pad(plan.load), water_last=pad(plan.water_last))
 
 
 def _mean(plan: Plan, seeds, days: int, pool) -> float:
@@ -67,8 +67,8 @@ def describe(plan: Plan, days: int) -> str:
     for d in range(days):
         c = plan.crop_on(d)
         c = "+".join(f"{k}:{v:.0%}" for k, v in c.items()) if isinstance(c, dict) else c
-        lines.append(f"  day {d:2d}: {c:<22s} tiles {plan.tiles_on(d):3d} hands {plan.hands_on(d)} load {plan.load_on(d):2d} "
-                     f"water_last {plan.water_last_on(d)} selling {plan.selling_on(d):.2f} land {plan.land_on(d)}")
+        lines.append(f"  day {d:2d}: {c:<40s} tiles {plan.tiles_on(d):3d} hands {plan.hands_on(d)} load {plan.load_on(d):2d} "
+                     f"water_last {plan.water_last_on(d)} selling {plan.selling_on(d):.2f} land {plan.land_on(d)} animals {plan.animals_on(d)}")
     return "\n".join(lines)
 
 

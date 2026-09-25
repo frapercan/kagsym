@@ -23,7 +23,7 @@ def play_head(model, seed: int, days: int, hours: int = 24, cash: int = 3000) ->
     plan = Plan()
     set_plan(plan)
     ag = Agent(episode_steps=steps, macro=plan_macro(plan))
-    fields = {f: [] for f in ("crop", "tiles", "hands", "load", "water_last", "selling")}
+    fields = {f: [] for f in ("crop", "tiles", "hands", "load", "water_last", "selling", "animals")}
     land = 0
     try:
         while not env.done:
@@ -35,7 +35,7 @@ def play_head(model, seed: int, days: int, hours: int = 24, cash: int = 3000) ->
                 if ob["day"] == 0:
                     land = int(p["land"])
                 plan = Plan(crop=tuple(fields["crop"]), tiles=tuple(fields["tiles"]), hands=tuple(fields["hands"]),
-                            land=land, animals=0, selling=tuple(fields["selling"]), load=tuple(fields["load"]),
+                            land=land, animals=tuple(fields["animals"]), selling=tuple(fields["selling"]), load=tuple(fields["load"]),
                             water_last=tuple(fields["water_last"]))
                 set_plan(plan)
             obs, _ = env.step([ag(ob), dict(E.PASS_ACTION)])

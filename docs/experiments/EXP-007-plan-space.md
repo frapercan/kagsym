@@ -192,3 +192,56 @@ search is therefore staged: grid (global over constant plans) -> day-by-day
 refinement with the state in hand, which records (state, day plan, money)
 for the plan head. The ladder's coordinate descent was stopped after rung
 11 (12-15 min per rung and rising).
+
+## Part 4: the protocol climb, 1 to 30 (2026-09-25, 02:42-04:58, commit 3ba93b9)
+
+`tools/ladder.py`, code frozen; unseen seeds 7106-7110 (the search saw
+7101-7105). "prev+1" is the previous rung's schedule padded by one day on
+the same unseen seeds: what the extra day buys.
+
+```
+days  unseen   prev+1   what changed              days  unseen   prev+1   what changed
+  1    3,000       -    nothing to do               16   32,985   32,197   tiles, hands, selling
+  2    3,000    3,000   nothing to do               17   32,716   33,097   crop, tiles, hands
+  3    3,914    3,000   green carrot                18   32,472   32,478   hands
+  4    4,557    4,391   hands (last day)            19   34,877   34,265   crop, hands, selling
+  5    4,696    4,578   tiles, hands                20   35,795   35,135   crop, hands
+  6    5,410    4,371   land + wheat                21   35,567   36,439   tiles, hands, load
+  7    6,014    5,406   crop, hands                 22   36,867   36,055   tiles, hands
+  8    6,887    6,756   hands                       23   37,343   34,988   crop, tiles, hands
+  9    6,937    6,886   tiles, hands                24   37,661   36,717   crop, tiles, hands, selling
+ 10    8,786    6,495   mixes, land                 25   39,093   38,504   crop, hands, selling
+ 11   26,284    9,402   MELON                       26   41,589   39,855   crop, tiles, hands, selling
+ 12   29,925   27,222   tiles, hands                27   43,891   41,231   crop, tiles, hands
+ 13   30,077   29,921   tiles, hands                28   48,619   44,423   crop, tiles, hands, water, selling
+ 14   30,603   30,100   crop, tiles, hands          29   49,814   36,747   crop, hands, selling
+ 15   31,762   30,851   crop, tiles, hands          30   50,861   50,254   hands, selling
+```
+
+Times: 1-10 s per rung below 10 days, 60-120 s at 10-16, 330-735 s at
+17-30. The 30-day plan never buys land, sows melon twice on 25 tiles and
+strawberry in between, sells 300 units, carries nothing home.
+
+### The verdict at 30 days
+
+50,861 $ against a passive opponent. The deployed policy v5, dial
+interface and network, makes 104,307 on seed 7106 in the same world, and
+sells seven products: 218 milk, 185 fertiliser, 102 melon, 92 strawberry,
+56 eggs, 39 wool, 17 wheat, with 14 animals bought. The plan space as
+searched is missing the levers that matter at 30 days, measured by hand on
+the unseen seeds:
+
+```
+searched 30-day plan                                         50,861
+5-way mix on 25 tiles, 3 hands                               25,159
+5-way mix, land on day 5, 50 tiles, 6 hands                  35,224
+5-way mix, 25 tiles, 4 hands, 3 animals                      45,364
+5-way mix, 25 tiles, 7 hands, 4 animals                      56,380   above the searched optimum, by hand
+hand-crafted melon then 3 quadrants of 100 melons            16,235   the crew cannot water 100 tiles
+```
+
+Animals were a plan field the search never moved; portfolios beyond a
+pair were not offered. Both are now in the search (`animals` in
+{0,1,2,3,4,6,8}; three-way and all-crop mixes) and in the plan head, and
+the ladder is climbed again from 1 under the protocol. Fertiliser is the
+next lever v5 uses and the plan does not express.

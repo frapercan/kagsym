@@ -35,7 +35,8 @@ def searched_plan(rows_of_horizon) -> Plan:
     return Plan(crop=tuple(r["plan"]["crop"] for r in rows_of_horizon),
                 tiles=tuple(r["plan"]["tiles"] for r in rows_of_horizon),
                 hands=tuple(r["plan"]["hands"] for r in rows_of_horizon),
-                land=int(rows_of_horizon[0]["plan"]["land"]), animals=0,
+                land=tuple(r["plan"]["land"] for r in rows_of_horizon),
+                animals=tuple(r["plan"].get("animals", 0) for r in rows_of_horizon),
                 selling=tuple(r["plan"]["selling"] for r in rows_of_horizon),
                 load=tuple(r["plan"]["load"] for r in rows_of_horizon),
                 water_last=tuple(r["plan"]["water_last"] for r in rows_of_horizon))

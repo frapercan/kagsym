@@ -32,16 +32,27 @@ from kagsym.seeds import RESERVED  # noqa: E402
 from kagsym.symbolic.executor import Agent  # noqa: E402
 
 CASH = 3000
-FIELDS = ("hands", "load", "water_last", "tiles", "crop", "selling")
+FIELDS = ("hands", "load", "water_last", "tiles", "crop", "selling", "animals")
 
 
 def _values(days: int, land: int) -> dict:
-    crops = [c for c in spec.CROP_LIST if spec.CROPS[c]["first_yield_day"] < days]
-    crops = crops + [{a: 0.5, b: 0.5} for i, a in enumerate(crops) for b in crops[i + 1:]]
+    singles = [c for c in spec.CROP_LIST if spec.CROPS[c]["first_yield_day"] < days]
+    crops = list(singles)
+    crops += [{a: 0.5, b: 0.5} for i, a in enumerate(singles) for b in singles[i + 1:]]
+    # PORTFOLIOS: every product sells into its own price curve, so spreading
+    # the tiles over three or all viable crops is a different plan from any
+    # pair (measured at 30 days: v5 sells seven products; a 25-tile
+    # monoculture-per-day search reached 50,861 against v5's 104,307).
+    if len(singles) >= 3:
+        crops += [{a: 1 / 3, b: 1 / 3, c: 1 / 3} for i, a in enumerate(singles)
+                  for j, b in enumerate(singles[i + 1:], i + 1) for c in singles[j + 1:]]
+    if len(singles) >= 4:
+        crops.append({c: 1.0 / len(singles) for c in singles})
     max_tiles = 25 * (1 + land)
     return {"hands": list(range(0, 9)), "load": [0, 3, 6, 9, 12, 15], "water_last": [0, 1],
             "tiles": [t for t in (0, 10, 15, 20, 25, 30, 40, 50, 75) if t <= max_tiles],
-            "crop": crops, "selling": [0.05, 0.25, 0.5, 0.75, 0.95]}
+            "crop": crops, "selling": [0.05, 0.25, 0.5, 0.75, 0.95],
+            "animals": [0, 1, 2, 3, 4, 6, 8]}
 
 
 def _sched(plan: Plan, f: str, days: int) -> list:

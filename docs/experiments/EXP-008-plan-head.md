@@ -49,3 +49,23 @@ not exceed the "previous rung padded" baseline anywhere. If it fails on
 the melon rungs (11+) but not below, the state lacks what decides the
 crop (days left against the crop's first yield): fix the features, not
 the model. Nothing is deployed from this experiment.
+
+## Result of the first climb (2026-09-25 04:59; dataset of the 1-30 protocol run, 2,325 records: 30 horizons x 5 seeds x every day)
+
+Training agreement after 2,000 epochs: hands 0.94, the rest 0.98-1.00.
+Held-out horizons (6, 9, 12, 16, 24): hands 0.58, tiles 0.85, crop 0.94,
+selling 0.97, load/water/land 0.99-1.00. Regret of the head's plan against
+the searched plan on unseen seeds 7106-7110:
+
+```
+held-out   6 d  +8.7 %     9 d  +0.4 %    12 d  +12.1 %    16 d  +1.8 %    24 d  +2.5 %
+train      0 to +2 % on most rungs; the head BEATS the search at 18-22 and 25 days
+           (-2.5 to -7.6 %) and loses 10-17 % at 26 and 28
+```
+
+Per the rule (under 5 % on every held-out rung) the head has not
+converged: it fails at 6 (it plays the 5-day plan) and at 12 (it plays
+the 11-day plan, missing the day-12 refinement). That the head beats the
+search on several trained rungs says the search is local there, not that
+the head is good. The first climb's dataset lacked animals and
+portfolios; the second climb's will not. Not deployed.

@@ -16,8 +16,12 @@ import numpy as np
 from .. import spec
 
 CROPS = list(spec.CROP_LIST)
-MIXES = [(a, b) for i, a in enumerate(CROPS) for b in CROPS[i + 1:]]
-CROP_CLASSES = CROPS + [f"{a}+{b}" for a, b in MIXES]
+import itertools as _it
+CROP_CLASSES = list(CROPS)
+for k in (2, 3):
+    CROP_CLASSES += ["+".join(c) for c in _it.combinations(CROPS, k)]
+CROP_CLASSES += ["+".join(sorted(set(CROPS) - {c})) for c in CROPS]   # all-but-one (4-way)
+CROP_CLASSES.append("+".join(CROPS))                                   # all five
 FIELDS = {
     "hands": list(range(0, 9)),
     "load": [0, 3, 6, 9, 12, 15],
@@ -25,20 +29,23 @@ FIELDS = {
     "tiles": [0, 10, 15, 20, 25, 30, 40, 50, 75],
     "crop": CROP_CLASSES,
     "selling": [0.05, 0.25, 0.5, 0.75, 0.95],
-    "land": [0, 1, 2],
+    "land": [0, 1, 2, 3],
+    "animals": [0, 1, 2, 3, 4, 6, 8],
 }
 MAX_AGE = 16
 
 
 def crop_class(c) -> str:
+    """Mixes are classed by their set of crops, in CROPS order (equal shares)."""
     if isinstance(c, dict):
-        ks = sorted(c)
-        return f"{ks[0]}+{ks[1]}" if len(ks) == 2 else ks[0]
+        ks = [k for k in CROPS if c.get(k, 0) > 0]
+        return "+".join(ks)
     return str(c)
 
 
 def class_to_crop(name: str):
-    return {k: 0.5 for k in name.split("+")} if "+" in name else name
+    ks = name.split("+")
+    return {k: 1.0 / len(ks) for k in ks} if len(ks) > 1 else name
 
 
 def features(state: dict, days: int) -> np.ndarray:
@@ -60,12 +67,14 @@ def features(state: dict, days: int) -> np.ndarray:
 def targets(plan: dict) -> dict:
     out = {}
     for f, vals in FIELDS.items():
-        v = plan[f]
+        v = plan.get(f, 0)
         if f == "crop":
             v = crop_class(v)
         elif f == "selling":
             v = min(vals, key=lambda a: abs(a - float(v)))
         elif f == "tiles":
+            v = min(vals, key=lambda a: abs(a - int(v)))
+        elif f == "animals":
             v = min(vals, key=lambda a: abs(a - int(v)))
         out[f] = vals.index(v)
     return out
