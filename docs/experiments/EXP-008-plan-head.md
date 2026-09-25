@@ -86,3 +86,27 @@ The second dataset is the duel one: the day search with the recorded
 v48 inside its rollouts on seeds 7101-7120 (`runs/dataset/`), holdout
 seeds 7116-7120, regret measured against the recorded rival and then
 live.
+
+## Result on the duel dataset (2026-09-25 12:26; 12 seeds, 360 records, holdout 7109-7112)
+
+Training agreement 0.98-1.00 on every field; held-out: hands 0.47, tiles
+0.73, crop 0.36. Regret against the searched schedule, with the recorded
+rival: +30 to +74 % on EVERY seed, the training ones included (7108:
+searched 93,175, head 24,010). Compounding error: one wrong day leads to
+a state the head never saw. Live validation against v48 on 20 seeds
+(12 searched + 8 never searched):
+
+```
+                                   mean money   wins vs v48
+searched state-aware plan (12)        80,723       0/12
+v5                                    62,309       0/20
+fixed portfolio (consolidated)        55,281       0/20
+plan head (this run)                  43,543       0/20
+```
+
+Verdict: the search direction holds (the state-aware plan beats v5 in
+the live duel by +18 k, +30 %), the imitation does not amortise it with
+360 records, and nobody wins a game against v48, which makes 150-190 k in
+these duels. Per the rule, not deployed. Next: amortisation by retrieval
+(the nearest recorded state's plan, no training) and more seeds; DAgger
+if retrieval also fails.
