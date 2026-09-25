@@ -110,3 +110,24 @@ the live duel by +18 k, +30 %), the imitation does not amortise it with
 these duels. Per the rule, not deployed. Next: amortisation by retrieval
 (the nearest recorded state's plan, no training) and more seeds; DAgger
 if retrieval also fails.
+
+## Why neither amortisation transfers (2026-09-25, 12:45)
+
+Two deployable policies were validated live against v48 on 20 seeds after
+a bug was fixed (land taken from day 0 alone): the trained head, 38,540;
+retrieval of the nearest recorded state's plan, 43,115 (39,675 with a
+distance blind to the rival's features). Both far below the searched
+schedules played as fixed plans on the same seeds (80,723). Yet the
+retrieval policy replays its own seed to the cent against the recorded
+rival (test).
+
+The mechanism, traced on seed 7108 live: the shop draw depends on our
+own actions (part 6), so with a different rival the shops differ from
+day 3 (FARMERS_MARKET instead of SMOOTHIE_SHOP); the nearest state is
+then another seed's (7103, 7101) and the plan flips to another world's.
+A state-conditioned policy built from 12 trajectories jumps between them
+the moment the trajectory leaves them; a fixed schedule cannot jump and
+keeps 71-99 k. "Lack of data" means lack of COVERAGE of the states the
+deployed policy visits, not the count of records: that is what DAgger
+collects, and what a search over a policy class with the state
+conditioning built in (mix follows the observed demand) avoids.

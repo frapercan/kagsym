@@ -39,11 +39,12 @@ MIXES = {
     "straw+melon+wheat": {"STRAWBERRY": 0.4, "MELON": 0.3, "WHEAT": 0.3},
     "melon+wheat": {"MELON": 0.5, "WHEAT": 0.5},
     "all": {c: 0.2 for c in spec.CROP_LIST},
+    "demand": "DEMAND",          # the mix follows the shops observed at runtime
 }
 NEVER = 99
 SPACE = {
     "g0": [0, 1, 2, 3, 4], "c0": [0, 1, 2, 3], "s0": [0, 1, 2, 3],          # opening animals by kind
-    "t0": [0, 6, 10, 12, 15, 20], "m0": ["wheat", "carrot", "straw+wheat", "melon+wheat"],
+    "t0": [0, 6, 10, 12, 15, 20], "m0": ["wheat", "carrot", "straw+wheat", "melon+wheat", "demand"],
     "h0": [0, 1, 2, 3, 4, 5],
     "land2": [3, 5, 6, 8, 10, 12, NEVER], "land3": [8, 10, 12, 14, 16, NEVER], "land4": [12, 15, 18, NEVER],
     "g1": [0, 2, 4, 6, 8], "c1": [0, 2, 4, 6, 7], "s1": [0, 2, 4, 6, 7],      # final animal targets

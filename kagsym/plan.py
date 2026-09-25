@@ -56,10 +56,16 @@ class Plan:
         """The day's crop: a name, or a dict {crop: share of `tiles`}."""
         return _by_day(self.crop, day)
 
-    def crop_targets(self, day: int) -> dict:
-        """Tiles per crop for the day, from a name or a share dict."""
+    def crop_targets(self, day: int, obs=None) -> dict:
+        """Tiles per crop for the day, from a name, a share dict, or "DEMAND":
+        shares proportional to the town's demand for each viable crop (the
+        shops observed in `obs`, plus the town centre's one unit a day), which
+        is the state conditioning a fixed schedule cannot carry and a policy
+        learned from a few trajectories loses the moment the shops differ."""
         c = self.crop_on(day)
         total = self.tiles_on(day)
+        if c == "DEMAND" and obs is not None:
+            return demand_mix(obs, total)
         if isinstance(c, dict):
             out = {k: int(round(total * float(v))) for k, v in c.items() if v > 0}
             return out
@@ -103,6 +109,42 @@ class Plan:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+SHOPS = {"BAKERY": ["EGG", "WHEAT"], "PIZZA_SHOP": ["MILK", "TOMATO", "WHEAT"], "BRUNCH_SPOT": ["EGG", "WHEAT", "STRAWBERRY"],
+         "YARN_STORE": ["WOOL"], "ICE_CREAM_SHOP": ["STRAWBERRY", "MILK", "WHEAT"], "PET_CAFE": ["CARROT"],
+         "SMOOTHIE_SHOP": ["STRAWBERRY", "MILK"], "FARMERS_MARKET": ["WHEAT", "CARROT", "TOMATO", "STRAWBERRY"]}
+
+
+def demand_units_per_day(obs) -> dict:
+    """Units a day the town takes of each product: every shop every 4 turns
+    (2 when it sells one product) plus the town centre's 1 (not fertiliser)."""
+    from . import spec
+    out = {k: (0.0 if k == "FERTILIZER" else 1.0) for k in spec.PRODUCTS}
+    for shop in obs.get("town", {}).get("unlocked_shops", []) or []:
+        items = SHOPS.get(shop, [])
+        per = 2.0 if len(items) == 1 else 1.0
+        for it in items:
+            out[it] = out.get(it, 0.0) + per * (spec.TURNS_PER_DAY / 4.0)
+    return out
+
+
+def demand_mix(obs, total: int) -> dict:
+    """Tiles per crop proportional to the demand for the crops still able to
+    yield, weighted by price; at least the best one gets everything."""
+    from . import spec
+    from .symbolic.tasks import plantable
+    dem = demand_units_per_day(obs)
+    prices = obs["market"]["prices"]
+    viable = [c for c in spec.CROP_LIST if plantable(obs, c)]
+    if not viable or total <= 0:
+        return {}
+    w = {c: dem.get(c, 0.0) * float(prices.get(c, 1)) for c in viable}
+    tot = sum(w.values())
+    if tot <= 0:
+        return {viable[0]: total}
+    out = {c: int(round(total * v / tot)) for c, v in w.items()}
+    return {c: n for c, n in out.items() if n > 0} or {max(w, key=w.get): total}
 
 
 PLAN: Plan | None = None      # process-global, like HAND_CAP; set per episode

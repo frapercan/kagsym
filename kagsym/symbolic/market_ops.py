@@ -555,7 +555,7 @@ def seed_orders(obs, tile_target: int, macro=None) -> list:
         out = []
         _cap = _pl.tile_cap(obs)
         _tot = max(1, _pl.tiles_on(int(obs["day"])))
-        for crop_, want in _pl.crop_targets(int(obs["day"])).items():
+        for crop_, want in _pl.crop_targets(int(obs["day"]), obs).items():
             want = int(round(want * _cap / _tot))          # the plan's shares of what fits today
             if not _plantable(obs, crop_):
                 continue
