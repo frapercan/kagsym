@@ -430,6 +430,12 @@ def apply_params(macro: Macro) -> None:
     _M.LAND_RETURN          = p["land_return"]
     _M.LAND_CASH             = p["land_cash"]
     _T.STEP_DISCOUNT    = p["step_discount"]
+    _pl = _plan()
+    if _pl is not None and getattr(_pl, "discount", None) is not None:
+        # THE PLAN'S DISTANCE DISCOUNT. Measured on the expansion blocks
+        # (5 seeds): 0.6-0.7 against the macro's default takes B from 55.6k
+        # to 63.8k and C from 58.7k to 66.4k, moves from 60 % to 50-54 %.
+        _T.STEP_DISCOUNT = float(_pl.discount)
     _T.DIG_VALUE             = p["dig_value"]
     _E.TURNS_PER_TILE_INIT    = p["turns_init"]
     _E.TURNS_PER_TILE_MIN    = p["turns_min"]

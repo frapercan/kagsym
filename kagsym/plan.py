@@ -46,6 +46,7 @@ class Plan:
     load: int | tuple = 0          # units a hand carries before a shed trip; 0 = whenever it pays
     water_last: int | tuple = 1    # last day: 1 water ripe tiles before harvesting (+1 unit), 0 harvest at once
     zones: float = 0.0             # each unit owns a quadrant; work elsewhere discounted by this fraction (0 = off)
+    discount: float | None = None  # a step's discount on a task's value (None: the macro's); 0.6-0.7 measured best
 
     def water_last_on(self, day: int) -> int:
         return int(_by_day(self.water_last, day))
