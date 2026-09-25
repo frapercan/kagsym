@@ -184,3 +184,28 @@ def test_rollout_uses_the_games_calendar_not_the_process_state():
     money = D._rollout((ag, env, plan))
     assert spec.EPISODE_STEPS == HOURS * 3
     assert money == play_plan(plan, 7101, days=3)
+
+
+def test_animals_bought_under_a_plan_are_placed_and_their_feed_is_not_sold():
+    # 15 animals sat in the shed unplaced on day 24 while 9,600 $ had been
+    # spent on them, and 320 wheat were bought and 325 sold in one day.
+    plan = Plan("WHEAT", 12, 3, 0, {"GOOSE": 2, "COW": 1, "SHEEP": 1}, 0.05, 12)
+    steps = HOURS * 6
+    spec.set_turns_per_day(HOURS)
+    spec.set_episode_steps(steps)
+    with active(plan):
+        env = FastEnv(configuration={"episodeSteps": steps, "turnsPerDay": HOURS, "startingMoney": 3000}, seed=7106)
+        obs = env.reset()
+        ag = Agent(episode_steps=steps, macro=plan_macro(plan))
+        feed_bought = 0
+        while not env.done:
+            ob = obs[0]
+            a = ag(ob)
+            feed_bought += sum(o[2] for o in a.get("market", []) if o[0] == "BUY_PRODUCT" and o[1] == "WHEAT")
+            if ob["day"] == 1 and ob["hour"] == HOURS - 1:
+                f = ob["farms"][0]
+                placed = sum(1 for r in f["tiles"] for t in r if isinstance(t, dict) and t.get("animal"))
+                unplaced = sum(int(ob["private"]["shed"].get(k, 0)) for k in spec.ANIMALS)
+                assert placed == 4 and unplaced == 0, (placed, unplaced)
+            obs, _ = env.step([a, dict(E.PASS_ACTION)])
+    assert feed_bought <= 4 * 6 * 3, feed_bought    # feed for 4 animals over 6 days, with a cushion; not a churn

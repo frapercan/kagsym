@@ -182,7 +182,7 @@ class Agent:
         from ..plan import get_plan as _get_plan
         _pl = _get_plan()
         if _pl is not None:                 # a plan is executed literally
-            free = max(0, _pl.tiles_on(int(obs["day"])) - planted)
+            free = max(0, _pl.tile_cap(obs) - planted)
 
         # The micro head returns a 10x10 value map, N_OPS x 10 x 10 verb
         # logits and, when the assignment keys are on, K key and K query

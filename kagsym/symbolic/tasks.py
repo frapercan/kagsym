@@ -354,6 +354,7 @@ class TurnContext:
     __slots__ = ("obs", "farm", "_pend", "_free_struct", "_val", "_cycle_days")
 
     def __init__(self, obs, farm):
+        self.obs = obs
         self.obs, self.farm = obs, farm
         self._pend = self._free_struct = self._val = self._cycle_days = None
 
@@ -400,6 +401,14 @@ def animal_value(ctx, a, macro):
     and the other four stayed unweighted for a whole session without anyone
     noticing.
     """
+    if _under_plan():
+        # UNDER A PLAN an animal already bought is dead capital until it is
+        # placed, and a target animal is worth its remaining daily product.
+        # `animal_net_value` books manure as a watering credit and comes out
+        # <= 0, so BUILD, PICKUP and PLACE were valued 1 $ and lost every
+        # tile and every turn to watering: measured, 15 animals bought for
+        # 9,600 $ and 15 in the shed unplaced on day 24 (EXP-007 part 6).
+        return _plan_animal_value(ctx.obs, a)
     v = ctx.value(a)
     if macro is None:
         return v
@@ -408,6 +417,21 @@ def animal_value(ctx, a, macro):
         return v * market_factors(macro).get(spec.ANIMALS[a]["product"], 1.0)
     except Exception:
         return v
+
+
+def _plan_animal_value(obs, a: str) -> float:
+    """What an animal returns over the rest of the game: its product at the
+    current price plus one fertiliser a day (sold, so at half price to allow
+    for the fall), minus feed; never below its cost while a day of income
+    remains, because unplaced it returns nothing at all."""
+    d = spec.ANIMALS[a]
+    left = max(0, days_left(obs) - 1)
+    prices = obs["market"]["prices"]
+    prod_days = max(0, left - d["first_yield_day"])
+    units = int(prod_days / max(1, d["interval"]))
+    income = units * float(prices.get(d["product"], 0)) + left * 0.5 * float(prices.get("FERTILIZER", 0))
+    feed = left * float(prices.get("WHEAT", 0))
+    return max(float(d["cost"]) if prod_days > 0 else 0.0, income - feed)
 
 
 def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=None):

@@ -306,3 +306,41 @@ melon, 57 carrot. Its steps are not more precise than ours (1.08 moves
 per work action against 1.22, and more orphan steps); its precision is
 the schedule: every unit of cash and labour at work from day 0, and a
 portfolio over seven markets. v5 idles 22 % of its unit-turns.
+
+## Part 6: the town is the demand (2026-09-25, afternoon)
+
+Found while bisecting a 61,259 -> 32,368 drop of the 7-sheep block that
+no code change explained. The engine's town unlocks one shop every three
+days, drawn at random (up to 8), and every shop consumes its products from
+the market every four turns (two units when it sells a single product);
+the town centre consumes one unit of every product but fertiliser once a
+day. The market price of a product is a function of its inventory against
+10,000: what shops consume keeps the price at or above base; what nothing
+consumes collapses as we sell (`above_func` "sq" for wool and melon).
+
+```
+product      shops that consume it                                    demand
+WHEAT        BAKERY, PIZZA, BRUNCH, ICE_CREAM, FARMERS_MARKET         5 of 8
+STRAWBERRY   BRUNCH, ICE_CREAM, SMOOTHIE, FARMERS_MARKET              4 of 8
+MILK         PIZZA, ICE_CREAM, SMOOTHIE                               3 of 8
+EGG          BAKERY, BRUNCH                                           2 of 8
+CARROT       PET_CAFE (x2), FARMERS_MARKET                            2 of 8
+TOMATO       PIZZA, FARMERS_MARKET                                    2 of 8
+WOOL         YARN_STORE (x2)                                          1 of 8
+MELON        none (the town centre's 1 a day)                         0 of 8
+FERTILIZER   none, not even the town centre
+```
+
+That is v48's product list (430 strawberry, 335 milk, 313 wheat, 179 wool)
+and the reason every melon plan plateaus near 30,000: the market takes one
+melon a day. The shop draw uses a RNG seeded by (seed, day) that the weed
+spawn consumes first, tile by tile, so OUR actions shift which shop comes:
+the same seed is not the same world, and paired comparisons carry that
+noise (the 7-sheep block: a yarn store on day 3 in one run, on day 18 in
+the other). The shops are in `obs["town"]["unlocked_shops"]`: the demand
+is observable, and the plan head's state must carry it.
+
+Also fixed this afternoon: under a plan, BUILD, PICKUP and PLACE of a
+wanted animal are valued by its remaining product (they were valued 1 $
+and lost every tile to sowing: 15 animals bought for 9,600 $ sat in the
+shed on day 24).

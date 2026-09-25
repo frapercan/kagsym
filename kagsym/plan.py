@@ -87,6 +87,21 @@ class Plan:
     def selling_on(self, day: int) -> float:
         return float(_by_day(self.selling, day))
 
+    def tile_cap(self, obs) -> int:
+        """Tiles the plan may keep sown TODAY: its target, but never more
+        than the unlocked tiles minus the housing its animals still need (a
+        coop or pasture takes a tile). A plan written for three quadrants
+        and executed with two sowed every tile and left ten animals in the
+        shed (measured, EXP-007 part 6)."""
+        from . import spec
+        day = int(obs["day"])
+        farm = obs["farms"][int(obs["player"])]
+        unlocked = sum(1 for row in farm["tiles"] for t in row if t != "LOCKED")
+        housed = sum(1 for row in farm["tiles"] for t in row
+                     if isinstance(t, dict) and t.get("kind") in ("COOP", "PASTURE"))
+        housing = max(0, self.animals_on(day) - housed)
+        return max(0, min(self.tiles_on(day), unlocked - housing))
+
     def to_dict(self) -> dict:
         return asdict(self)
 
