@@ -23,8 +23,11 @@ class PlanHead(nn.Module):
         from .data import class_to_crop
         with torch.no_grad():
             logits = self(torch.as_tensor(x).unsqueeze(0))
+        from .data import KIND_OF
         out = {}
         for f, vals in FIELDS.items():
             j = int(logits[f].argmax(-1))
             out[f] = class_to_crop(vals[j]) if f == "crop" else vals[j]
+        out["animals"] = {KIND_OF[f]: out.pop(f) for f in list(KIND_OF) if f in out}
+        out["animals"] = {k: v for k, v in out["animals"].items() if v > 0} or 0
         return out

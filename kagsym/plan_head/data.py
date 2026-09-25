@@ -32,8 +32,12 @@ FIELDS = {
     "crop": CROP_CLASSES,
     "selling": [0.05, 0.25, 0.5, 0.75, 0.95],
     "land": [0, 1, 2, 3],
-    "animals": [0, 1, 2, 3, 4, 6, 8],
+    # animals BY KIND: the plan names them (EXP-007 part 5) and so must the head
+    "goose": [0, 1, 2, 3, 4, 6, 8],
+    "cow": [0, 1, 2, 3, 4, 6, 7],
+    "sheep": [0, 1, 2, 3, 4, 6, 7],
 }
+KIND_OF = {"goose": "GOOSE", "cow": "COW", "sheep": "SHEEP"}
 MAX_AGE = 16
 
 
@@ -80,15 +84,18 @@ def features(state: dict, days: int) -> np.ndarray:
 
 def targets(plan: dict) -> dict:
     out = {}
+    animals = plan.get("animals", 0)
+    if not isinstance(animals, dict):          # a legacy count: the executor chose the kind (cows first)
+        animals = {"COW": int(animals)}
     for f, vals in FIELDS.items():
         v = plan.get(f, 0)
-        if f == "crop":
+        if f in KIND_OF:
+            v = min(vals, key=lambda a: abs(a - int(animals.get(KIND_OF[f], 0))))
+        elif f == "crop":
             v = crop_class(v)
         elif f == "selling":
             v = min(vals, key=lambda a: abs(a - float(v)))
         elif f == "tiles":
-            v = min(vals, key=lambda a: abs(a - int(v)))
-        elif f == "animals":
             v = min(vals, key=lambda a: abs(a - int(v)))
         out[f] = vals.index(v)
     return out
