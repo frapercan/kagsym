@@ -253,3 +253,28 @@ the executor changes, the ladder starts again at 1). For every horizon:
 
 The records of the climb are the dataset of the plan head (EXP-008),
 which trains only after the ladder is complete.
+
+## The long-run loop (planned 2026-09-25 for the last three days)
+
+One cycle, about six hours; the loop runs unattended and the upload is
+its last step, gated by the validation:
+
+1. **Search portfolios against real rivals** (`tools/plan_blocks.py
+   --opponent`, v48 and a mid-band agent, 5 seeds, seeded with the last
+   consolidated elite).
+2. **Consolidate** the top ten on 20 seeds; keep the 20-seed mean, never
+   the 5-seed score (the shop lottery).
+3. **Refine day by day** from the consolidated elite on 40 seeds
+   (`tools/plan_daysearch.py --start-json`): the state-conditioned plans,
+   and the dataset (state with shops and rival, day plan, money).
+4. **Train the plan head** (`kagsym.cli.train_plan_head`), regret on
+   unseen seeds; the head must not lose to the fixed portfolio it learned
+   from.
+5. **Validate against the band** with the ladder's criterion (wins,
+   `tools/band.py`), 200 seeds, both seats.
+6. **Package and upload** only if the validation improved; two uploads a
+   day, and the order matters (docs/KAGGLE_UPDATE.md, trick 15).
+
+Selection is by step 5 alone. The short training evaluation is
+anticorrelated with the truth (memory: no elegir checkpoint), and a plan
+that wins alone can lose in the duel (EXP-007 part 7).
