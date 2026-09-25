@@ -81,3 +81,5 @@ consolidation. v48 and the 150 k agents only at milestones.
 ## Packaging (2026-09-25 14:15)
 
 `runs/P8_fixed.pt` (kind `plan_fixed`, the P8 plan) loads through `Policy.from_checkpoint` as `FixedPlanPolicy` and plays identically through the real Kaggle runner (`tools/check_submission.py`, 4 of 4 games to the cent). The band run against every public agent, paired with prod, is the ladder's criterion.
+
+Band (every public agent on disk, 3 seeds x 2 seats, `tools/band.py`, 14:06): P8 win mean 0.063, beaten 5 of 74, money 50,153; paired against prod: win +0.011, money +18,035 (se 979, t 18.4, better on 73 % of boards). The band is the top of the ladder (agents of 100-140 k): the wins move little, the money a lot.
