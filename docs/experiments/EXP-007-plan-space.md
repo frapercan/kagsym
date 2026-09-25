@@ -287,3 +287,22 @@ ladder never saw livestock. Each product saturates its own market, so
 blocks are sub-additive within a product and additive across products:
 the 30-day game is a PORTFOLIO of blocks, scheduled by cash. The plan now
 says the kinds (`animals={kind: count}` per day) and the executor obeys.
+
+### Mechanics side by side (`tools/audit_agent.py`, 30 days, passive opponent, seed 7106)
+
+```
+actor                money   work  move  pass  moves/work  excess  orphan   2nd quadrant  3rd  6 animals  12  25 tiles  50  hands at the end
+v48-fast-routes    131,661   46 %  49 %   5 %     1.08       1 %    11 %       day 6       10     6        8      7     11        12
+v5                 104,307   40 %  38 %  22 %     0.97       2 %    10 %       day 6        9     1       10     10      -        10
+our 30-day plan     52,918   41 %  50 %  10 %     1.22       0 %     4 %         -          -     -        -      0      -         2
+7 sheep, 2 hands    61,259   38 %  26 %  35 %     0.69       2 %     2 %         -          -     4        -      -      -         2
+```
+
+v48 on day 0: 4 animals, 12 tiles sown, 2 hands, cash 0. By day 12: 3
+quadrants, 15 animals, 60 tiles, 10-12 hands, and 5 % idle turns for the
+rest of the game. It sells 430 strawberries (an ongoing crop: yields every
+two days from day 10), 397 fertiliser, 335 milk, 313 wheat, 179 wool, 72
+melon, 57 carrot. Its steps are not more precise than ours (1.08 moves
+per work action against 1.22, and more orphan steps); its precision is
+the schedule: every unit of cash and labour at work from day 0, and a
+portfolio over seven markets. v5 idles 22 % of its unit-turns.
