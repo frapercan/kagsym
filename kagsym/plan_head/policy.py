@@ -30,6 +30,11 @@ class PlanHeadPolicy:
     def __init__(self, model: PlanHead):
         self.model = model
         self.steps, self.hours = 720, 24
+        # The evaluator and the search drive `Policy` through these; a plan
+        # policy has no dial offsets, so they are inert.
+        self.stored_offset = []
+        self.offset = None
+        self.hand_cap = None
         self._agent = None
         self._day = None
         self._fields = None
