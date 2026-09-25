@@ -25,7 +25,7 @@ the live v48 on the 20 reserved seeds 7101-7120, seat 0.
 | P9 | P9 | 14:08 | T-hamburger tape, racing | definitive executor | 9/20 (panel 9 and 7); tape fitness 105k |
 | P10-straw-open | P10 | 14:12 | T-hamburger tape, racing | + strawberry opening, dcrop 0 | 8/20; tape fitness 111k. The tape (recorded against P5) drifts: fitness up, live wins down. |
 | T-hamburger-v2 | runs/rivals/hamburger_v2.json | 14:20 | recorded against P8's plan | for P11 on: fitness = margin, last racing stage live |
-| P11-margin | P11 | 14:22 | T-hamburger-v2, fitness margin, live last stage, racing | init P8 | pending (consolidation by wins + panel chained) |
+| P11-margin | P11 | 14:22 | T-hamburger-v2, fitness margin, live last stage, racing | init P8 | vs hamburger: **19/20 wins** (76,661 vs 57,606); panel 18/20 both seats; 0/20 vs the 110-140 k agents |
 
 Bars on the same yardstick: prod 62,309; v48 makes 120-190 k in those games.
 
