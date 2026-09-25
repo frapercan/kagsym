@@ -288,3 +288,19 @@ def test_retrieval_policy_replays_its_own_seed_exactly():
     while not env.done:
         obs, _ = env.step([pol.act(obs[0]), dict(E.PASS_ACTION)])
     assert float(env.rewards()[0]) == searched
+
+
+def test_fixed_plan_policy_plays_the_plan_through_the_wrapper_path(tmp_path):
+    import torch
+    from kagsym.policy import Policy
+    plan = Plan("DEMAND", 20, 3, 0, {"GOOSE": 2}, 0.25, 12, 1, discount=0.6)
+    path = tmp_path / "fixed.pt"
+    torch.save({"kind": "plan_fixed", "plan": plan.to_dict()}, path)
+    pol = Policy.from_checkpoint(str(path))
+    assert type(pol).__name__ == "FixedPlanPolicy"
+    cfg = {"episodeSteps": HOURS * 4, "turnsPerDay": HOURS, "startingMoney": 3000}
+    pol.configure(cfg); pol.reset(cfg)
+    env = FastEnv(configuration=cfg, seed=7101); obs = env.reset()
+    while not env.done:
+        obs, _ = env.step([pol.act(obs[0]), dict(E.PASS_ACTION)])
+    assert float(env.rewards()[0]) == play_plan(plan, 7101, days=4)

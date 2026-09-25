@@ -20,8 +20,8 @@ the live v48 on the 20 reserved seeds 7101-7120, seat 0.
 | P4-refined | portfolio_v2 | 12:51 | T-v48 tape, racing | + ranked shed, feed chain, pens, feed cash reserve | 60,711 |
 | P5-discount-zones | portfolio_v3 | 13:01 | T-v48 tape, racing | + Plan.discount, Plan.zones in the space | 64,660 (se 4,179) |
 | P6-harvest-care | P6 | 13:30 | T-v48 tape, racing | + harvest before fertilise, care worth a unit (part 10) | 67,442 (se 4,249) |
-| P7-vs-hamburger | P7 | 13:49 | T-hamburger tape, racing | same executor; hands up to 15 | pending (live vs hamburger, wins) |
-| P8-rival-aware | P8 | after P7 | T-hamburger tape, racing | + several wheat carriers, rival-aware DEMAND | pending |
+| P7-vs-hamburger | P7 | 13:49 | T-hamburger tape, racing | same executor; hands up to 15 | vs hamburger: 74,569 money (parity) |
+| P8-rival-aware | P8 | 13:54 | T-hamburger tape, racing | + several wheat carriers, rival-aware DEMAND | vs hamburger: **14/20 wins**, 72,369 vs 59,243 |
 
 Bars on the same yardstick: prod 62,309; v48 makes 120-190 k in those games.
 

@@ -133,6 +133,12 @@ def main():
     pop += [sample(rng) for _ in range(a.pop - len(pop))]
     seen: dict = {}
     t0 = time.time()
+    from kagsym.tracking import Tracker
+    run_id = os.path.splitext(os.path.basename(a.out))[0]
+    tr = Tracker("search", f"portfolio/{run_id}", params=dict(gens=a.gens, pop=a.pop, elite=a.elite, seeds=a.seeds,
+                 race=a.race, opponent=a.opponent or "passive", init=a.init or "", space=json.dumps({k: len(v) for k, v in SPACE.items()})),
+                 tags=dict(tool="plan_blocks", yardstick="money vs the search rival, search seeds"),
+                 description="Portfolio search: ~20 parameters generate a 30-day plan; evolution with exact rollouts.").start()
     with get_context("fork").Pool(a.procs) as pool:
         for g in range(a.gens):
             todo = [p for p in pop if json.dumps(p, sort_keys=True) not in seen]
@@ -156,8 +162,11 @@ def main():
                 seen[json.dumps(p, sort_keys=True)] = v
             ranked = sorted(pop, key=lambda p: -seen[json.dumps(p, sort_keys=True)])
             best = ranked[0]
-            print(f"gen {g}: best {seen[json.dumps(best, sort_keys=True)]:,.0f}  median {st.median(seen[json.dumps(p, sort_keys=True)] for p in pop):,.0f}  "
+            _played = [seen[json.dumps(p, sort_keys=True)] for p in pop if seen[json.dumps(p, sort_keys=True)] > -1e5]
+            print(f"gen {g}: best {seen[json.dumps(best, sort_keys=True)]:,.0f}  median {st.median(_played) if _played else float('nan'):,.0f}  "
                   f"({len(seen)} played, {time.time() - t0:.0f}s)  {best}", flush=True)
+            tr.log({"search/best": seen[json.dumps(best, sort_keys=True)], "search/median": st.median(_played) if _played else 0.0,
+                    "search/played": len(seen), "search/seconds": time.time() - t0}, step=g)
             elite = ranked[:a.elite]
             children = []
             while len(children) < a.pop - a.elite:
@@ -172,6 +181,10 @@ def main():
     json.dump(dict(params=best, search=ranked[0][1], unseen=st.mean(u), plan=plan.to_dict(),
                    top=[(json.loads(k), v) for k, v in ranked[:10]]), open(a.out, "w"), indent=1, default=str)
     print("saved", a.out)
+    tr.log({"result/search_seeds": ranked[0][1], "result/unseen_seeds": st.mean(u)})
+    tr.log_params({f"best/{k}": v for k, v in best.items()})
+    tr.log_json(dict(params=best, plan=plan.to_dict(), top=[(json.loads(k), v) for k, v in ranked[:10]]), "portfolio.json")
+    tr.end()
 
 
 if __name__ == "__main__":

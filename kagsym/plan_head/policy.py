@@ -39,9 +39,11 @@ class PlanHeadPolicy:
         import torch
         torch.set_num_threads(1)
         ck = torch.load(path, map_location="cpu", weights_only=False)
+        if ck.get("kind") == "plan_fixed":       # a searched plan, executed literally (its DEMAND rules read the state)
+            return FixedPlanPolicy(Plan(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in ck["plan"].items()}))
         if ck.get("kind") == "plan_knn":         # amortisation by retrieval: the same lifecycle
             from .knn import PlanRetrieval
-            return cls(PlanRetrieval(ck["xs"], ck["days"], ck["plans"], k=int(ck.get("k", 1))))
+            return cls(PlanRetrieval(ck["xs"], ck["days"], ck["plans"], k=int(ck.get("k", 1)), weights=ck.get("weights")))
         model = PlanHead(int(ck["n_in"]), int(ck.get("width", 256)))
         model.load_state_dict(ck["state_dict"])
         model.eval()
@@ -98,3 +100,27 @@ class PlanHeadPolicy:
             return self._agent(obs)
         finally:
             set_plan(None)
+
+
+class FixedPlanPolicy(PlanHeadPolicy):
+    """The deployable of the search line: one searched plan, executed by
+    the symbolic executor; the state enters through the plan's runtime
+    rules (DEMAND mix, the rival's visible supply). No model at play time."""
+
+    def __init__(self, plan: Plan):
+        super().__init__(model=None)
+        self._fixed = plan
+
+    def reset(self, config: Any = None) -> None:
+        from .. import spec
+        from ..symbolic.executor import Agent
+        if config is not None:
+            self.configure(config)
+        spec.set_turns_per_day(self.hours)
+        spec.set_episode_steps(self.steps)
+        self._plan = self._fixed
+        self._agent = Agent(episode_steps=self.steps, macro=plan_macro(self._plan))
+        self._day = None
+
+    def _plan_day(self, obs) -> None:
+        return None                         # the plan is fixed; nothing to decide at the day boundary

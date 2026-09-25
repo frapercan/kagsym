@@ -193,7 +193,7 @@ class Policy:
         try:
             import torch
             _peek = torch.load(path, map_location="cpu", weights_only=False)
-            if isinstance(_peek, dict) and _peek.get("kind") == "plan_head":
+            if isinstance(_peek, dict) and _peek.get("kind") in ("plan_head", "plan_knn", "plan_fixed"):
                 from .plan_head.policy import PlanHeadPolicy
                 return PlanHeadPolicy.from_checkpoint(path)
         except Exception:

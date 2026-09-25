@@ -63,7 +63,10 @@ EXPERIMENTS = {
     "evaluation": "kagsym/evaluation",
 }
 METRIC_GROUPS = {"1_result", "2_policy", "3_critic", "4_optim", "5_opponent",
-                 "6_economy", "search", "band", "evaluate", "validate", "paired"}
+                 "6_economy", "search", "band", "evaluate", "validate", "paired",
+    # the planner line (2026-09-25): portfolio searches, live consolidations, the expansion ladder, wins panels
+    "result", "candidate", "best", "block", "sold", "panel",
+}
 
 
 def available() -> bool:
