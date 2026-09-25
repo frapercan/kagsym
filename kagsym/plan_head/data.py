@@ -25,7 +25,7 @@ for k in (2, 3):
 CROP_CLASSES += ["+".join(sorted(set(CROPS) - {c})) for c in CROPS]   # all-but-one (4-way)
 CROP_CLASSES.append("+".join(CROPS))                                   # all five
 FIELDS = {
-    "hands": list(range(0, 9)),
+    "hands": list(range(0, 13)),           # the portfolio search hires up to 12
     "load": [0, 3, 6, 9, 12, 15],
     "water_last": [0, 1],
     "tiles": [0, 10, 15, 20, 25, 30, 40, 50, 75],
@@ -90,13 +90,11 @@ def targets(plan: dict) -> dict:
     for f, vals in FIELDS.items():
         v = plan.get(f, 0)
         if f in KIND_OF:
-            v = min(vals, key=lambda a: abs(a - int(animals.get(KIND_OF[f], 0))))
-        elif f == "crop":
+            v = int(animals.get(KIND_OF[f], 0))
+        if f == "crop":
             v = crop_class(v)
-        elif f == "selling":
+        else:                                   # every numeric field snaps to its nearest class
             v = min(vals, key=lambda a: abs(a - float(v)))
-        elif f == "tiles":
-            v = min(vals, key=lambda a: abs(a - int(v)))
         out[f] = vals.index(v)
     return out
 
