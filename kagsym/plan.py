@@ -93,7 +93,6 @@ class Plan:
         coop or pasture takes a tile). A plan written for three quadrants
         and executed with two sowed every tile and left ten animals in the
         shed (measured, EXP-007 part 6)."""
-        from . import spec
         day = int(obs["day"])
         farm = obs["farms"][int(obs["player"])]
         unlocked = sum(1 for row in farm["tiles"] for t in row if t != "LOCKED")
@@ -142,6 +141,7 @@ def play_plan(plan: Plan, seed: int, days: int = 8, hours: int = 24, cash: int =
     """One game under `plan`, deterministic; returns our final cash. The
     opponent is passive by default, or a public agent by name (the market
     is shared: what the rival sells moves our prices)."""
+    from . import spec
     from .fastenv import FastEnv
     from .symbolic.executor import Agent
     from .evaluate import PASS_ACTION, _opponent_callable, public
