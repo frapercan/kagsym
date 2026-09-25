@@ -37,8 +37,7 @@ def play_head(model, seed: int, days: int, hours: int = 24, cash: int = 3000, op
     plan = Plan()
     set_plan(plan)
     ag = Agent(episode_steps=steps, macro=plan_macro(plan))
-    fields = {f: [] for f in ("crop", "tiles", "hands", "load", "water_last", "selling", "animals")}
-    land = 0
+    fields = {f: [] for f in ("crop", "tiles", "hands", "load", "water_last", "selling", "animals", "land")}
     try:
         while not env.done:
             ob = obs[0]
@@ -46,11 +45,9 @@ def play_head(model, seed: int, days: int, hours: int = 24, cash: int = 3000, op
                 p = model.plan_for(features(_state(ob), days))
                 for f in fields:
                     fields[f].append(p[f])
-                if ob["day"] == 0:
-                    land = int(p["land"])
                 plan = Plan(crop=tuple(fields["crop"]), tiles=tuple(fields["tiles"]), hands=tuple(fields["hands"]),
-                            land=land, animals=tuple(fields["animals"]), selling=tuple(fields["selling"]), load=tuple(fields["load"]),
-                            water_last=tuple(fields["water_last"]))
+                            land=tuple(fields["land"]), animals=tuple(fields["animals"]), selling=tuple(fields["selling"]),
+                            load=tuple(fields["load"]), water_last=tuple(fields["water_last"]))
                 set_plan(plan)
             obs, _ = env.step([ag(ob), rival(obs[1])])
         return float(env.rewards()[0])

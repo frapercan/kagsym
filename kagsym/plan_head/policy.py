@@ -14,7 +14,7 @@ from .data import features
 from .model import PlanHead
 from .state import day_state
 
-FIELDS = ("crop", "tiles", "hands", "load", "water_last", "selling", "animals")
+FIELDS = ("crop", "tiles", "hands", "load", "water_last", "selling", "animals", "land")
 
 
 def _config_value(config, key, default):
@@ -33,13 +33,15 @@ class PlanHeadPolicy:
         self._agent = None
         self._day = None
         self._fields = None
-        self._land = 0
 
     @classmethod
     def from_checkpoint(cls, path: str) -> "PlanHeadPolicy":
         import torch
         torch.set_num_threads(1)
         ck = torch.load(path, map_location="cpu", weights_only=False)
+        if ck.get("kind") == "plan_knn":         # amortisation by retrieval: the same lifecycle
+            from .knn import PlanRetrieval
+            return cls(PlanRetrieval(ck["xs"], ck["days"], ck["plans"], k=int(ck.get("k", 1))))
         model = PlanHead(int(ck["n_in"]), int(ck.get("width", 256)))
         model.load_state_dict(ck["state_dict"])
         model.eval()
@@ -61,7 +63,6 @@ class PlanHeadPolicy:
         spec.set_turns_per_day(self.hours)
         spec.set_episode_steps(self.steps)
         self._fields = {f: [] for f in FIELDS}
-        self._land = 0
         self._plan = Plan()
         self._agent = Agent(episode_steps=self.steps, macro=plan_macro(self._plan))
         self._day = None
@@ -74,10 +75,12 @@ class PlanHeadPolicy:
         p = self.model.plan_for(features(day_state(obs), self.days))
         for f in FIELDS:
             self._fields[f].append(p[f])
-        if int(obs["day"]) == 0:
-            self._land = int(p["land"])
         fl = self._fields
-        self._plan = Plan(crop=tuple(fl["crop"]), tiles=tuple(fl["tiles"]), hands=tuple(fl["hands"]), land=self._land,
+        # LAND PER DAY like every other field: taken from day 0 only, the
+        # policy never bought the quadrants the searched plans buy on days
+        # 3, 8 and 12, and the retrieval policy could not even replay its
+        # own seeds (7108: 29,572 against the recorded 93,175).
+        self._plan = Plan(crop=tuple(fl["crop"]), tiles=tuple(fl["tiles"]), hands=tuple(fl["hands"]), land=tuple(fl["land"]),
                           animals=tuple(fl["animals"]), selling=tuple(fl["selling"]), load=tuple(fl["load"]),
                           water_last=tuple(fl["water_last"]))
 
