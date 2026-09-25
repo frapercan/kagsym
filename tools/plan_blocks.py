@@ -51,6 +51,10 @@ SPACE = {
     "d1": [4, 6, 8, 10, 12],                                                # day the final targets apply
     "t1": [25, 40, 50, 60, 75, 100], "m1": list(MIXES), "dcrop": [0, 2, 4, 6, 8, 10, 12, 14],
     "h1": [4, 6, 8, 10, 12, 14, 15], "dh": [4, 6, 8, 10, 12],
+    # A LATE PHASE: the cash sat idle in the last ten days (P8: 40 k on day
+    # 20, 87 k on day 28) because the targets stopped growing at d1.
+    "d2": [14, 16, 18, 20, 22, NEVER], "g2": [0, 2, 4, 6, 8], "c2": [0, 2, 4, 6, 8, 10], "s2": [0, 2, 4, 6, 8, 10],
+    "t2": [25, 50, 75, 100], "h2": [8, 10, 12, 14, 15],
     "sell": [0.05, 0.25, 0.5, 0.75],
     "discount": [0.5, 0.6, 0.7, 0.82],   # the executor's distance discount (Plan.discount)
     "zones": [0.0, 0.3, 0.6],            # each unit owns a quadrant (Plan.zones)
@@ -72,17 +76,21 @@ def to_plan(p: dict) -> Plan:
     quadrants = [1 + (d >= p["land2"]) + (d >= p["land3"]) + (d >= p["land4"]) for d in range(DAYS)]
     land = tuple(q - 1 for q in quadrants)
     animals, tiles, crops, hands = [], [], [], []
+    d2 = p.get("d2", NEVER)
     for d in range(DAYS):
-        a = ({"GOOSE": p["g1"], "COW": p["c1"], "SHEEP": p["s1"]} if d >= p["d1"]
-             else {"GOOSE": p["g0"], "COW": p["c0"], "SHEEP": p["s0"]})
+        if d >= d2:                                         # the late phase adds to the final targets
+            a = {"GOOSE": p["g1"] + p.get("g2", 0), "COW": p["c1"] + p.get("c2", 0), "SHEEP": p["s1"] + p.get("s2", 0)}
+        else:
+            a = ({"GOOSE": p["g1"], "COW": p["c1"], "SHEEP": p["s1"]} if d >= p["d1"]
+                 else {"GOOSE": p["g0"], "COW": p["c0"], "SHEEP": p["s0"]})
         a = {k: v for k, v in a.items() if v > 0}
         n_an = sum(a.values())
         room = 25 * quadrants[d] - n_an                      # a coop or pasture takes a tile
-        t = p["t1"] if d >= p["dcrop"] else p["t0"]
+        t = max(p["t1"], p.get("t2", 0)) if d >= d2 else (p["t1"] if d >= p["dcrop"] else p["t0"])
         tiles.append(max(0, min(t, room)))
         crops.append(MIXES[p["m1"] if d >= p["dcrop"] else p["m0"]])
         animals.append(a if a else 0)
-        hands.append(p["h1"] if d >= p["dh"] else p["h0"])
+        hands.append(max(p["h1"], p.get("h2", 0)) if d >= d2 else (p["h1"] if d >= p["dh"] else p["h0"]))
     return Plan(crop=tuple(crops), tiles=tuple(tiles), hands=tuple(hands), land=land, animals=tuple(animals),
                 selling=p["sell"], load=12, water_last=1, discount=p.get("discount"), zones=p.get("zones", 0.0))
 

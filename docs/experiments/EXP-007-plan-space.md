@@ -521,3 +521,11 @@ unit-turns spent moving is the structure of 60 tiles and 15 animals with
 v48's 131 k solo is strategy: strawberries from day 0 and replanted at
 day 16, the mix, the herd. The search space now allows a strawberry
 opening and sowing from day 0 (P10 on).
+
+**The close is clean, the last ten days are idle** (14:35). P8 solo, 5
+seeds: final cash 112,618; left unliquidated at the close about 1,400 $
+(animal product 935, fruit 287, carried 164, seeds 36, shed 0) plus the
+animals themselves, which cannot be sold. But the cash sits: 40 k on day
+20, 66 k on day 25, 87 k on day 28, because the portfolio's targets stop
+growing at d1 (days 4-12). A late phase (d2, more animals by kind, tiles,
+hands) joins the search space.
