@@ -19,7 +19,7 @@ the live v48 on the 20 reserved seeds 7101-7120, seat 0.
 | P3-demand | portfolio_demand | 12:34 | T-v48 tape, racing | + Plan.crop DEMAND | 54,583 |
 | P4-refined | portfolio_v2 | 12:51 | T-v48 tape, racing | + ranked shed, feed chain, pens, feed cash reserve | 60,711 |
 | P5-discount-zones | portfolio_v3 | 13:01 | T-v48 tape, racing | + Plan.discount, Plan.zones in the space | 64,660 (se 4,179) |
-| P6-harvest-care | P6 | 13:47 | T-v48 tape, racing | + harvest before fertilise, care worth a unit (part 10) | pending |
+| P6-harvest-care | P6 | 13:30 | T-v48 tape, racing | + harvest before fertilise, care worth a unit (part 10) | 67,442 (se 4,249) |
 
 Bars on the same yardstick: prod 62,309; v48 makes 120-190 k in those games.
 
