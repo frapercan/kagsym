@@ -205,7 +205,7 @@ def plan_macro(plan: Plan):
 
 
 def play_plan(plan: Plan, seed: int, days: int = 8, hours: int = 24, cash: int = 3000,
-              opponent: str | None = None, seat: int = 0) -> float:
+              opponent: str | None = None, seat: int = 0, both: bool = False):
     """One game under `plan`, deterministic; returns our final cash. The
     opponent is passive by default, or a public agent by name (the market
     is shared: what the rival sells moves our prices)."""
@@ -238,4 +238,5 @@ def play_plan(plan: Plan, seed: int, days: int = 8, hours: int = 24, cash: int =
             actions[seat] = ag(obs[seat])
             actions[other] = rival(obs[other])
             obs, _ = env.step(actions)
-        return float(env.rewards()[seat])
+        r = env.rewards()
+        return (float(r[seat]), float(r[other])) if both else float(r[seat])

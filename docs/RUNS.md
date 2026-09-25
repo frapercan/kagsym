@@ -21,7 +21,10 @@ the live v48 on the 20 reserved seeds 7101-7120, seat 0.
 | P5-discount-zones | portfolio_v3 | 13:01 | T-v48 tape, racing | + Plan.discount, Plan.zones in the space | 64,660 (se 4,179) |
 | P6-harvest-care | P6 | 13:30 | T-v48 tape, racing | + harvest before fertilise, care worth a unit (part 10) | 67,442 (se 4,249) |
 | P7-vs-hamburger | P7 | 13:49 | T-hamburger tape, racing | same executor; hands up to 15 | vs hamburger: 74,569 money (parity) |
-| P8-rival-aware | P8 | 13:54 | T-hamburger tape, racing | + several wheat carriers, rival-aware DEMAND | vs hamburger: **14/20 wins**, 72,369 vs 59,243 |
+| P8-rival-aware | P8 | 13:54 | T-hamburger tape, racing | + several wheat carriers, rival-aware DEMAND | vs hamburger: **14/20 wins**, 72,369 vs 59,243; panel 12/20 and 13/20 |
+| P9 | P9 | 14:08 | T-hamburger tape, racing | definitive executor | 9/20 (panel 9 and 7); tape fitness 105k |
+| P10-straw-open | P10 | 14:12 | T-hamburger tape, racing | + strawberry opening, dcrop 0 | 8/20; tape fitness 111k. The tape (recorded against P5) drifts: fitness up, live wins down. |
+| T-hamburger-v2 | runs/rivals/hamburger_v2.json | 14:20 | recorded against P8's plan | for P11 on: fitness = margin, last racing stage live |
 
 Bars on the same yardstick: prod 62,309; v48 makes 120-190 k in those games.
 

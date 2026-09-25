@@ -99,12 +99,22 @@ def mutate(p: dict, rng: random.Random, k: int = 2) -> dict:
 
 
 OPPONENT = None       # set from --opponent: the market is shared, fitness is money against a real rival
+FITNESS = "money"     # or "margin": our money minus the rival's, which is what decides a win
+LIVE_FINAL = None     # a public agent for the racing's last stage: the tape drifts as our plans leave the one it was recorded against
+
+
+def _score(plan, s, opponent):
+    if FITNESS == "margin" and opponent:
+        a, b = play_plan(plan, s, days=DAYS, opponent=opponent, both=True)
+        return a - b
+    return play_plan(plan, s, days=DAYS, opponent=opponent)
 
 
 def _eval(task):
-    p, seeds = task
+    p, seeds = task[0], task[1]
+    opponent = task[2] if len(task) > 2 else OPPONENT
     plan = to_plan(p)
-    return st.mean(play_plan(plan, s, days=DAYS, opponent=OPPONENT) for s in seeds)
+    return st.mean(_score(plan, s, opponent) for s in seeds)
 
 
 def main():
@@ -119,9 +129,11 @@ def main():
     ap.add_argument("--opponent", default=None, help="a public agent as the rival (default: passive)")
     ap.add_argument("--init", default=None, help="a consolidated portfolio json to seed the population with")
     ap.add_argument("--race", action="store_true", help="successive halving over the seeds (about 3x fewer games)")
+    ap.add_argument("--fitness", default="money", choices=["money", "margin"])
+    ap.add_argument("--live-final", default=None, help="public agent for the racing's last stage (the rest against the tape)")
     a = ap.parse_args()
-    global OPPONENT
-    OPPONENT = a.opponent
+    global OPPONENT, FITNESS, LIVE_FINAL
+    OPPONENT, FITNESS, LIVE_FINAL = a.opponent, a.fitness, a.live_final
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     rng = random.Random(a.seed)
     search_seeds = RESERVED.seeds(a.seeds)
@@ -136,7 +148,8 @@ def main():
     from kagsym.tracking import Tracker
     run_id = os.path.splitext(os.path.basename(a.out))[0]
     tr = Tracker("search", f"portfolio/{run_id}", params=dict(gens=a.gens, pop=a.pop, elite=a.elite, seeds=a.seeds,
-                 race=a.race, opponent=a.opponent or "passive", init=a.init or "", space=json.dumps({k: len(v) for k, v in SPACE.items()})),
+                 race=a.race, opponent=a.opponent or "passive", fitness=a.fitness, live_final=a.live_final or "",
+                 init=a.init or "", space=json.dumps({k: len(v) for k, v in SPACE.items()})),
                  tags=dict(tool="plan_blocks", yardstick="money vs the search rival, search seeds"),
                  description="Portfolio search: ~20 parameters generate a 30-day plan; evolution with exact rollouts.").start()
     with get_context("fork").Pool(a.procs) as pool:
@@ -152,7 +165,7 @@ def main():
                 s2 = dict(zip(keep2, pool.map(_eval, [(todo[i], search_seeds[1:3]) for i in keep2], chunksize=1)))
                 m2 = {i: (s1[i] + 2 * s2[i]) / 3 for i in keep2}
                 keep3 = sorted(keep2, key=lambda i: -m2[i])[: max(2, int(0.25 * len(keep2)))]
-                s3 = dict(zip(keep3, pool.map(_eval, [(todo[i], search_seeds[3:]) for i in keep3], chunksize=1)))
+                s3 = dict(zip(keep3, pool.map(_eval, [(todo[i], search_seeds[3:], LIVE_FINAL or OPPONENT) for i in keep3], chunksize=1)))
                 n3 = len(search_seeds) - 3
                 vals = [((s1[i] + 2 * s2[i] + n3 * s3[i]) / (3 + n3)) if i in s3 else (m2[i] if i in m2 else s1[i] - 1e6)
                         for i in range(len(todo))]      # a one-seed score never beats a full one
