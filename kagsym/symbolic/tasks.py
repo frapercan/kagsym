@@ -263,48 +263,30 @@ def _carried_values_raw(obs) -> list:
     return out
 
 
-def _shed_task(obs, farm, ctx=None, macro=None):
-    """What to take out of the shed. Without this the animal chain never
-    closes: the animal is bought, lands in the shed and stays there forever.
-
-    Wheat matters just as much: FEED consumes 1 wheat FROM THE UNIT'S
-    INVENTORY, so an animal nobody brings wheat to escapes after two days.
+def _shed_tasks(obs, farm, ctx=None, macro=None) -> list:
+    """What to take out of the shed, RANKED by value: one task per shed-access
+    tile. Without this the animal chain never closes: the animal is bought,
+    lands in the shed and stays there forever. Wheat matters just as much:
+    FEED consumes 1 wheat FROM THE UNIT'S INVENTORY, so an animal nobody
+    brings wheat to escapes after two days. The shed used to offer ONE task
+    for all four access tiles, and with an animal waiting inside it was
+    always the pickup of the animal: the wheat never came out (block B of
+    the expansion ladder: 3 starving animals, 22 wheat in the shed, zero
+    FEED on day 16).
     """
     priv = obs["private"]
     shed = priv["shed"]
-    # 1) an animal to place, if there is or could be room
     if ctx is None:
         ctx = TurnContext(obs, farm)
-    # Only the animal actually in the shed is valued.
+    out = []
     in_shed = [a for a in spec.ANIMALS if int(shed.get(a, 0)) > 0]
     for a in sorted(in_shed, key=lambda a: -animal_value(ctx, a, macro)):
         if ctx.free_slots.get(spec.ANIMALS[a]["structure"], 0) > 0:
-            return (max(1.0, animal_value(ctx, a, macro) / ctx.days),
-                    ["PICKUP", a, 1])
-    # 1b) DROP. The harvest stays in the unit's inventory until the close of
-    # the day; with DROP it reaches the shed NOW and can be sold the same day,
-    # besides avoiding the nightly flush overflowing the 100-unit shed and
-    # discarding the excess. The opponent uses it 417 times per episode and it
-    # was simply missing from our repertoire.
-    #
-    # MARGINAL VALUE. It is NOT worth what the unit carries: the engine
-    # flushes inventories to the shed only at the close of the day, so dropping
-    # early does not change that the goods end up there. All it adds is being
-    # able to SELL IT TODAY, before the price falls. Valuing it gross made
-    # every unit run to the shed: measured, $39,558 -> $13,250.
-    #
-    # This is the third place where gross value was confused with marginal
-    # (before: the animal's nominal price and the fertiliser bonus).
-    # TWO MORE MARGINS, both exact in the engine (measured 2026-09-25 in the
-    # 8-day solitaire, wheat on 50 tiles): the nightly flush DISCARDS what
-    # does not fit in the shed (capacity 100; 116 units carried, 100 kept),
-    # and on the last day whatever is still carried at the close is worth
-    # nothing, because the score is cash. Dropping is what lets it be sold.
+            out.append((max(1.0, animal_value(ctx, a, macro) / ctx.days), ["PICKUP", a, 1]))
+            break
     best = max(_carried_values(obs), default=0.0)
     if best > 0:
-        return (best, ["DROP"])
-
-    # 2) fertiliser, if there are plants to fertilise and it is in the shed
+        out.append((best, ["DROP"]))
     fert = int(shed.get("FERTILIZER", 0))
     if fert > 0:
         fertilizable = sum(1 for row in farm["tiles"] for t in row
@@ -312,10 +294,7 @@ def _shed_task(obs, farm, ctx=None, macro=None):
                             and t.get("fertilized_until_day", -1) < obs["day"])
         if fertilizable > 0:
             n = min(fert, fertilizable, int(FERT_PER_TRIP))
-            return (FERT_TRIP_VALUE * unit_price(obs, "FERTILIZER"),
-                    ["PICKUP", "FERTILIZER", n])
-
-    # 3) wheat to feed the animals that have not eaten yet
+            out.append((FERT_TRIP_VALUE * unit_price(obs, "FERTILIZER"), ["PICKUP", "FERTILIZER", n]))
     hungry_tiles = [t for row in farm["tiles"] for t in row
                     if isinstance(t, dict) and t.get("animal") and not t.get("fed_today")]
     hungry = len(hungry_tiles)
@@ -324,23 +303,32 @@ def _shed_task(obs, farm, ctx=None, macro=None):
         if _under_plan():
             # FEEDING IS A CHAIN: pick the wheat up, then feed. Chains are off
             # (CHAIN_VALUE 0), so only a unit already carrying wheat can be
-            # given a FEED task, and the pickup was worth two units of wheat
-            # (~60 $) against hundreds for a watering: nobody fetched the
-            # wheat, nobody could feed, and the expansion blocks lost 23-48
-            # animals with thousands of wheat bought and sitting in the shed.
-            # The trip is worth the animals it feeds.
+            # given a FEED task; the trip is worth the animals it feeds.
             v = 0.0
             for t in hungry_tiles[:n]:
                 av = _plan_animal_value(obs, t["animal"])
                 v += av if int(t.get("consecutive_unfed", 0)) >= 1 else 2.0 * av / max(1, days_left(obs))
-            return (max(WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), v), ["PICKUP", "WHEAT", n])
-        return (WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), ["PICKUP", "WHEAT", n])
-    return None
+            out.append((max(WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), v), ["PICKUP", "WHEAT", n]))
+        else:
+            out.append((WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), ["PICKUP", "WHEAT", n]))
+    out.sort(key=lambda t: -t[0])
+    return out
 
 
-# What a unit must be CARRYING for the operation not to be a no-op.
+def _shed_task(obs, farm, ctx=None, macro=None, rank: int = 0):
+    """The rank-th shed task by value (the top one past the end, so every
+    access tile keeps a task)."""
+    ranked = _shed_tasks(obs, farm, ctx, macro)
+    if not ranked:
+        return None
+    return ranked[rank] if rank < len(ranked) else ranked[0]
+
+
+def _shed_rank(x: int, y: int) -> int:
+    return sorted(_shed_access_set()).index((x, y))
+
+
 REQUIRES = {"FEED": "WHEAT", "FERTILIZE": "FERTILIZER"}
-
 
 def _can_drop(inv) -> bool:
     """DROP only makes sense while carrying something."""
@@ -489,7 +477,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         ctx = TurnContext(obs, farm)
 
     if _is_shed_access(x, y):
-        t = _shed_task(obs, farm, ctx, macro)
+        t = _shed_task(obs, farm, ctx, macro, rank=_shed_rank(x, y))
         if t is not None:
             return t
 
@@ -980,7 +968,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                 # dominates the matrix (measured: v5 vs passive on seed
                 # 7102, 89,117 -> 74,176 alone, 43,754 with per-unit columns).
                 if _is_shed_access(x, y) and value_map is None:
-                    t = _shed_task(obs, farm, ctx, macro)
+                    t = _shed_task(obs, farm, ctx, macro, rank=_shed_rank(x, y))
                     if t is not None:
                         tasks[(x, y)] = t
                 continue

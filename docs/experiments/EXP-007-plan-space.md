@@ -404,3 +404,42 @@ state, so it can sit inside the rollouts of the day search
 (`--opponent replay:`). The dataset of EXP-008 is now generated that way:
 20 seeds, the state with shops and the rival's sales, one decision per
 day, rollouts that feel the shared market.
+
+## Part 9: the expansion ladder (2026-09-25, 12:30-13:00)
+
+Three blocks of growing size under a plan, solo, 5 seeds (7106-7110), the
+demand-following mix, the kinds named:
+
+```
+block                                            before     after   escaped  unplaced-days  feed bought
+A  25 tiles + 4 animals, 3 hands                 31,916    39,988     29->3      18->15       393->725
+B  land day 6, 50 tiles + 8 animals, 6 hands     10,714    48,774     38->16     47->49     564->1,691
+C  land days 6/10, 60 tiles + 15 animals, 12 h    4,723    47,528     53->14     49->45     540->2,336
+```
+
+What the traces found, in order (each one exact in the engine):
+
+1. **The shed offered one task for its four access tiles**, and with an
+   animal waiting inside it was the pickup of the animal; the wheat never
+   came out, the placed animals starved with 22 wheat in the shed and zero
+   FEED on day 16. The shed's tasks are now ranked by value, one per
+   access tile (`_shed_tasks`). This alone took block B from 19 k to 49 k.
+2. **Feeding is a chain** (pick the wheat up, then feed) and chains are
+   off (CHAIN_VALUE 0): only a unit already carrying wheat can feed. The
+   wheat pickup was worth two units of wheat (~60 $) against hundreds for
+   a watering; under a plan it is worth the animals it feeds, and feeding
+   an animal a day from escaping is worth the animal.
+3. **A cash reserve for the animals' feed** under a plan (seed, animal and
+   hire orders spend only what is above it): +4.8 k on block A, neutral on
+   the others.
+4. Three changes measured and REVERTED on 5 seeds: selling before buying
+   in the market order (no effect: the engine quotes all orders at once),
+   counting shed animals in the wheat sell reserve (no effect), and
+   capping the demand mix by absorbable units (-6 k: the town centre's one
+   unit a day is not the whole demand).
+
+What remains in block C: the crew is labour-bound (60 % of unit-turns are
+moves, 0-4 % idle), so building pastures and placing animals lose to the
+sixty waterings; 5-9 animals sit in the shed from day 15 with free slots
+of the wrong kind. That is the routing problem (v48: 1.08 moves per work
+action, ours 1.5) and the next block of the ladder.
