@@ -651,6 +651,12 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         if tile.get("fertilizer_available"):
             return (unit_price(obs, "FERTILIZER"), ["COLLECT_FERTILIZER"])
         if not tile.get("cared_today"):
+            if _under_plan() and tile.get("fed_today"):
+                # CARE on a fed day banks a bonus unit for the next production
+                # day (engine: pending_care_bonus): it is worth one unit of
+                # the product, not half. Measured in the v48-shape block:
+                # 6-9 of 15 animals cared for, milk 128 against v48's 335.
+                return (price, ["CARE"])
             return (CARE_VALUE * price, ["CARE"])
     return None
 
