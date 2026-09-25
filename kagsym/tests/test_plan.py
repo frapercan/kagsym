@@ -209,3 +209,33 @@ def test_animals_bought_under_a_plan_are_placed_and_their_feed_is_not_sold():
                 assert placed == 4 and unplaced == 0, (placed, unplaced)
             obs, _ = env.step([a, dict(E.PASS_ACTION)])
     assert feed_bought <= 4 * 6 * 3, feed_bought    # feed for 4 animals over 6 days, with a cushion; not a churn
+
+
+def test_plan_head_policy_loads_through_the_wrapper_path_and_plays(tmp_path):
+    # The Kaggle wrapper calls Policy.from_checkpoint(find_checkpoint(config));
+    # a plan-head file must come back as the plan-head policy and play the
+    # same game play_head plays, and leave no plan behind in the process.
+    import torch
+    from kagsym.plan_head.model import PlanHead
+    from kagsym.plan_head.data import features
+    from kagsym.plan_head.play import play_head
+    from kagsym.plan_head.state import day_state
+    from kagsym.policy import Policy
+    from kagsym.plan import get_plan
+    torch.manual_seed(0)
+    n_in = len(features(day_state(FastEnv(configuration={"episodeSteps": 72, "turnsPerDay": 24, "startingMoney": 3000}, seed=7101).reset()[0]), 3))
+    model = PlanHead(n_in, 32)
+    path = tmp_path / "head.pt"
+    torch.save({"kind": "plan_head", "state_dict": model.state_dict(), "n_in": n_in, "width": 32}, path)
+    pol = Policy.from_checkpoint(str(path))
+    assert type(pol).__name__ == "PlanHeadPolicy"
+    cfg = {"episodeSteps": 72, "turnsPerDay": 24, "startingMoney": 3000}
+    pol.configure(cfg)
+    pol.reset(cfg)
+    env = FastEnv(configuration=cfg, seed=7101)
+    obs = env.reset()
+    while not env.done:
+        obs, _ = env.step([pol.act(obs[0]), dict(E.PASS_ACTION)])
+    assert get_plan() is None
+    model.eval()
+    assert float(env.rewards()[0]) == play_head(model, 7101, 3)

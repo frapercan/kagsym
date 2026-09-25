@@ -69,3 +69,20 @@ the 11-day plan, missing the day-12 refinement). That the head beats the
 search on several trained rungs says the search is local there, not that
 the head is good. The first climb's dataset lacked animals and
 portfolios; the second climb's will not. Not deployed.
+
+## The deployable policy (2026-09-25, 12:00)
+
+`kagsym/plan_head/policy.py`: the symbolic executor driven by the head,
+with the lifecycle of `kagsym.policy.Policy`; `Policy.from_checkpoint`
+returns it for a checkpoint of kind `plan_head`, so the Kaggle wrapper
+does not change. The state the head reads (`plan_head/state.py`) carries
+the farm, the shops, the market inventory and the rival's visible farm.
+Cost at play time: 6 ms a turn on average, 49 ms on the worst turn,
+against a budget of 1,000 ms. The plan is set for the duration of one
+`act` call only, so a paired evaluation with another policy in the same
+process never sees it (test).
+
+The second dataset is the duel one: the day search with the recorded
+v48 inside its rollouts on seeds 7101-7120 (`runs/dataset/`), holdout
+seeds 7116-7120, regret measured against the recorded rival and then
+live.

@@ -83,7 +83,7 @@ def main():
                     va = {f: float((model(xv)[f].argmax(-1) == yv[f]).float().mean()) for f in FIELDS}
                     line += " | held-out " + " ".join(f"{f[:5]} {v:.2f}" for f, v in va.items())
             print(line, flush=True)
-    torch.save({"state_dict": model.state_dict(), "n_in": len(rows[0]["x"]), "width": a.width, "fields": FIELDS}, a.out)
+    torch.save({"kind": "plan_head", "state_dict": model.state_dict(), "n_in": len(rows[0]["x"]), "width": a.width, "fields": FIELDS}, a.out)
     # Regret on held-out horizons, reserved seeds the search never saw.
     model.eval()
     print(f"regret (money of the head's plan vs the searched plan; opponent {a.opponent or 'passive'}):")

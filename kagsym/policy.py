@@ -188,6 +188,16 @@ class Policy:
                         strict: bool = False, verbose: bool = False) -> "Policy":
         """`offset="checkpoint"` uses what the file carries; `None` disables it;
         an `Offset` overrides it (what a search does while exploring)."""
+        # A plan-head checkpoint (kagsym.cli.train_plan_head) is a different
+        # policy with the same lifecycle; the wrapper loads either.
+        try:
+            import torch
+            _peek = torch.load(path, map_location="cpu", weights_only=False)
+            if isinstance(_peek, dict) and _peek.get("kind") == "plan_head":
+                from .plan_head.policy import PlanHeadPolicy
+                return PlanHeadPolicy.from_checkpoint(path)
+        except Exception:
+            pass
         net, ck = load_network(path, strict=strict, verbose=verbose)
         stored = Offset.schedule_from_checkpoint(ck)
         if offset == "checkpoint":

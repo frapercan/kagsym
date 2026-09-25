@@ -9,9 +9,7 @@ from ..symbolic.executor import Agent
 from .data import features
 
 
-def _state(ob) -> dict:
-    from tools.plan_daysearch import _state as s
-    return s(ob)
+from .state import day_state as _state  # noqa: E402
 
 
 def _rival(opponent, seed: int):
