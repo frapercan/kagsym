@@ -383,8 +383,8 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None,
     orders = []
     for n in range(hired, n_max):
         cost = E._fib(n)
-        if _pl is not None:                 # the plan says how many; only cash limits it
-            if cost > money:
+        if _pl is not None:                 # the plan says how many; the cash above the feed reserve limits it
+            if cost > money - feed_cash_reserve(obs):
                 break
             orders.append(["HIRE"])
             money -= cost
@@ -401,6 +401,23 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None,
         money -= cost
         budget -= cost
     return orders
+
+
+def feed_cash_reserve(obs) -> float:
+    """Cash the animals' next two days of feed need (two days unfed and an
+    animal escapes: its cost is lost). Under a plan, seed, animal and hire
+    orders spend only what is left above it. Measured before it: the
+    expansion blocks sat at cash 0 from day 3 and lost 4-15 animals."""
+    farm = obs["farms"][int(obs["player"])]
+    priv = obs["private"]
+    n = sum(1 for row in farm["tiles"] for t in row if isinstance(t, dict) and t.get("animal"))
+    n += sum(int(priv["shed"].get(a, 0)) for a in spec.ANIMALS)
+    held = int(priv["shed"].get("WHEAT", 0)) + sum(int(inv.get("WHEAT", 0)) for inv in priv.get("inventories", []))
+    import os as _os_f
+    if _os_f.environ.get("KAG_FEED_RESERVE_OFF"):
+        return 0.0
+    need = max(0, 2 * n - held)
+    return need * float(obs["market"]["prices"].get("WHEAT", 25)) * 1.2
 
 
 def _value_per_action(obs) -> float:
@@ -549,9 +566,9 @@ def seed_orders(obs, tile_target: int, macro=None) -> list:
     n_units = 1 + len(farm["hands"])
     from ..plan import get_plan as _get_plan
     _pl = _get_plan()
-    if _pl is not None:                 # the plan: its crops, the tiles it asks, all the cash
+    if _pl is not None:                 # the plan: its crops, the tiles it asks, the cash above the feed reserve
         from .tasks import plantable as _plantable
-        cash = float(farm["money"])
+        cash = max(0.0, float(farm["money"]) - feed_cash_reserve(obs))
         out = []
         _cap = _pl.tile_cap(obs)
         _tot = max(1, _pl.tiles_on(int(obs["day"])))
@@ -754,7 +771,7 @@ def animal_orders(obs, max_per_turn: int = None, macro=None) -> list:
             continue
         # Reserve cash: running out of money for seed and feed ruins the
         # investment, because an animal that does not eat for two days escapes.
-        if money - d["cost"] < ANIMAL_CASH_RESERVE:
+        if money - d["cost"] < ANIMAL_CASH_RESERVE + (feed_cash_reserve(obs) if _pl is not None else 0.0):
             continue
         orders.append(["BUY_ANIMAL", a, 1])
         money -= d["cost"]

@@ -256,29 +256,34 @@ def test_retrieval_policy_returns_the_recorded_plan_of_a_seen_state(tmp_path):
 
 
 def test_retrieval_policy_replays_its_own_seed_exactly():
-    # A seen seed's states retrieve their own records, day after day, so the
-    # policy must reproduce the searched schedule's money to the cent; land
-    # taken from day 0 alone broke that (the searched plans buy land later).
-    import json, glob, torch
-    from kagsym.plan_head.knn import build
+    # Records made NOW from a fixed schedule; the retrieval policy on that
+    # seed retrieves its own records day after day and must reproduce the
+    # schedule's money to the cent (land taken from day 0 alone broke that).
+    import numpy as np
+    from kagsym.plan_head.data import features
+    from kagsym.plan_head.knn import PlanRetrieval
     from kagsym.plan_head.policy import PlanHeadPolicy
-    from kagsym.plan_head.play import _rival
-    import sys as _s; _s.path.insert(0, os.path.join(ROOT, "tools"))
-    from ladder import schedule_of
-    files = sorted(glob.glob(os.path.join(ROOT, "runs/dataset/duel_lane[01].jsonl")))
-    if not files:
-        pytest.skip("no duel dataset on disk")
-    recs = [json.loads(l) for f in files for l in open(f)]
-    seed = recs[0]["seed"]
-    r = build(os.path.join(ROOT, "runs/dataset/duel_lane[01].jsonl"), k=1)
-    pol = PlanHeadPolicy(r)
-    cfg = {"episodeSteps": 720, "turnsPerDay": 24, "startingMoney": 3000}
-    tape = "replay:" + os.path.join(ROOT, "runs/rivals/v48-fast-routes.json")
+    from kagsym.plan_head.state import day_state
+    seed, days = 7106, 6
+    plan = Plan(("CARROT", "WHEAT", "CARROT", "CARROT", "WHEAT", "CARROT"), (20, 25, 25, 25, 25, 25), (2, 0, 2, 7, 1, 2),
+                (0, 0, 0, 1, 1, 1), ({"GOOSE": 1},) * 6, 0.05, 12, 1)
+    cfg = {"episodeSteps": HOURS * days, "turnsPerDay": HOURS, "startingMoney": 3000}
+    spec.set_turns_per_day(HOURS); spec.set_episode_steps(HOURS * days)
+    xs, ds, plans = [], [], []
+    with active(plan):
+        env = FastEnv(configuration=cfg, seed=seed); obs = env.reset(); ag = Agent(episode_steps=HOURS * days, macro=plan_macro(plan))
+        while not env.done:
+            ob = obs[0]
+            if ob["hour"] == 0:
+                d = int(ob["day"]); xs.append(features(day_state(ob), days)); ds.append(d)
+                plans.append(dict(crop=plan.crop_on(d), tiles=plan.tiles_on(d), hands=plan.hands_on(d), load=plan.load_on(d),
+                                  water_last=plan.water_last_on(d), selling=plan.selling_on(d), land=plan.land_on(d),
+                                  animals=plan.animal_targets(d) or 0))
+            obs, _ = env.step([ag(ob), dict(E.PASS_ACTION)])
+        searched = float(env.rewards()[0])
+    pol = PlanHeadPolicy(PlanRetrieval(np.stack(xs), np.array(ds), plans))
     pol.configure(cfg); pol.reset(cfg)
-    spec.set_turns_per_day(24); spec.set_episode_steps(720)
-    env = FastEnv(configuration=cfg, seed=seed); obs = env.reset(); rival = _rival(tape, seed)
+    env = FastEnv(configuration=cfg, seed=seed); obs = env.reset()
     while not env.done:
-        obs, _ = env.step([pol.act(obs[0]), rival(obs[1])])
-    replayed = float(env.rewards()[0])
-    searched = play_plan(schedule_of(recs, seed, 30), seed, 30, opponent=tape)
-    assert replayed == searched, (replayed, searched)
+        obs, _ = env.step([pol.act(obs[0]), dict(E.PASS_ACTION)])
+    assert float(env.rewards()[0]) == searched

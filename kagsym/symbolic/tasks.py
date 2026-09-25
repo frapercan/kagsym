@@ -316,10 +316,24 @@ def _shed_task(obs, farm, ctx=None, macro=None):
                     ["PICKUP", "FERTILIZER", n])
 
     # 3) wheat to feed the animals that have not eaten yet
-    hungry = sum(1 for row in farm["tiles"] for t in row
-                      if isinstance(t, dict) and t.get("animal") and not t.get("fed_today"))
+    hungry_tiles = [t for row in farm["tiles"] for t in row
+                    if isinstance(t, dict) and t.get("animal") and not t.get("fed_today")]
+    hungry = len(hungry_tiles)
     if hungry > 0 and int(shed.get("WHEAT", 0)) > 0:
         n = min(hungry, int(shed["WHEAT"]))
+        if _under_plan():
+            # FEEDING IS A CHAIN: pick the wheat up, then feed. Chains are off
+            # (CHAIN_VALUE 0), so only a unit already carrying wheat can be
+            # given a FEED task, and the pickup was worth two units of wheat
+            # (~60 $) against hundreds for a watering: nobody fetched the
+            # wheat, nobody could feed, and the expansion blocks lost 23-48
+            # animals with thousands of wheat bought and sitting in the shed.
+            # The trip is worth the animals it feeds.
+            v = 0.0
+            for t in hungry_tiles[:n]:
+                av = _plan_animal_value(obs, t["animal"])
+                v += av if int(t.get("consecutive_unfed", 0)) >= 1 else 2.0 * av / max(1, days_left(obs))
+            return (max(WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), v), ["PICKUP", "WHEAT", n])
         return (WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), ["PICKUP", "WHEAT", n])
     return None
 
@@ -603,6 +617,18 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         prod = spec.ANIMALS[animal]["product"]
         price = unit_price(obs, prod)
         if not tile.get("fed_today"):
+            if _under_plan():
+                # UNDER A PLAN feeding is worth the animal, not two units of
+                # its product: unfed for two days it escapes with everything
+                # it would still yield, the same loss structure as a plant
+                # that dies tonight (valued at its remaining yield above).
+                # Measured before: feeding a goose was 100 $ against 250-1,500
+                # for watering a melon, the crews watered, and the expansion
+                # blocks lost 28-45 animals to hunger with wheat in the shed.
+                v = _plan_animal_value(obs, animal)
+                if int(tile.get("consecutive_unfed", 0)) >= 1:
+                    return (v, ["FEED"])                     # tonight it escapes
+                return (max(FEED_VALUE * price, v / max(1, days_left(obs))) * 2.0, ["FEED"])
             return (FEED_VALUE * price, ["FEED"])   # two days unfed and it escapes
         if tile.get("yield_units", 0) > 0:
             return (tile["yield_units"] * price, ["HARVEST"])
