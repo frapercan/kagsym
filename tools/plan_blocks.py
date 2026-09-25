@@ -95,10 +95,13 @@ def mutate(p: dict, rng: random.Random, k: int = 2) -> dict:
     return q
 
 
+OPPONENT = None       # set from --opponent: the market is shared, fitness is money against a real rival
+
+
 def _eval(task):
     p, seeds = task
     plan = to_plan(p)
-    return st.mean(play_plan(plan, s, days=DAYS) for s in seeds)
+    return st.mean(play_plan(plan, s, days=DAYS, opponent=OPPONENT) for s in seeds)
 
 
 def main():
@@ -110,12 +113,20 @@ def main():
     ap.add_argument("--procs", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="runs/blocks/portfolio.json")
+    ap.add_argument("--opponent", default=None, help="a public agent as the rival (default: passive)")
+    ap.add_argument("--init", default=None, help="a consolidated portfolio json to seed the population with")
     a = ap.parse_args()
+    global OPPONENT
+    OPPONENT = a.opponent
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     rng = random.Random(a.seed)
     search_seeds = RESERVED.seeds(a.seeds)
     unseen = RESERVED.seeds(5, 5)
-    pop = list(TEMPLATES) + [sample(rng) for _ in range(a.pop - len(TEMPLATES))]
+    seeds_pop = list(TEMPLATES)
+    if a.init:
+        seeds_pop = [r["params"] for r in json.load(open(a.init))[:10]] + seeds_pop
+    pop = seeds_pop + [mutate(rng.choice(seeds_pop), rng, k=rng.choice((1, 2, 3))) for _ in range(a.pop // 2 - len(seeds_pop))]
+    pop += [sample(rng) for _ in range(a.pop - len(pop))]
     seen: dict = {}
     t0 = time.time()
     with get_context("fork").Pool(a.procs) as pool:
@@ -137,7 +148,7 @@ def main():
         ranked = sorted(seen.items(), key=lambda kv: -kv[1])
         best = json.loads(ranked[0][0])
         plan = to_plan(best)
-        u = pool.starmap(play_plan, [(plan, s, DAYS) for s in unseen])
+        u = pool.starmap(play_plan, [(plan, s, DAYS, 24, 3000, OPPONENT) for s in unseen])
     print(f"best portfolio on search seeds {ranked[0][1]:,.0f}; on unseen seeds {st.mean(u):,.0f} {[round(x) for x in u]}")
     json.dump(dict(params=best, search=ranked[0][1], unseen=st.mean(u), plan=plan.to_dict(),
                    top=[(json.loads(k), v) for k, v in ranked[:10]]), open(a.out, "w"), indent=1, default=str)

@@ -344,3 +344,36 @@ Also fixed this afternoon: under a plan, BUILD, PICKUP and PLACE of a
 wanted animal are valued by its remaining product (they were valued 1 $
 and lost every tile to sowing: 15 animals bought for 9,600 $ sat in the
 shed on day 24).
+
+## Part 7: the portfolio search (2026-09-25, 11:00-)
+
+`tools/plan_blocks.py`: ~16 parameters generate a 30-day plan (opening
+animals by kind, tiles and mix, hands; the days each quadrant is bought;
+final animal targets; tiles, mix and hands after the expansion; selling
+pace). Evolution over 8 generations of 160, every candidate played exactly
+on 5 search seeds (0.7 s a game), then the top ten CONSOLIDATED on 20 seeds
+(the shop lottery makes a 5-seed winner a lottery winner: the gen-7 best
+scored 96,096 on its 5 seeds and 71,265 on 5 unseen ones).
+
+```
+                                        passive opponent, 20 seeds 7101-7120
+consolidated portfolio #2                 93,462  (se 1,905; the 15 seeds it never saw: 93,267)
+v5 (dials + network), same seeds          84,499
+paired                                    +8,963  (se 3,718, t 2.4)  better on 15 of 20
+```
+
+Portfolio #2: day 0, 2 cows, 1 goose, 2 sheep, 4 hands, 20 carrots; the
+2nd, 3rd and 4th quadrants on days 3, 8 and 12; 4 cows and 6 sheep from
+day 4; 25 tiles of strawberry/melon/wheat from day 8; 12 hands from day
+8; selling pace 0.75. It expands as fast as v48 and beats v5 alone.
+
+**In the duel it collapses.** Against v48 (seat 0, seeds 7106-7110) it
+makes 38,423 (48,559 on 7106, where v5 makes 76,961 and v48 106,245). The
+market is shared: on that seed v48 sells 143 wool, 262 fertiliser and
+melon, our three main products; wool falls from 217 to 18, fertiliser
+from 95 to 35, and the fixed portfolio keeps selling into it. v48 changes
+its mix with the seed (it reads the town); a fixed portfolio cannot. The
+search now runs with v48 as the opponent (`--opponent`), seeded with the
+consolidated elite (`--init`); the state-conditioned answer is the
+day-by-day refinement and, after it, the plan head with the shops and the
+rival's sales in its state.
