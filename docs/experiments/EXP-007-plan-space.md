@@ -443,3 +443,9 @@ moves, 0-4 % idle), so building pastures and placing animals lose to the
 sixty waterings; 5-9 animals sit in the shed from day 15 with free slots
 of the wrong kind. That is the routing problem (v48: 1.08 moves per work
 action, ours 1.5) and the next block of the ladder.
+
+Portfolio search v2 on the refined executor (racing, recorded rival, the
+demand mix available), consolidated LIVE against v48 on 20 seeds:
+**60,711** against 55,281 for the v1 portfolio and 62,309 for v5. The
+executor's refinements reach the duel; a fixed plan is now within 3 % of
+the deployed policy there.
