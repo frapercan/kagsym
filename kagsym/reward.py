@@ -101,6 +101,13 @@ class ProductionLedger:
     def __init__(self):
         self.available = {p: 0 for p in spec.PRODUCTS}
         self.sold_kinds = set()
+        # POR PRODUCTO, contado y no estimado. El 84% del hueco contra v48
+        # son DOS lineas de negocio -fresa 0 unidades contra 430, leche 72
+        # contra 335- y ninguna metrica del panel lo mostraba: se juzgaban los
+        # cambios contra un agregado que promedia sobre todo el problema.
+        self.vendidas = {p: 0 for p in spec.PRODUCTS}
+        self.ingreso = {p: 0.0 for p in spec.PRODUCTS}
+        self.cosechadas = {p: 0 for p in spec.PRODUCTS}
 
     def harvested(self, obs, action, me: int) -> int:
         """Units harvested THIS turn, read from the pre-step state.
@@ -114,7 +121,32 @@ class ProductionLedger:
         ops = [action.get("farmer")] + list(action.get("hands") or [])
         total = 0
         for (x, y), op in zip(pos, ops):
-            if not op or op[0] != "HARVEST":
+            if not op:
+                continue
+            # FERTILIZANTE: es produccion PROPIA -sale de tus animales, igual
+            # que la leche- pero NO entra por HARVEST sino por su propia
+            # operacion, asi que este ledger nunca lo acreditaba.
+            #
+            # Consecuencia, y no era solo de metrica: `sold` recorta las
+            # ordenes a `available[p]`, que para FERTILIZER valia 0 siempre.
+            # Vender fertilizante daba CERO ingreso contado y por tanto CERO
+            # recompensa densa. Medido: ~9.247 $ por partida = 4,6 unidades de
+            # retorno nunca pagadas sobre un retorno tipico de 50, y
+            # concentradas en la cadena animal->recoger->vender, que es
+            # precisamente la que no aprendemos.
+            #
+            # Recorrido exhaustivo de `_inv_add` en el motor: compra (excluida
+            # a proposito, no es produccion), cosecha de cultivo, cosecha de
+            # animal y esta. Las tres primeras ya estaban.
+            if op[0] == "COLLECT_FERTILIZER":
+                t = farm["tiles"][y][x]
+                if (isinstance(t, dict) and t.get("animal")
+                        and t.get("fertilizer_available")):
+                    self.available["FERTILIZER"] = self.available.get("FERTILIZER", 0) + 1
+                    self.cosechadas["FERTILIZER"] = self.cosechadas.get("FERTILIZER", 0) + 1
+                    total += 1
+                continue
+            if op[0] != "HARVEST":
                 continue
             t = farm["tiles"][y][x]
             if not isinstance(t, dict):
@@ -132,6 +164,7 @@ class ProductionLedger:
             else:
                 continue
             self.available[prod] = self.available.get(prod, 0) + n
+            self.cosechadas[prod] = self.cosechadas.get(prod, 0) + n
             total += n
         return total
 
@@ -155,8 +188,11 @@ class ProductionLedger:
             n = min(int(orden[2]), int(self.available[p]))
             if n <= 0:
                 continue
-            income += float(sum(marginal_prices(obs, p, n)))
+            _ing = float(sum(marginal_prices(obs, p, n)))
+            income += _ing
             self.available[p] -= n
+            self.vendidas[p] = self.vendidas.get(p, 0) + n
+            self.ingreso[p] = self.ingreso.get(p, 0.0) + _ing
             if p not in self.sold_kinds:
                 self.sold_kinds.add(p)
                 bonus += FIRST_PRODUCT_BONUS

@@ -1,77 +1,27 @@
-# LISTA BLANCA. Se ignora todo y se rescata SOLO lo que corre en produccion:
-# el agente que se envia y el lazo que lo entrena. El historial de medidas, los
-# checkpoints, los agentes de terceros y los datos viven en el disco de trabajo
-# pero NO en el repositorio.
-#
-# OJO: en .gitignore un comentario al final de linea NO se separa del patron,
-# asi que cada regla va sola.
-*
-!.gitignore
-!README.md
-!LICENSE
-# el motor derivado exactamente: acciones, precondiciones, recompensa
-!SPECIFICATION.md
-!pyproject.toml
+# Working disk, never in the repository: checkpoints, measurements, third-party
+# agents, downloaded data and everything archived from earlier iterations.
+runs/
+data/
+agents_pub/
+archivo/
+docs/env_src/
+mlruns/
+*.pt
+*.npy
+*.db
+*.tar.gz
+*.log
 
-# ---- measurement tools and ladder construction ----
-!tools/
-tools/*
-!tools/*.py
+# Python and tooling
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv*/
+*.egg-info/
+build/
+dist/
 
-# ---- el paquete ----
-!kagsym/
-kagsym/*
-!kagsym/__init__.py
-# hechos del motor
-!kagsym/spec.py
-# clon exacto del motor
-!kagsym/fastenv.py
-# codificacion de la observacion
-!kagsym/obs.py
-# el vector aprendido y sus 30 parametros
-!kagsym/macro.py
-# conformacion de recompensa
-!kagsym/potential.py
-# la recompensa
-!kagsym/reward.py
-# un paso = un dia
-!kagsym/environment.py
-# N partidas en paralelo
-!kagsym/parallel_env.py
-# migracion de checkpoints
-!kagsym/migrate_ckpt.py
-# registro de metricas
-!kagsym/tracking.py
-# huella del codigo
-!kagsym/version.py
-
-!kagsym/symbolic/
-kagsym/symbolic/*
-!kagsym/symbolic/__init__.py
-!kagsym/symbolic/asignacion.py
-!kagsym/symbolic/ejecutor.py
-!kagsym/symbolic/mercado.py
-!kagsym/symbolic/tareas.py
-
-!kagsym/nets/
-kagsym/nets/*
-!kagsym/nets/__init__.py
-!kagsym/nets/bloques.py
-!kagsym/nets/mundo.py
-
-!kagsym/cli/
-kagsym/cli/*
-!kagsym/cli/__init__.py
-!kagsym/cli/train.py
-
-!kagsym/tests/
-kagsym/tests/*
-!kagsym/tests/__init__.py
-!kagsym/tests/test_assignment.py
-!kagsym/tests/test_fastenv.py
-
-# nunca, aunque encajen arriba
+# Editor backups: the history lives in git
 *.bak
 *.bak_*
-*.pyc
-__pycache__/
+*~

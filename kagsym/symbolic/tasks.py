@@ -23,6 +23,7 @@ is derived from the engine.
 from __future__ import annotations
 
 import math
+import os as _os_coord
 
 from .. import spec
 
@@ -90,8 +91,44 @@ def days_left(obs) -> int:
     return total - obs["day"]
 
 
+_PLANTABLE_MEMO: dict = {}
+
+
 def plantable(obs, crop: str) -> bool:
-    """There is no point planting what there will be no time to harvest."""
+    key = (days_left(obs), crop, _under_plan())
+    hit = _PLANTABLE_MEMO.get(key)
+    if hit is None:
+        hit = _PLANTABLE_MEMO[key] = _plantable(obs, crop)
+        if len(_PLANTABLE_MEMO) > 4096:
+            _PLANTABLE_MEMO.clear()
+    return hit
+
+
+def _plantable(obs, crop: str) -> bool:
+    """There is no point planting what there will be no time to harvest.
+
+    THE FULL CYCLE, AND IT IS NOT A MISREADING -- it was measured. An audit
+    pointed out that the engine starts yielding at `first_yield_day` and keeps
+    accumulating until `max_yield_day`, so asking for the whole cycle to fit
+    refuses a melon sown with eleven days left even though it would yield on
+    day ten. Correct about the engine, wrong about the game: on 200 paired
+    seeds against v48, relaxing the test to `first_yield_day` LOSES $1,813
+    (se 301, t -6.0, better on only 63 of 200).
+
+    Why: what binds is unit-turns, not tiles. A crop that yields once and never
+    fills still occupies a tile and eats the waterings that a crop which
+    completes would have used. The test was never a yield guard, it is a
+    LABOUR guard -- the comment above it had the mechanism wrong and the
+    outcome right.
+    """
+    from ..plan import get_plan
+    if get_plan() is not None:
+        # UNDER A PLAN the guard is the engine's, not the labour heuristic:
+        # a crop can be sown if it yields at all before the game ends
+        # (first yield on `first_yield_day`, harvested and sold that day).
+        # Whether a green cycle pays is the plan's decision to make and the
+        # search's to measure (rung 3 of the ladder: 3 days, carrot).
+        return spec.CROPS[crop]["first_yield_day"] < days_left(obs)
     return cycle_days(crop) < days_left(obs)
 
 
@@ -167,53 +204,109 @@ def _is_shed_access(x: int, y: int) -> bool:
     return (x, y) in _shed_access_set()
 
 
-def _shed_task(obs, farm, ctx=None, macro=None):
-    """What to take out of the shed. Without this the animal chain never
-    closes: the animal is bought, lands in the shed and stays there forever.
+def _under_plan() -> bool:
+    from ..plan import get_plan
+    return get_plan() is not None
 
-    Wheat matters just as much: FEED consumes 1 wheat FROM THE UNIT'S
-    INVENTORY, so an animal nobody brings wheat to escapes after two days.
-    """
+
+def _zone_of(tile) -> str:
+    h = BOARD // 2
+    return ("N" if tile[1] < h else "S") + ("W" if tile[0] < h else "E")
+
+
+def _plan_zones(obs) -> float:
+    from ..plan import get_plan
+    pl = get_plan()
+    return float(getattr(pl, "zones", 0.0)) if pl is not None else 0.0
+
+
+def _home_zones(obs, units) -> list:
+    """Each unit's home quadrant: the unlocked quadrants dealt round-robin in
+    unit order (the farmer first), so a quadrant with more tiles gets the
+    same share as the others; good enough to stop the criss-crossing."""
+    farm = obs["farms"][int(obs["player"])]
+    qs = [q for q in ("NW", "NE", "SW", "SE") if q in farm["unlocked_quadrants"]] or ["NW"]
+    return [qs[i % len(qs)] for i in range(len(units))]
+
+
+def _plan_load(obs) -> int:
+    from ..plan import get_plan
+    pl = get_plan()
+    return 0 if pl is None else pl.load_on(int(obs["day"]))
+
+
+def _shed_dist(tile) -> int:
+    return min(dist(tile, a) for a in _shed_access_set())
+
+
+_CARRIED_MEMO: dict = {}
+
+
+def _carried_values(obs) -> list:
+    """Per turn and content, computed once: it was recomputed for every
+    unit and every shed tile of the turn (12 % of a game)."""
     priv = obs["private"]
-    shed = priv["shed"]
-    # 1) an animal to place, if there is or could be room
-    if ctx is None:
-        ctx = TurnContext(obs, farm)
-    # Only the animal actually in the shed is valued.
-    in_shed = [a for a in spec.ANIMALS if int(shed.get(a, 0)) > 0]
-    for a in sorted(in_shed, key=lambda a: -animal_value(ctx, a, macro)):
-        if ctx.free_slots.get(spec.ANIMALS[a]["structure"], 0) > 0:
-            return (max(1.0, animal_value(ctx, a, macro) / ctx.days),
-                    ["PICKUP", a, 1])
-    # 1b) DROP. The harvest stays in the unit's inventory until the close of
-    # the day; with DROP it reaches the shed NOW and can be sold the same day,
-    # besides avoiding the nightly flush overflowing the 100-unit shed and
-    # discarding the excess. The opponent uses it 417 times per episode and it
-    # was simply missing from our repertoire.
-    #
-    # MARGINAL VALUE. It is NOT worth what the unit carries: the engine
-    # flushes inventories to the shed only at the close of the day, so dropping
-    # early does not change that the goods end up there. All it adds is being
-    # able to SELL IT TODAY, before the price falls. Valuing it gross made
-    # every unit run to the shed: measured, $39,558 -> $13,250.
-    #
-    # This is the third place where gross value was confused with marginal
-    # (before: the animal's nominal price and the fertiliser bonus).
+    key = (int(obs["step"]), int(obs["player"]),
+           tuple(tuple(sorted((k, int(v)) for k, v in (inv or {}).items())) for inv in (priv.get("inventories") or [])),
+           tuple(sorted((k, int(v)) for k, v in (priv.get("shed", {}) or {}).items() if v)),
+           tuple(sorted((k, float(v)) for k, v in obs["market"]["prices"].items())))
+    hit = _CARRIED_MEMO.get(key)
+    if hit is None:
+        if len(_CARRIED_MEMO) > 256:
+            _CARRIED_MEMO.clear()
+        hit = _CARRIED_MEMO[key] = _carried_values_raw(obs)
+    return list(hit)
+
+
+def _carried_values_raw(obs) -> list:
+    """What each unit's load is worth if dropped now: the price drop it avoids
+    plus what the nightly flush would discard (shed overflow) or the game's
+    end would forfeit (last day). Same margins as `_shed_task`, per unit."""
     from .market_ops import future_price, marginal_prices
+    priv = obs["private"]
+    shed = priv.get("shed", {}) or {}
     priv_inv = priv.get("inventories") or []
-    best = 0.0
+    shed_room = max(0, int(spec.DEFAULT_CONFIG["shedCapacity"]) - int(sum(shed.values())))
+    carried_total = sum(int(n_) for inv in priv_inv for item, n_ in (inv or {}).items()
+                        if item in spec.PRODUCTS)
+    overflow_share = 0.0 if carried_total <= 0 else max(0.0, carried_total - shed_room) / carried_total
+    lost = 1.0 if days_left(obs) <= 1 else overflow_share
+    out = []
     for inv in priv_inv:
         v_ = 0.0
         for item, n_ in (inv or {}).items():
             if item in spec.PRODUCTS and n_:
                 now = float(sum(marginal_prices(obs, item, int(n_))))
                 later = float(future_price(obs, item, spec.TURNS_PER_DAY)) * int(n_)
-                v_ += max(0.0, now - later)      # only the drop avoided
-        best = max(best, v_)
-    if best > 0:
-        return (best, ["DROP"])
+                v_ += max(0.0, now - later) + lost * now
+        out.append(v_)
+    return out
 
-    # 2) fertiliser, if there are plants to fertilise and it is in the shed
+
+def _shed_tasks(obs, farm, ctx=None, macro=None) -> list:
+    """What to take out of the shed, RANKED by value: one task per shed-access
+    tile. Without this the animal chain never closes: the animal is bought,
+    lands in the shed and stays there forever. Wheat matters just as much:
+    FEED consumes 1 wheat FROM THE UNIT'S INVENTORY, so an animal nobody
+    brings wheat to escapes after two days. The shed used to offer ONE task
+    for all four access tiles, and with an animal waiting inside it was
+    always the pickup of the animal: the wheat never came out (block B of
+    the expansion ladder: 3 starving animals, 22 wheat in the shed, zero
+    FEED on day 16).
+    """
+    priv = obs["private"]
+    shed = priv["shed"]
+    if ctx is None:
+        ctx = TurnContext(obs, farm)
+    out = []
+    in_shed = [a for a in spec.ANIMALS if int(shed.get(a, 0)) > 0]
+    for a in sorted(in_shed, key=lambda a: -animal_value(ctx, a, macro)):
+        if ctx.free_slots.get(spec.ANIMALS[a]["structure"], 0) > 0:
+            out.append((max(1.0, animal_value(ctx, a, macro) / ctx.days), ["PICKUP", a, 1]))
+            break
+    best = max(_carried_values(obs), default=0.0)
+    if best > 0:
+        out.append((best, ["DROP"]))
     fert = int(shed.get("FERTILIZER", 0))
     if fert > 0:
         fertilizable = sum(1 for row in farm["tiles"] for t in row
@@ -221,21 +314,52 @@ def _shed_task(obs, farm, ctx=None, macro=None):
                             and t.get("fertilized_until_day", -1) < obs["day"])
         if fertilizable > 0:
             n = min(fert, fertilizable, int(FERT_PER_TRIP))
-            return (FERT_TRIP_VALUE * unit_price(obs, "FERTILIZER"),
-                    ["PICKUP", "FERTILIZER", n])
-
-    # 3) wheat to feed the animals that have not eaten yet
-    hungry = sum(1 for row in farm["tiles"] for t in row
-                      if isinstance(t, dict) and t.get("animal") and not t.get("fed_today"))
+            out.append((FERT_TRIP_VALUE * unit_price(obs, "FERTILIZER"), ["PICKUP", "FERTILIZER", n]))
+    hungry_tiles = [t for row in farm["tiles"] for t in row
+                    if isinstance(t, dict) and t.get("animal") and not t.get("fed_today")]
+    hungry = len(hungry_tiles)
     if hungry > 0 and int(shed.get("WHEAT", 0)) > 0:
         n = min(hungry, int(shed["WHEAT"]))
-        return (WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), ["PICKUP", "WHEAT", n])
-    return None
+        if _under_plan():
+            # FEEDING IS A CHAIN: pick the wheat up, then feed. Chains are off
+            # (CHAIN_VALUE 0), so only a unit already carrying wheat can be
+            # given a FEED task; the trip is worth the animals it feeds.
+            v = 0.0
+            for t in hungry_tiles[:n]:
+                av = _plan_animal_value(obs, t["animal"])
+                v += av if int(t.get("consecutive_unfed", 0)) >= 1 else 2.0 * av / max(1, days_left(obs))
+            out.append((max(WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), v), ["PICKUP", "WHEAT", n]))
+        else:
+            out.append((WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), ["PICKUP", "WHEAT", n]))
+    if _under_plan() and hungry >= 2 and int(shed.get("WHEAT", 0)) > 0:
+        # SEVERAL CARRIERS. One wheat pickup a turn meant one feeder walking
+        # animal to animal for fifteen animals; the rest of the crew idled
+        # (more hands: 3 % -> 9 % idle, escapes unchanged). Up to four
+        # units fetch a share of the wheat at once, one per access tile.
+        base = next((t for t in out if t[1][0] == "PICKUP" and t[1][1] == "WHEAT"), None)
+        if base is not None:
+            carriers = max(1, min(4, -(-hungry // 4)))
+            each = max(1, -(-int(base[1][2]) // carriers))
+            for _ in range(carriers - 1):
+                out.append((base[0], ["PICKUP", "WHEAT", each]))
+    out.sort(key=lambda t: -t[0])
+    return out
 
 
-# What a unit must be CARRYING for the operation not to be a no-op.
+def _shed_task(obs, farm, ctx=None, macro=None, rank: int = 0):
+    """The rank-th shed task by value (the top one past the end, so every
+    access tile keeps a task)."""
+    ranked = _shed_tasks(obs, farm, ctx, macro)
+    if not ranked:
+        return None
+    return ranked[rank] if rank < len(ranked) else ranked[0]
+
+
+def _shed_rank(x: int, y: int) -> int:
+    return sorted(_shed_access_set()).index((x, y))
+
+
 REQUIRES = {"FEED": "WHEAT", "FERTILIZE": "FERTILIZER"}
-
 
 def _can_drop(inv) -> bool:
     """DROP only makes sense while carrying something."""
@@ -295,6 +419,7 @@ class TurnContext:
     __slots__ = ("obs", "farm", "_pend", "_free_struct", "_val", "_cycle_days")
 
     def __init__(self, obs, farm):
+        self.obs = obs
         self.obs, self.farm = obs, farm
         self._pend = self._free_struct = self._val = self._cycle_days = None
 
@@ -341,6 +466,14 @@ def animal_value(ctx, a, macro):
     and the other four stayed unweighted for a whole session without anyone
     noticing.
     """
+    if _under_plan():
+        # UNDER A PLAN an animal already bought is dead capital until it is
+        # placed, and a target animal is worth its remaining daily product.
+        # `animal_net_value` books manure as a watering credit and comes out
+        # <= 0, so BUILD, PICKUP and PLACE were valued 1 $ and lost every
+        # tile and every turn to watering: measured, 15 animals bought for
+        # 9,600 $ and 15 in the shed unplaced on day 24 (EXP-007 part 6).
+        return _plan_animal_value(ctx.obs, a)
     v = ctx.value(a)
     if macro is None:
         return v
@@ -349,6 +482,21 @@ def animal_value(ctx, a, macro):
         return v * market_factors(macro).get(spec.ANIMALS[a]["product"], 1.0)
     except Exception:
         return v
+
+
+def _plan_animal_value(obs, a: str) -> float:
+    """What an animal returns over the rest of the game: its product at the
+    current price plus one fertiliser a day (sold, so at half price to allow
+    for the fall), minus feed; never below its cost while a day of income
+    remains, because unplaced it returns nothing at all."""
+    d = spec.ANIMALS[a]
+    left = max(0, days_left(obs) - 1)
+    prices = obs["market"]["prices"]
+    prod_days = max(0, left - d["first_yield_day"])
+    units = int(prod_days / max(1, d["interval"]))
+    income = units * float(prices.get(d["product"], 0)) + left * 0.5 * float(prices.get("FERTILIZER", 0))
+    feed = left * float(prices.get("WHEAT", 0))
+    return max(float(d["cost"]) if prod_days > 0 else 0.0, income - feed)
 
 
 def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=None):
@@ -360,7 +508,7 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         ctx = TurnContext(obs, farm)
 
     if _is_shed_access(x, y):
-        t = _shed_task(obs, farm, ctx, macro)
+        t = _shed_task(obs, farm, ctx, macro, rank=_shed_rank(x, y))
         if t is not None:
             return t
 
@@ -372,6 +520,12 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
             animals = [a for a in ctx.pending_animals if spec.ANIMALS[a]["structure"] == kind]
             if animals and ctx.free_slots.get(kind, 0) <= 0:
                 v = max(animal_value(ctx, a, macro) for a in animals)
+                if _under_plan():
+                    # UNDER A PLAN the pen is worth the animal waiting for it:
+                    # in the shed it earns nothing (block C: five sheep ten
+                    # days in the shed, coops free, no pasture built, the
+                    # build worth ~100 $ a turn against a 250 $ watering).
+                    return (v, ["BUILD_" + kind])
                 return (max(1.0, v / ctx.days), ["BUILD_" + kind])
         if free_capacity <= 0:
             return None
@@ -397,6 +551,16 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
         price = unit_price(obs, tile["crop"])
         ripe = age >= cd["first_yield_day"] and tile["yield_units"] > 0
 
+        if ripe and days_left(obs) <= 1 and _under_plan():
+            # LAST DAY under a plan: whatever is on the tile is all it will
+            # ever yield. The plan says whether to water it first (+1 unit
+            # for one action) or take it now; labour decides which pays and
+            # the search measures it. Before FERTILIZE, which returned a
+            # 5e-5 $ task ahead of a 70 $ harvest.
+            from ..plan import get_plan
+            if tile["watered_today"] or get_plan().water_last_on(int(day)) == 0:
+                return (tile["yield_units"] * price, ["HARVEST"])
+
         if not tile["watered_today"]:
             # `consecutive_unwatered` IS BORN AT 1 on planting: a plant not
             # watered the same day turns into weed that night. That is why >= 1
@@ -414,6 +578,16 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
                 if age >= cd["first_yield_day"] - 1:
                     return (price, ["WATER"])
             return (WATER_IDLE_VALUE * price, ["WATER"])
+
+        if ripe and _under_plan() and (cd["ongoing"] or age >= cd["max_yield_day"]):
+            # UNDER A PLAN, HARVEST BEFORE FERTILISE (and after the watering:
+            # a watering in the yield window adds a unit first). The
+            # fertilise branch below fires every day on an ongoing crop past
+            # its first yield and was the tile's only task; it needs
+            # fertiliser in hand, chains are off, so nobody could take it and
+            # the fruit sat on the plant: 45 strawberry tiles, 66 units ripe,
+            # the price at 339, zero harvests in a game (EXP-007 part 10).
+            return (tile["yield_units"] * price, ["HARVEST"])
 
         # FERTILISE: only where the NETWORK provides the value.
         #
@@ -472,18 +646,38 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
             if candidates:
                 best = max(candidates,
                             key=lambda a: animal_value(ctx, a, macro))
+                if _under_plan():
+                    return (animal_value(ctx, best, macro), ["PLACE", best, 1])
                 return (max(1.0, animal_value(ctx, best, macro) / ctx.days),
                         ["PLACE", best, 1])
             return None
         prod = spec.ANIMALS[animal]["product"]
         price = unit_price(obs, prod)
         if not tile.get("fed_today"):
+            if _under_plan():
+                # UNDER A PLAN feeding is worth the animal, not two units of
+                # its product: unfed for two days it escapes with everything
+                # it would still yield, the same loss structure as a plant
+                # that dies tonight (valued at its remaining yield above).
+                # Measured before: feeding a goose was 100 $ against 250-1,500
+                # for watering a melon, the crews watered, and the expansion
+                # blocks lost 28-45 animals to hunger with wheat in the shed.
+                v = _plan_animal_value(obs, animal)
+                if int(tile.get("consecutive_unfed", 0)) >= 1:
+                    return (v, ["FEED"])                     # tonight it escapes
+                return (max(FEED_VALUE * price, v / max(1, days_left(obs))) * 2.0, ["FEED"])
             return (FEED_VALUE * price, ["FEED"])   # two days unfed and it escapes
         if tile.get("yield_units", 0) > 0:
             return (tile["yield_units"] * price, ["HARVEST"])
         if tile.get("fertilizer_available"):
             return (unit_price(obs, "FERTILIZER"), ["COLLECT_FERTILIZER"])
         if not tile.get("cared_today"):
+            if _under_plan() and tile.get("fed_today"):
+                # CARE on a fed day banks a bonus unit for the next production
+                # day (engine: pending_care_bonus): it is worth one unit of
+                # the product, not half. Measured in the v48-shape block:
+                # 6-9 of 15 animals cared for, milk 128 against v48's 335.
+                return (price, ["CARE"])
             return (CARE_VALUE * price, ["CARE"])
     return None
 
@@ -499,7 +693,16 @@ DIG_VALUE = 0.9             # clearing, as a fraction of the planting value
 # 4 parameters: perhaps 4 were not enough, the transform was limiting their
 # effect.
 MAP_GAIN = 1.0              # how much the network's emission weighs
-MAP_CAP = 20.0              # clip inside expm1
+# CLIP INSIDE expm1, ON BOTH SIDES. It used to read
+# `abs(min(MAP_CAP, gain * r))`, which caps only the positive tail: for a very
+# negative `r` the min passes it straight through and the abs then makes it
+# large, so expm1 can overflow exactly the way `priorities()` did before it was
+# fixed. `min(MAP_CAP, abs(gain * r))` caps both. At the operating point
+# measured this changes nothing; it is insurance against a worker dying.
+import os as _os_v
+_VALOR = _os_v.environ.get("KAG_VALOR", "mapa")   # mapa | heuristica
+
+MAP_CAP = 20.0
 FERTILIZER_HORIZON = 3      # days counted towards the fertiliser bonus
 FERT_PER_TRIP = 4.0         # fertiliser picked up in one trip. Learned.
 # WHAT EACH OPERATION IS WORTH, where the engine does not say it. A trip to the
@@ -603,6 +806,20 @@ def enable_mask(n_keys=0):
                         dtype=np.float32)
 
 
+def swap_mask(arr):
+    """Intercambia el acumulador de mascara y devuelve el anterior.
+
+    Con DOS ASIENTOS los dos agentes deciden en el mismo proceso y el
+    acumulador es un global del modulo: sin esto las dimensiones que decidio
+    el asiento 0 se mezclarian con las del 1 y la mascara de PPO ignoraria
+    ratios que si importan.
+    """
+    global MASK_ACC
+    prev = MASK_ACC
+    MASK_ACC = arr
+    return prev
+
+
 def collect_mask():
     global MASK_ACC
     m = MASK_ACC
@@ -617,6 +834,9 @@ def collect_mask():
 # was offered and the emitted value was not positive- and the number alone
 # does not separate them. Off by default; costs nothing when disabled.
 PASS_ACC = None
+# "multiplicativa" (historico) o "aditiva": ver la nota en _assign_hungarian
+_COORD = _os_coord.environ.get("KAG_COORD", "multiplicativa")
+_ESCALA_TURNO = [0.0]
 
 
 def enable_pass_stats():
@@ -654,6 +874,20 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
             # `seed_orders`. It is weighted by the LEARNED factor of the
             # product the animal gives, which already lives in the macro
             # vector (see `animal_value`).
+            # TAKING AN ANIMAL WITH NOWHERE TO PUT IT IS NOT WASTE.
+            # Measured on one episode: 110 cows out of the shed for 14
+            # placements, and six of ten units carrying something at any
+            # moment. Restricting the pickup to when an empty structure of the
+            # right kind exists LOSES $4,644 on 200 paired seeds against v48
+            # (se 767, t -6.1). Carrying the animal is PRE-POSITIONING: the
+            # trip to the shed is paid in advance so the placement is instant
+            # when a structure frees up.
+            #
+            # It is the fourth of its kind. Withdrawing the green harvest loses
+            # on 48 of 48 seeds; relaxing `plantable` loses $1,813; forcing the
+            # destination commitment loses $6,890. What looks like waste in
+            # this layer has been tuned into a configuration where it carries
+            # weight, and measuring is the only way to tell.
             best = max(in_shed, key=lambda a: animal_value(ctx, a, macro))
             out.append((OPS_IX["PICKUP_ANIMAL"], ["PICKUP", best, 1]))
         # QUANTITY, not just the verb. `OPS_VOCAB` has `PICKUP_WHEAT` as a
@@ -729,6 +963,21 @@ def tile_options(obs, farm, x: int, y: int, free_capacity: int, ctx=None,
         if tile.get("fertilized_until_day", -1) < day:
             out.append((OPS_IX["FERTILIZE"], ["FERTILIZE"]))
         if tile.get("yield_units", 0) > 0 and age >= cd["first_yield_day"]:
+            # NOT IMPLEMENTED, written down so the same wrong calculation is
+            # not derived again. Harvesting before `max_yield_day` looks
+            # strictly dominated: a non-ongoing crop keeps accumulating, so
+            # picking it early throws away `max_yield - yield_units` units.
+            # Measured on the 8h x 5d checkpoint, 8 episodes: 80 harvests land
+            # on a planted tile, 64 of them in green (80%), holding 2.30 units
+            # of a possible 4.2 -- 17 units an episode, $425 at base price
+            # against a net of $275.
+            #
+            # Withdrawing the option was measured on 48 paired seeds and it
+            # LOSES: 8h x 5d, $3,276 -> $3,229, -$46 with se 2, worse on 48 of
+            # 48; at 24h x 30d it is null, +$277 +- 284. The gross-yield
+            # arithmetic ignores what collecting those extra units costs: the
+            # tile has to be watered every day until it fills, and unit-turns
+            # are the binding resource, not fruit.
             out.append((OPS_IX["HARVEST"], ["HARVEST"]))
         return out
 
@@ -764,6 +1013,19 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
     for y in range(BOARD):
         for x in range(BOARD):
             if not unlocked(farm, x, y):
+                # The engine resolves DROP/PICKUP before the LOCKED guard and
+                # lets units stand on locked tiles: the three locked
+                # shed-access tiles are legal standing positions for the shed.
+                # Only the unlocked one was offered, so every unit queued on
+                # the same corner.
+                # Only WITHOUT a value map: with one, every other column is
+                # priced by the network and a heuristic dollar figure here
+                # dominates the matrix (measured: v5 vs passive on seed
+                # 7102, 89,117 -> 74,176 alone, 43,754 with per-unit columns).
+                if _is_shed_access(x, y) and value_map is None:
+                    t = _shed_task(obs, farm, ctx, macro, rank=_shed_rank(x, y))
+                    if t is not None:
+                        tasks[(x, y)] = t
                 continue
             if verb_map is not None:
                 # END TO END: LEGALITY from the engine, the VERB from the
@@ -811,7 +1073,26 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                             MASK_ACC[1 + _k, y, x] = 1.0   # there was a choice
                 r = float(value_map[y][x]) if value_map is not None else 0.0
                 v = math.copysign(
-                    math.expm1(abs(min(MAP_CAP, MAP_GAIN * r))), r)
+                    math.expm1(min(MAP_CAP, abs(MAP_GAIN * r))), r)
+                # WHOSE DOLLARS DECIDE. The map REPLACES whatever the symbolic
+                # layer computed, so `tile_task` only ever supplies the verb.
+                # Instrumented on a real episode: on the 251 turns with a plant
+                # that dies tonight, the rescue enters the matrix at 0.3 --
+                # against the $472 the heuristic computes for it -- with the
+                # nearest unit 1.02 steps away. Not capacity, not distance, not
+                # the discount: the valuation says it is worth nothing.
+                # And handing them back LOSES $11,420 on 200 paired seeds
+                # against v48 (se 740, t -15.4, better on 27 of 200). So the
+                # 0.3 is not a bug: relative to everything else on the board,
+                # the network is saying that saving that plant is not worth a
+                # unit-turn -- and its relative scale beats the heuristic's
+                # dollars by eleven thousand. The heuristic's figures are not
+                # commensurable across task types; the map's are.
+                # KAG_VALOR=heuristica keeps the A/B available.
+                if _VALOR == "heuristica":
+                    _th = tile_task(obs, farm, x, y, free, ctx, macro)
+                    if _th is not None:
+                        v = _th[0]
                 tasks[(x, y)] = (v, op)
                 if op[0] == "PLANT":
                     free -= 1
@@ -839,9 +1120,10 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
                     # heuristic fallback that used to live here never fired.
                     # The network emits in symlog space (where it was fitted);
                     # it is undone to get back to dollars.
-                    r = float(value_map[y][x])
-                    t = (math.copysign(math.expm1(
-                        abs(min(MAP_CAP, MAP_GAIN * r))), r), t[1])
+                    if _VALOR != "heuristica":
+                        r = float(value_map[y][x])
+                        t = (math.copysign(math.expm1(
+                            min(MAP_CAP, abs(MAP_GAIN * r))), r), t[1])
                 tasks[(x, y)] = t
                 if t[1][0] == "PLANT":
                     free -= 1
@@ -866,7 +1148,7 @@ def board_tasks(obs, farm, free_capacity: int, value_map=None, macro=None,
         _k2, _o2 = _ex[_sel]
         _r2 = float(value_map[_y][_x])
         _v2 = math.copysign(
-            math.expm1(abs(min(MAP_CAP, MAP_GAIN * _r2))), _r2)
+            math.expm1(min(MAP_CAP, abs(MAP_GAIN * _r2))), _r2)
         _v2 -= EXTRA_TILE_THRESHOLD
         if _v2 <= 0.0:
             continue
@@ -964,9 +1246,36 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
     """
     tiles = list(tasks)
     n = len(units)
+    invs = invs or [{}] * len(units)
+    # ONE DROP COLUMN PER CARRYING UNIT. The shed has one access tile per
+    # unlocked quadrant, so with one quadrant there was ONE column for the
+    # whole crew: the Hungarian sent one unit per turn to the shed, the rest
+    # kept harvesting or passed, and the load died in their hands. Measured
+    # on the 4-day solitaire, 25 carrot tiles, 6 hands: 75 units harvested,
+    # 24 sold, 51 carried at the close. Every carrying unit now has its own
+    # column on the same tile, worth what IT carries (the column's value was
+    # the crew's maximum, so the unit with 3 units looked like the one with
+    # 12). In map mode the network's value is kept and scaled by that share.
+    _deadline = None if chain_ctx is None else chain_ctx.get("deadline")
+    _zones = 0.0 if chain_ctx is None else float(chain_ctx.get("zones") or 0.0)
+    _home = (chain_ctx.get("home") or []) if chain_ctx is not None else []
+    if _zones and len(_home) < len(units):
+        _zones = 0.0
+    _load = 0 if chain_ctx is None else int(chain_ctx.get("load") or 0)
+    _carried_n = [sum(int(n_) for it, n_ in (inv or {}).items() if it in spec.PRODUCTS)
+                  if isinstance(inv, dict) else 0 for inv in invs]
+    _drop_tiles = [t for t in tiles if tasks[t][1][0] == "DROP"]
+    _carried = None
+    _share = None
+    if _drop_tiles and chain_ctx is not None and chain_ctx.get("carried") is not None:
+        _carried = list(chain_ctx["carried"])
+        _cmax = max(_carried) if _carried else 0.0
+        _share = [(c / _cmax if _cmax > 0 else 0.0) for c in _carried]
+        _n_carry = sum(1 for c in _carried if c > 0)
+        for _t in _drop_tiles:
+            tiles.extend([_t] * max(0, _n_carry - 1))
     m = len(tiles) + n
     value = [[0.0] * m for _ in range(n)]
-    invs = invs or [{}] * len(units)
     if PASS_ACC is not None:
         PASS_ACC["units"] += len(units)
     # THE KEY TERM, VECTORISED. One dot product per (unit, tile) pair in pure
@@ -984,6 +1293,11 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
         _ux = np.fromiter((p[0] for p in units), int, len(units))
         _uy = np.fromiter((p[1] for p in units), int, len(units))
         _EZ = np.exp(np.clip(_qs[:, _uy, _ux].T @ _ks[:, _ty, _tx], -13.8, 13.8))
+    # mediana de los valores de tarea del turno: robusta a la cola larga que
+    # produce el expm1, y comun a todas las celdas
+    if _COORD == "aditiva" and tasks:
+        _vs = np.array([abs(tasks[t][0]) for t in tiles], dtype=float)
+        _ESCALA_TURNO[0] = float(np.median(_vs)) if len(_vs) else 0.0
     for i, pos in enumerate(units):
         row = value[i]
         inv = invs[i] if i < len(invs) and isinstance(invs[i], dict) else {}
@@ -1005,13 +1319,30 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
                 # WHOLE path -- unit to shed, shed to tile. The route is
                 # mechanics, exactly like the Manhattan distance already here;
                 # what the task is worth is still the network's.
-                if CHAIN_VALUE <= 0.0:
+                # OVERRIDE PARA MEDIR. `CHAIN_VALUE` viene del macro, que nunca
+                # se entreno con el, asi que en inferencia esta en su defecto
+                # 0,0004 -- apagado. KAG_CADENA lo fuerza para poder medir el
+                # mecanismo sin reentrenar. Lo que arregla: sin el, la casilla
+                # que pide FEED desaparece cuando nadie lleva trigo, y entonces
+                # nadie va a buscar trigo; la accion previa que habilita la
+                # siguiente se vuelve invisible.
+                import os as _os_c
+                _cv = _os_c.environ.get("KAG_CADENA", "")
+                _CV = float(_cv) if _cv else CHAIN_VALUE
+                if _CV <= 0.0:
                     continue              # stays 0: loses to the dummy
-                _ch = _chain_for(pos, tile, op, inv, chain_ctx)
+                _memo = chain_ctx.setdefault("_chain_memo", {}) if chain_ctx is not None else None
+                _mk = (pos, tile, op[0], tuple(sorted((k, int(v)) for k, v in (inv or {}).items() if v))) if _memo is not None else None
+                if _memo is not None and _mk in _memo:
+                    _ch = _memo[_mk]
+                else:
+                    _ch = _chain_for(pos, tile, op, inv, chain_ctx)
+                    if _memo is not None:
+                        _memo[_mk] = _ch
                 if _ch is None:
                     continue
                 _acc, _item, _qty, _dtot = _ch
-                row[j] = CHAIN_VALUE * v * (STEP_DISCOUNT ** _dtot)
+                row[j] = _CV * v * (STEP_DISCOUNT ** _dtot)
                 _chain[(i, j)] = (_acc, _item, _qty)
                 if PASS_ACC is not None:
                     PASS_ACC["offers"] += 1
@@ -1022,7 +1353,35 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
                 continue
             if PASS_ACC is not None:
                 PASS_ACC["offers"] += 1
+            if _zones and op[0] not in ("DROP", "PICKUP", "PLACE") and _zone_of(tile) != _home[i]:
+                # ZONES (a plan field): each unit owns a quadrant, like a route
+                # agent; work in another quadrant is discounted so the crew
+                # stops criss-crossing (measured: 60 % of unit-turns were
+                # moves in the 60-tile block, v48 makes 1.08 moves per work).
+                v = v * (1.0 - _zones)
+            if _share is not None and op[0] == "DROP" and i < len(_share):
+                v = v * _share[i]
+                if _load > 0 and _carried_n[i] < _load:
+                    # The plan says how full a hand goes to the shed; the
+                    # deadline overrides it (a trip that cannot wait).
+                    _forced = _deadline is not None and _deadline <= _shed_dist(pos) + 2
+                    if not _forced:
+                        continue
+            if _deadline is not None and op[0] == "WATER":
+                # Watering on the last day pays only through a harvest that
+                # still reaches the market.
+                _need = dist(pos, tile) + 2 + _shed_dist(tile) + 1 + 1
+                if _need > _deadline:
+                    continue
+            if _deadline is not None and op[0] == "HARVEST":
+                # LAST DAY: the score is cash, and a harvest reaches it only
+                # through walk + HARVEST + walk to the shed + DROP + a SELL
+                # order the turn after. What cannot make that trip is worth 0.
+                _need = dist(pos, tile) + 1 + _shed_dist(tile) + 1 + 1
+                if _need > _deadline:
+                    continue
             row[j] = v * (STEP_DISCOUNT ** dist(pos, tile))
+            _base_j = row[j]
             # PER-UNIT PREFERENCE. The value is the same for everybody, so
             # without this term the only thing telling two units apart is
             # distance, and when they want the same tile the loser takes the
@@ -1033,10 +1392,48 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
             # the unit's query with the tile's key starts at exactly 0 -the
             # head is zero-initialised- and exp(0) = 1 leaves the matrix
             # identical to the one before this existed.
-            if _EZ is not None:
-                row[j] *= float(_EZ[i, j])
-            if stickiness and previous is not None and previous.get(i) == tile:
-                row[j] *= (1.0 + stickiness)
+            # COORDINACION: MULTIPLICATIVA O ADITIVA.
+            #
+            # Medido el 2026-09-23: el valor de la tarea pasa por
+            # copysign(expm1(min(20,|r|)), r), o sea que puede llegar a 4,8e8,
+            # mientras los dos terminos de coordinacion son factores de orden
+            # uno -- el emparejamiento aprendido da _EZ entre 0,94 y 1,15, y la
+            # continuidad que la red emite es x1,02. No pueden competir: para
+            # cambiar una decision tendrian que valer tanto como una diferencia
+            # de dolares que ya paso por una exponencial.
+            #
+            # Con KAG_COORD=aditiva entran SUMANDO en la misma escala que el
+            # valor, como una fraccion de la celda base, para que puedan pelear
+            # de tu a tu. Sigue siendo la red quien decide cuanto: `_EZ` sale
+            # de sus claves y consultas, y la continuidad de su dial.
+            #
+            # AVISO: "mas coordinacion" NO es obviamente mejor -- forzar la
+            # continuidad a 0,25 perdio -1.828 $ (t -1,4, 60 semillas
+            # pareadas). Esto no sube el dial, le da ESCALA; solo se mide
+            # reentrenando.
+            _st = globals().get("_STICKY_FORZADO", None)
+            _st = stickiness if _st is None else _st
+            _mismo = previous is not None and previous.get(i) == tile
+            if _COORD == "aditiva":
+                # ESCALA GLOBAL DEL TURNO, no de la propia celda.
+                # Con `abs(_base_j)` esto era una IDENTIDAD ALGEBRAICA --
+                # row*(1+(EZ-1)) == row + row*(EZ-1) -- y el interruptor salia
+                # inerte: mismo dinero y mismas operaciones hasta el digito.
+                # Verificado y corregido el 2026-09-23.
+                #
+                # Con una escala comun del turno el bono es ABSOLUTO, que es
+                # lo que permite que una tarea CONTINUADA y barata gane a una
+                # NUEVA y cara. Si es proporcional a la celda, nunca puede.
+                _esc = _ESCALA_TURNO[0]
+                if _EZ is not None:
+                    row[j] += _esc * (float(_EZ[i, j]) - 1.0)
+                if _st and _mismo:
+                    row[j] += _esc * _st
+            else:
+                if _EZ is not None:
+                    row[j] *= float(_EZ[i, j])
+                if _st and _mismo:
+                    row[j] *= (1.0 + _st)
 
     # WHICH KEY DIMS DECIDED. Same rule as the verbs: a dimension only
     # counts if there was a COMPARISON. A tile wanted by a single unit, or a
@@ -1065,7 +1462,16 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
     # outbid it. With the fraction at its default of 2.0 nothing is ever
     # reserved -the destination is one of the alternatives, so it cannot be
     # twice the best of them- and the matching is the one of always.
-    if COMMIT_FRACTION < 1.0 and previous is not None:
+    # OVERRIDE FOR MEASUREMENT. `COMMIT_FRACTION` comes from the macro, which
+    # has never been trained with it, so at inference it sits at its 2.0
+    # default and commitment is off. KAG_COMMIT forces a value so the dial can
+    # be A/B'd without retraining. Why it matters: 23.8% of destinations are
+    # changed EN ROUTE, and against the top replays we spend 63% of our
+    # operations walking where they spend 31-38%.
+    import os as _os
+    _cf = _os.environ.get("KAG_COMMIT", "")
+    _COM = float(_cf) if _cf else COMMIT_FRACTION
+    if _COM < 1.0 and previous is not None:
         for i, pos in enumerate(units):
             t = previous.get(i)
             if t is None or t not in tasks or t == pos:
@@ -1074,7 +1480,7 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
             if value[i][j] <= 0.0:
                 continue
             _best = max(value[i][:len(tiles)])
-            if value[i][j] >= COMMIT_FRACTION * _best:
+            if value[i][j] >= _COM * _best:
                 for i2 in range(n):           # the tile is reserved
                     if i2 != i:
                         value[i2][j] = 0.0
@@ -1156,8 +1562,21 @@ def assign_units(obs, free_capacity: int,
     # Without this a unit that is not carrying what an operation consumes
     # simply never sees that tile, and "fetch it, then use it" is not a
     # decision anybody can take.
+    _remaining = spec.EPISODE_STEPS - 1 - int(obs["step"])     # turns after this one
     _chain_ctx = {"shed": obs["private"].get("shed", {}) or {},
                   "access": sorted(_shed_access_set())}
+    if value_map is None:
+        # THE TACTICAL MECHANICS BELOW ARE FOR AGENTS WITHOUT A VALUE MAP
+        # (the plan executor, the heuristic agent). Under the deployed
+        # network they change the semantics its map was trained on -one
+        # DROP column, no deadline- and a frozen policy cannot be judged on
+        # a widened space: measured paired v5 vs v48, 200 episodes, they
+        # cost -5,356 $ (t -4.8, worse on 127). They reach the network only
+        # by retraining with them on. See docs/DEBT.md.
+        _chain_ctx.update({"carried": _carried_values(obs),
+                           "deadline": _remaining if days_left(obs) <= 1 else None,
+                           "load": _plan_load(obs),
+                           "zones": _plan_zones(obs), "home": _home_zones(obs, units)})
     adh = 0.0
     if macro is not None:
         from ..macro import assignment_stickiness

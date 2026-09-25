@@ -46,13 +46,29 @@ MOV = {"NORTH", "SOUTH", "EAST", "WEST"}
 #   cap  3 ->  $16,746      cap  8 ->  $79,908
 #   cap  5 ->  $42,867      cap 15 -> $179,514
 # Below 3 it collapses (cap 2 -> $1): it cannot even start the farm.
-LADDER_CAPS = [None, 3, 5, 8, None]
+# PELDAÑOS 6 Y 7, QUE FALTABAN. Medido el 2026-09-23 con `prod` contra v48,
+# 32 semillas por punto:
+#
+#     manos   nosotros   el rival    margen    WIN
+#         5     56.591     21.725   +160,5%   1,00   <- agotado
+#         6     52.972     37.660    +40,7%   0,91
+#         7     53.018     52.234     +1,5%   0,69   <- AQUI hay gradiente
+#         8     49.629     64.073    -22,5%   0,00   <- muro
+#        14+    43.462    126.380    -65,6%   0,00   (v48 satura en 14 manos)
+#
+# La escalera tenia 3, 5 y 8: tres peldaños por debajo de la zona util y un
+# salto por encima de ella. Entrenando en el 5 el win saturaba en 0,98 y la
+# mejora NO transferia (-444 $, t -0,58 contra el v48 entero); saltando a los
+# sin capar el win era 0,00 y el dinero BAJABA (29.732 -> 25.739 en 45 updates).
+_LADDER_CAPS_HEAD = [None, 3, 5, 6, 7, 8, None]
 
 LADDER = [
     None,                                              # pasivo
     "v48-fast-routes",
     "v48-fast-routes",
-    "v48-fast-routes",
+    "v48-fast-routes",                                 # cap 6
+    "v48-fast-routes",                                 # cap 7  <- la zona util
+    "v48-fast-routes",                                 # cap 8
     "the-2945-farm-96-vs-the-top-10-public-bots",
     # Measured on the difficulty ladder: at full power v16-rc5 makes LESS money
     # than v48 ($133,912 against $153,720) and yet it is the one that leaves US
@@ -86,6 +102,11 @@ LADDER = [
     "kaggriculture-v45-first-turn-wheat-round-trip",    #  186625 $, score 2498
     "your-market-list-is-an-order-book",                #  188274 $, score 2671
 ]
+# One cap per rung, explicitly. The list used to be shorter than LADDER and
+# every rung past it fell back to the last cap in silence; the extra public
+# agents are played uncapped.
+LADDER_CAPS = _LADDER_CAPS_HEAD + [None] * (len(LADDER) - len(_LADDER_CAPS_HEAD))
+assert len(LADDER_CAPS) == len(LADDER), (len(LADDER_CAPS), len(LADDER))
 
 def public_with_cap(name_, max_hands: int):
     """A public agent limited in how many hands it may hire.
@@ -169,6 +190,9 @@ def load_public(name_):
     return ag
 
 
+_RIV_FALLOS = [0]   # turnos en que el rival lanzo y jugo PASS en silencio
+
+
 def _split_micro(m):
     """Split the micro map into value, verbs and -if present- keys/queries.
 
@@ -194,7 +218,16 @@ def _split_micro(m):
 class DayEnv:
     def __init__(self, n, steps=720, seed0=1, scale=None, macro=None,
                  idx0=0, n_total=None,
-                 rival_fn=None, level=0, potential=True, gamma=0.995):
+                 rival_fn=None, level=0, potential=None, gamma=None,
+                 dos_asientos=False):
+        # THE SHAPING GAMMA FOLLOWS THE TRAINER'S. It was pinned at 0.995
+        # while `--gamma` moved the one used by GAE, so the two disagreed the
+        # moment anybody touched it -- and `--grid` and `--leagues` change the
+        # horizon, which is exactly when one would. A potential shaped with a
+        # different gamma than the return is no longer policy-invariant.
+        if gamma is None:
+            import os as _os
+            gamma = float(_os.environ.get("KAG_GAMMA", "0.995"))
         from .reward import SCALE as _ESC
         self.n, self.steps, self.seed0 = n, steps, seed0
         self.scale = float(_ESC if scale is None else scale)
@@ -232,17 +265,81 @@ class DayEnv:
         # uses it so the importance ratio ignores the ~1,570 Gaussian
         # dimensions that cannot change any action.
         self._masks = [None] * n
+        # SHAPING SWITCH, from the environment for the same reason the reward
+        # weights are: the parallel env spawns child processes and threading a
+        # flag through three layers of signatures would be more invasive. With
+        # KAG_POTENCIAL=0 the reward is money and nothing else, which is the
+        # only way to measure what the shaping is actually buying.
+        if potential is None:
+            import os as _os
+            potential = _os.environ.get("KAG_POTENCIAL", "1") != "0"
         self.potential = potential
+        # PESO DEL SHAPING, y con recocido. Hasta hoy era un on/off sin dial,
+        # asi que no se podia medir cuanto compra ni apagarlo gradualmente.
+        #
+        # OJO con lo que el recocido compra AQUI: nuestro shaping es POTENCIAL
+        # (Ng, Harada & Russell 1999), o sea invariante a la politica por
+        # construccion -- no cambia cual es el optimo. El recocido existe para
+        # recompensas densas que son un SUCEDANEO hackeable; la nuestra no lo
+        # es. Asi que esto sirve para MEDIR su aportacion y para quitar su
+        # varianza al final, no para arreglar un sesgo que no tiene.
+        import os as _os2
+        self.phi_w = float(_os2.environ.get("KAG_PHI_W", "1.0"))
+        self.phi_w0 = self.phi_w
+        # updates tras los cuales el peso llega a `KAG_PHI_FIN` (0 = sin recocido)
+        self.phi_recocido = int(_os2.environ.get("KAG_PHI_RECOCIDO", "0"))
+        self.phi_fin = float(_os2.environ.get("KAG_PHI_FIN", "0.0"))
         self.gamma = gamma
         self._phi = [0.0] * n
         self.unsold = []
+        # Unidades vendidas por PRODUCTO, un dict por episodio cerrado. Es
+        # CONTAR, no estimar, asi que no puede dar falso positivo -- y es la
+        # unica forma de ver si un cambio mueve fresa y leche, que son el 84%
+        # del hueco, en vez de juzgarlo contra un agregado.
+        self.por_producto = []
+        # PEDIDO contra REALIZADO. El macro emite una PETICION y nadie le dice
+        # si se ejecuto: medido, el dial pide 42 manos el dia 20 y el ejecutor
+        # da 12, porque atan las puertas de coste y presupuesto. El gradiente
+        # sigue premiando o culpando a ese dial por el resultado del episodio
+        # aunque no tuviera efecto -- credito atribuido a una palanca
+        # desconectada. Esto no lo arregla, pero lo hace VISIBLE, que es el
+        # paso que faltaba.
+        self.saturacion = []
         self.envs, self.agents, self.counter, self.obs = [None] * n, [None] * n, [None] * n, [None] * n
         self._rival = [None] * n
         self.ep = 0
         self.finals, self.useful_frac = [], []
         self._micro = [None] * n
+        # DOS ASIENTOS. Los dos jugadores los decide la red y los dos aportan
+        # gradiente. Hasta ahora el motor y los DOS ejecutores ya corrian en
+        # cada episodio y la trayectoria del asiento 1 se tiraba: esto es el
+        # doble de datos por segundo de simulacion, que es el cuello.
+        #
+        # Y el rival queda a nuestro nivel POR CONSTRUCCION, que es lo que el
+        # pool con Elo intentaba aproximar dando un rodeo.
+        #
+        # `encode`, `step_day` y `masks` pasan a devolver/aceptar 2n filas:
+        # primero las n del asiento 0, luego las n del asiento 1.
+        self.dos = bool(dos_asientos)
+        self.agents2 = [None] * n
+        self.counter2 = [None] * n
+        self._micro2 = [None] * n
+        self._phi2 = [0.0] * n
+        self._masks2 = [None] * n
         for i in range(n):
             self._reset(i)
+
+    @property
+    def n_filas(self):
+        """Filas que produce un update: 2n con dos asientos, n si no."""
+        return self.n * (2 if self.dos else 1)
+
+    def fijar_progreso(self, upd: int):
+        """Recocido del peso del shaping. Lo llama el entrenador cada update."""
+        if self.phi_recocido > 0:
+            t = min(1.0, max(0.0, upd / float(self.phi_recocido)))
+            self.phi_w = self.phi_w0 + t * (self.phi_fin - self.phi_w0)
+        return self.phi_w
 
     def _reset(self, i):
         # DISJOINT SEEDS BY CONSTRUCTION. Each worker used to start at
@@ -259,16 +356,27 @@ class DayEnv:
                                 micro=lambda ob, k=i: _split_micro(self._micro[k]))
         self.counter[i] = ProductionLedger()
         self._micro[i] = None
-        self._rival[i] = self._new_rival()
+        self._rival[i] = None if self.dos else self._new_rival()
         self._phi[i] = self._compute_phi(i) if self.potential else 0.0
+        if self.dos:
+            # El asiento 1 es un agente COMPLETO e independiente: su ejecutor
+            # guarda estado entre turnos (`_destinations`, `turns_per_tile`),
+            # y compartirlo con el asiento 0 seria la misma trampa que ya
+            # costo enterrar la busqueda una vez.
+            self.agents2[i] = Agent(
+                episode_steps=self.steps, macro=mac,
+                micro=lambda ob, k=i: _split_micro(self._micro2[k]))
+            self.counter2[i] = ProductionLedger()
+            self._micro2[i] = None
+            self._phi2[i] = self._compute_phi(i, 1) if self.potential else 0.0
 
-    def _compute_phi(self, i):
+    def _compute_phi(self, i, asiento=0):
+        # No fallback to 0.0: with shaping `phi_w * (gamma * new - old)`, a
+        # transient failure did not switch shaping off, it injected a spurious
+        # jump of -old_phi into that day's reward. A failure here raises.
         from .potential import phi as _phi_fn
-        try:
-            ob = self.obs[i][0]
-            return _phi_fn(ob, 0, ob["private"]) / self.scale
-        except Exception:
-            return 0.0
+        ob = self.obs[i][asiento]
+        return _phi_fn(ob, asiento, ob["private"]) / self.scale
 
     def set_rival_policy(self, factory):
         """Opponent = one of OUR policies (self-play).
@@ -322,14 +430,15 @@ class DayEnv:
         if name_ is None:
             from kaggle_environments.envs.kaggriculture import kaggriculture as E
             return E.pass_agent
-        try:
-            cap = LADDER_CAPS[min(self.level, len(LADDER_CAPS) - 1)]
-            if cap is not None:
-                return public_with_cap(name_, cap)
-            return load_public(name_)
-        except Exception:
-            from kaggle_environments.envs.kaggriculture import kaggriculture as E
-            return E.pass_agent
+        # No fallback. This used to return `pass_agent` on ANY exception, and
+        # from then on the run trained against an opponent that never acts:
+        # win rate ~1.0, promotions, rising return, and nothing in the log.
+        if len(LADDER_CAPS) != len(LADDER):
+            raise RuntimeError(f"LADDER has {len(LADDER)} rungs and LADDER_CAPS {len(LADDER_CAPS)}")
+        cap = LADDER_CAPS[self.level]
+        if cap is not None:
+            return public_with_cap(name_, cap)
+        return load_public(name_)
 
     def raise_level(self):
         self.level = min(self.level + 1, len(LADDER) - 1)
@@ -348,65 +457,133 @@ class DayEnv:
         It is what causally precedes our income in a shared market, and it is
         predictable from the opponent's board, which is observable.
         """
-        G = np.zeros((self.n, *O.SHAPES["grid"]), dtype=np.float32)
-        B = np.zeros((self.n, O.N_GLOBAL), dtype=np.float32)
-        Hf = np.zeros((self.n, O.N_HIST_RIVAL), dtype=np.float32)
+        nf = self.n_filas
+        G = np.zeros((nf, *O.SHAPES["grid"]), dtype=np.float32)
+        B = np.zeros((nf, O.N_GLOBAL), dtype=np.float32)
+        Hf = np.zeros((nf, O.N_HIST_RIVAL), dtype=np.float32)
         for i, o in enumerate(self.obs):
             G[i], B[i] = O.encode_obs(
                 o[0], getattr(self.agents[i], "_destinations", None))
             Hf[i] = O.rival_flow(o[0])
+            if self.dos:
+                j = self.n + i
+                # `encode_obs` es RELATIVA AL ASIENTO -mira obs["player"] y
+                # pone tu granja en el primer bloque de canales-, asi que la
+                # misma red sirve para los dos lados sin tocar nada.
+                G[j], B[j] = O.encode_obs(
+                    o[1], getattr(self.agents2[i], "_destinations", None))
+                Hf[j] = O.rival_flow(o[1])
         return G, B, Hf
 
     def step_day(self, maps=None, macros=None):
-        """Play 24 turns. `maps` (n,1+N_OPS,10,10) is the day's micro output."""
+        """Juega 24 turnos.
+
+        Con `dos_asientos` las entradas y salidas llevan 2n filas: primero las
+        n del asiento 0, luego las n del asiento 1. Los dos jugadores los
+        decide la red y los dos producen trayectoria.
+        """
         from kaggle_environments.envs.kaggriculture import kaggriculture as E
-        rec = np.zeros(self.n, dtype=np.float32)
-        fin = np.zeros(self.n, dtype=np.float32)
+        from .symbolic import tasks as _Tm
+        nf = self.n_filas
+        rec = np.zeros(nf, dtype=np.float32)
+        fin = np.zeros(nf, dtype=np.float32)
         for i in range(self.n):
+            j = self.n + i                      # fila del asiento 1
+            _sat_ped = _sat_real = 0.0
+            _sat_n = 0
             if maps is not None:
                 self._micro[i] = np.asarray(maps[i], dtype=np.float32)
+                if self.dos:
+                    self._micro2[i] = np.asarray(maps[j], dtype=np.float32)
             if macros is not None:
                 self.agents[i].macro = Macro.from_vector(macros[i])
-            env, counter = self.envs[i], self.counter[i]
-            from .symbolic import tasks as _Tm
+                if self.dos:
+                    self.agents2[i].macro = Macro.from_vector(macros[j])
+            env = self.envs[i]
             _mk = self._micro[i]
             _nk = 0
             if _mk is not None and getattr(_mk, "ndim", 0) == 3:
                 _nk = max(0, (_mk.shape[0] - 1 - _Tm.N_OPS) // 2)
             self._n_keys = _nk
+            # Un acumulador de mascara POR ASIENTO: el global se intercambia
+            # alrededor de cada decision.
             _Tm.enable_mask(_nk)
+            _m0 = _Tm.swap_mask(None)
+            _m1 = None
+            if self.dos:
+                _Tm.enable_mask(_nk)
+                _m1 = _Tm.swap_mask(None)
             util = total = 0
+
+            def _cuenta(ob_s, acc_s, fila):
+                """Acciones utiles/totales del asiento y penalizacion ilegal."""
+                _u = _t = 0
+                _invs = (ob_s.get("private", {}).get("inventories") or []
+                         if _ILLEGAL_W else [])
+                for _q, l in enumerate([acc_s.get("farmer")]
+                                       + list(acc_s.get("hands") or [])):
+                    if l:
+                        _t += 1
+                        _u += 1 if (l[0] not in MOV and l[0] != "PASS") else 0
+                        if _ILLEGAL_W and l[0] not in MOV and l[0] != "PASS":
+                            _iv = (_invs[_q] if _q < len(_invs)
+                                   and isinstance(_invs[_q], dict) else {})
+                            if not _Tm._can_do(_iv, l):
+                                rec[fila] -= _ILLEGAL_W / self.scale
+                return _u, _t
+
             for _ in range(spec.TURNS_PER_DAY):
                 if env.done:
                     break
                 ob = self.obs[i][0]
+                # a media mañana: las manos de hoy ya estan contratadas y aun
+                # no se han limpiado (a la hora 0 el conteo da siempre 1)
+                if int(ob.get("hour", 0)) == max(1, spec.TURNS_PER_DAY // 4):
+                    try:
+                        from .macro import target_hands as _th
+                        _sat_ped += float(_th(ob, self.agents[i].macro))
+                        _sat_real += float(1 + len(ob["farms"][0]["hands"]))
+                        _sat_n += 1
+                    except Exception:
+                        pass
+                _Tm.swap_mask(_m0)
                 acc = self.agents[i](ob)
-                _invs = (ob.get("private", {}).get("inventories") or []
-                         if _ILLEGAL_W else [])
-                for _j, l in enumerate([acc.get("farmer")]
-                                       + list(acc.get("hands") or [])):
-                    if l:
-                        total += 1
-                        util += 1 if (l[0] not in MOV and l[0] != "PASS") else 0
-                        if _ILLEGAL_W and l[0] not in MOV and l[0] != "PASS":
-                            _iv = (_invs[_j] if _j < len(_invs)
-                                   and isinstance(_invs[_j], dict) else {})
-                            if not _Tm._can_do(_iv, l):
-                                rec[i] -= _ILLEGAL_W / self.scale
-                counter.harvested(ob, acc, 0)
-                income, bonus = counter.sold(ob, acc)
+                _m0 = _Tm.swap_mask(None)
+                _u, _t = _cuenta(ob, acc, i)
+                util += _u
+                total += _t
+                self.counter[i].harvested(ob, acc, 0)
+                income, bonus = self.counter[i].sold(ob, acc)
                 rec[i] += _DENSE_W * (income / self.scale) + bonus
-                try:
-                    rival = self._rival[i](self.obs[i][1])
-                except Exception:
-                    rival = {"farmer": ["PASS"], "hands": [], "market": []}
+                if self.dos:
+                    ob1 = self.obs[i][1]
+                    _Tm.swap_mask(_m1)
+                    rival = self.agents2[i](ob1)
+                    _m1 = _Tm.swap_mask(None)
+                    _cuenta(ob1, rival, j)
+                    self.counter2[i].harvested(ob1, rival, 1)
+                    inc1, bon1 = self.counter2[i].sold(ob1, rival)
+                    rec[j] += _DENSE_W * (inc1 / self.scale) + bon1
+                else:
+                    try:
+                        rival = self._rival[i](self.obs[i][1])
+                    except Exception as _e_riv:
+                        # NUNCA EN SILENCIO. Tragarse la excepcion y jugar
+                        # PASS convierte un rival roto en un rival debil, que
+                        # es indistinguible de un rival al que ganamos: el
+                        # autojuego media un handicap y lo llamaba ventaja.
+                        _RIV_FALLOS[0] += 1
+                        if _RIV_FALLOS[0] <= 3:
+                            import traceback as _tb
+                            print(f"  [RIVAL ROTO] {type(_e_riv).__name__}: "
+                                  f"{_e_riv}", flush=True)
+                            _tb.print_exc()
+                        rival = {"farmer": ["PASS"], "hands": [], "market": []}
                 self.obs[i], d = env.step([acc, rival])
-                # INSIDE the turn loop, on purpose. It used to be taken once
-                # per day, outside, and there the hands have already been
-                # cleared: it always gave 1.0 and made it look as if the
-                # opponent played with no workforce. Measured by sampling all
-                # 719 turns: v48 sustains 8.94 on average -and we 9.88- not 1.
-                # The comment below claimed this was fixed and it was not.
+                # DENTRO del bucle de turnos, a proposito. Fuera, las manos ya
+                # se han limpiado: daba siempre 1,0 y hacia parecer que el
+                # rival jugaba sin plantilla. Medido muestreando los 719
+                # turnos: v48 sostiene 8,94 de media -y nosotros 9,88-, no 1.
                 try:
                     self._riv_uds_max[i] = max(
                         self._riv_uds_max[i],
@@ -415,54 +592,67 @@ class DayEnv:
                     pass
                 if d or env.done:
                     break
-            self._masks[i] = _Tm.collect_mask()
+            if _sat_n:
+                self.saturacion.append((_sat_ped / _sat_n, _sat_real / _sat_n))
+                self.saturacion = self.saturacion[-200:]
+            self._masks[i] = _m0
+            if self.dos:
+                self._masks2[i] = _m1
             if total:
                 self.useful_frac.append(util / total)
             if self.potential and not env.done:
-                nuevo = self._compute_phi(i)
-                rec[i] += self.gamma * nuevo - self._phi[i]
-                self._phi[i] = nuevo
+                nuevo_ = self._compute_phi(i, 0)
+                rec[i] += self.phi_w * (self.gamma * nuevo_ - self._phi[i])
+                self._phi[i] = nuevo_
+                if self.dos:
+                    n2_ = self._compute_phi(i, 1)
+                    rec[j] += self.phi_w * (self.gamma * n2_ - self._phi2[i])
+                    self._phi2[i] = n2_
             if env.done:
                 r = env.rewards()
-                if self.potential:
-                    # Phi(s_T) = MY cash by construction (no opponent term)
-                    fin_phi = float(r[0]) / self.scale
-                    rec[i] += self.gamma * fin_phi - self._phi[i]
+                # Los dos asientos cierran con la MISMA estructura de premio,
+                # cada uno con su dinero y el del otro invertido. Es el unico
+                # reparto que deja el juego simetrico, que es lo que hace que
+                # una copia contra si misma tenga que dar 0,5.
+                _lados = [(i, float(r[0]), float(r[1]), self._phi)]
+                if self.dos:
+                    _lados.append((j, float(r[1]), float(r[0]), self._phi2))
+                for _fila, _mio, _suyo, _ph in _lados:
+                    if self.potential:
+                        # Phi(s_T) = MI caja por construccion (sin termino rival)
+                        rec[_fila] += self.phi_w * (
+                            self.gamma * (_mio / self.scale) - _ph[i])
+                    # TERMINO COMPETITIVO, en el OBJETIVO y no en el shaping.
+                    # El +-1 de abajo ya mira al rival pero es un SIGNO: ganar
+                    # por 1 $ puntua igual que por 50.000, asi que no dice
+                    # hacia donde empujar. Este es continuo en el MARGEN, y no
+                    # es denso por dia a proposito: el termino diario del
+                    # rival se midio y hundio el critico a R2 -2,535.
+                    if _RIVAL_W:
+                        rec[_fila] -= _RIVAL_W * _suyo / self.scale
+                    _res = 1.0 if _mio > _suyo else (0.5 if _mio == _suyo else 0.0)
+                    rec[_fila] += _WIN_W * (2.0 * _res - 1.0)
+                    fin[_fila] = 1.0
                 self.unsold.append(
                     int(sum(self.obs[i][0]["private"]["shed"].values())))
-                # COMPETITIVE TERM, in the OBJECTIVE and not in the shaping.
-                # The one below (+-1) already looks at the opponent, but it is
-                # a SIGN: winning by $1 scores the same as winning by $50,000,
-                # so it does not say which way to push. This one is continuous
-                # in the MARGIN.
-                # It is not dense per day on purpose: that is the term
-                # `potential.phi` documents as measured and withdrawn -the
-                # opponent accounted for 99.1% of the daily variance and the
-                # critic fell to R2 -2.535-. Shaping can only carry what the
-                # state predicts; jumps in their cash are not that. At the
-                # close it is one scalar per episode, the same shape as the
-                # familiar +-1.
-                if _RIVAL_W:
-                    rec[i] -= _RIVAL_W * float(r[1]) / self.scale
+                # ANTES del _reset, que recrea el ledger
+                self.por_producto.append(
+                    {"uds": dict(self.counter[i].vendidas),
+                     "ing": dict(self.counter[i].ingreso)})
+                self.por_producto = self.por_producto[-40:]
                 res = 1.0 if r[0] > r[1] else (0.5 if r[0] == r[1] else 0.0)
-                rec[i] += _WIN_W * (2.0 * res - 1.0)
                 self.results.append(res)
                 self.finals.append(float(r[0]))
                 self.rival_finals.append(float(r[1]))
                 fr = self.obs[i][1]["farms"][1]
-                # CAREFUL: at the close the hands have already been cleared,
-                # so counting them here always gives 1 and makes it look as if
-                # the opponent plays crippled. Verified by measuring
-                # separately: it hires 87 times and sustains 3.78 units on
-                # average. The same hour-boundary trap bites repeatedly; the
-                # maximum seen during the episode is used instead.
+                # OJO: al cierre las manos ya estan limpias, asi que contarlas
+                # aqui da siempre 1. Se usa el maximo visto durante el episodio.
                 self.rival_units.append(max(1, self._riv_uds_max[i]))
                 self._riv_uds_max[i] = 1
                 self.riv_cult.append(sum(1 for fl in fr["tiles"] for t in fl
                                          if isinstance(t, dict) and t.get("kind") == "PLANT"))
                 self.riv_anim.append(sum(1 for fl in fr["tiles"] for t in fl
                                          if isinstance(t, dict) and t.get("animal")))
-                fin[i] = 1.0
                 self.ep += 1
                 self._reset(i)
         return rec, fin
@@ -476,7 +666,8 @@ class DayEnv:
         _nk = int(getattr(self, "_n_keys", 0))
         z = np.zeros((1 + _Tm.N_OPS + 2 * _nk, spec.BOARD, spec.BOARD),
                      dtype=np.float32)
-        return np.stack([m if m is not None else z for m in self._masks])
+        _ms = list(self._masks) + (list(self._masks2) if self.dos else [])
+        return np.stack([m if m is not None else z for m in _ms])
 
     def mean_money(self, last=50):
         return float(np.mean(self.finals[-last:])) if self.finals else float("nan")
@@ -485,6 +676,27 @@ class DayEnv:
         m = lambda v: float(np.mean(v[-last:])) if v else float("nan")
         return {"money": m(self.rival_finals), "crops": m(self.riv_cult),
                 "animals": m(self.riv_anim), "units": m(self.rival_units)}
+
+    def manos_pedidas_reales(self, last=60):
+        """(pedidas, reales) de media. Su cociente dice cuanto del dial es inerte."""
+        d = self.saturacion[-last:]
+        if not d:
+            return (float("nan"), float("nan"))
+        return (sum(x[0] for x in d) / len(d), sum(x[1] for x in d) / len(d))
+
+    def producto_medio(self, last=20):
+        """Unidades vendidas por producto, media de los ultimos episodios."""
+        ds = self.por_producto[-last:]
+        if not ds:
+            return {}
+        out = {}
+        for campo in ("uds", "ing"):
+            ks = set()
+            for d in ds:
+                ks |= set(d.get(campo) or {})
+            out[campo] = {k: sum((d.get(campo) or {}).get(k, 0) for d in ds)
+                          / len(ds) for k in ks}
+        return out
 
     def mean_unsold(self, last=50):
         """Units left in the shed at the close. They should be 0."""

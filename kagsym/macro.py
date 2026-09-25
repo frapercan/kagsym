@@ -430,6 +430,12 @@ def apply_params(macro: Macro) -> None:
     _M.LAND_RETURN          = p["land_return"]
     _M.LAND_CASH             = p["land_cash"]
     _T.STEP_DISCOUNT    = p["step_discount"]
+    _pl = _plan()
+    if _pl is not None and getattr(_pl, "discount", None) is not None:
+        # THE PLAN'S DISTANCE DISCOUNT. Measured on the expansion blocks
+        # (5 seeds): 0.6-0.7 against the macro's default takes B from 55.6k
+        # to 63.8k and C from 58.7k to 66.4k, moves from 60 % to 50-54 %.
+        _T.STEP_DISCOUNT = float(_pl.discount)
     _T.DIG_VALUE             = p["dig_value"]
     _E.TURNS_PER_TILE_INIT    = p["turns_init"]
     _E.TURNS_PER_TILE_MIN    = p["turns_min"]
@@ -470,7 +476,15 @@ def apply_params(macro: Macro) -> None:
     WATERING_FACTOR = p["watering"]
 
 
+def _plan():
+    from . import plan as _P
+    return _P.get_plan()
+
+
 def target_hands(obs, macro: Macro) -> int:
+    pl = _plan()
+    if pl is not None:
+        return pl.hands_on(int(obs["day"]))
     # NO CEILING, and the engine backs that up: it does not limit hiring
     # -`_hire_cost(hires_today)` only makes it MORE EXPENSIVE- so the 15 that
     # used to be here was a wall I put over a learnable level. Same mechanism
@@ -489,6 +503,11 @@ def target_tiles(obs, macro: Macro) -> int:
     """
     me = int(obs["player"])
     farm = obs["farms"][me]
+    pl = _plan()
+    if pl is not None:
+        plantable_ = sum(1 for y in range(spec.BOARD) for x in range(spec.BOARD)
+                         if farm["tiles"][y][x] != "LOCKED")
+        return max(0, min(plantable_, pl.tiles_on(int(obs["day"]))))
     # PLANNED, not the ones present right now. The macro is decided at hour 0,
     # when yesterday's hands have been cleared (`farm["hands"] = []` nightly)
     # and today's have not been hired yet: `len(farm["hands"])` is ALWAYS 0
@@ -522,6 +541,9 @@ def target_tiles(obs, macro: Macro) -> int:
 
 def target_animals(obs, macro: Macro) -> int:
     """How many animals to sustain. Each costs ~3 actions a day."""
+    pl = _plan()
+    if pl is not None:
+        return pl.animals_on(int(obs["day"]))
     me = int(obs["player"])
     farm = obs["farms"][me]
     n_units = 1 + target_hands(obs, macro)   # planned, see above
@@ -551,8 +573,9 @@ def sell_horizon(obs, macro: Macro) -> int:
     # no ceiling: the old `2 *` limited it to two days by my decision, and
     # holding produce longer is exactly the play that can pay against an
     # opponent who is not crashing the price.
-    return max(1, int(round(spec.TURNS_PER_DAY
-                            * math.exp(_logit(macro.selling)))))
+    pl = _plan()
+    selling = macro.selling if pl is None else pl.selling_on(int(obs["day"]))
+    return max(1, int(round(spec.TURNS_PER_DAY * math.exp(_logit(selling)))))
 
 
 def target_crop(obs, macro: Macro):
@@ -566,6 +589,15 @@ def target_crop(obs, macro: Macro):
     viable = [c for c in spec.CROP_LIST if cycle_days(c) <= days]
     if not viable:
         return None
+    pl = _plan()
+    if pl is not None:
+        # The executor plants only what `plantable` allows (strict: the cycle
+        # must END before the game does). `viable` above is one day looser,
+        # so seed bought by it for the last cycle was never planted (measured
+        # 2026-09-25: 50 wheat seeds, $500, idle from day 4 of 8).
+        from .symbolic.tasks import plantable
+        cs = [c for c in pl.crop_targets(int(obs["day"]), obs) if plantable(obs, c)]
+        return cs[0] if cs else None
     if macro.crop <= 0.0:
         return min(viable, key=lambda c: cycle_days(c))
     by_value = sorted(viable, key=lambda c: cycle_profit(obs, c) / max(1, cycle_days(c)))
@@ -609,7 +641,18 @@ def priorities(macro: Macro) -> dict:
     """
     import math
     vals = [getattr(macro, "p_" + c) for c in CATEGORIES]
-    e = [math.exp(PRIORITY_TEMP * v) for v in vals]
+    # SHIFTED BEFORE THE EXPONENTIAL. `PRIORITY_TEMP` is a learned dial of the
+    # `positive` kind -default * exp(logit(f))-, so a sample near f = 1 sends it
+    # to hundreds and `math.exp` raises OverflowError and takes the worker with
+    # it. Found by a CEM search over the 67 dials, which reached that corner in
+    # seconds; the policy reaches it too, only rarely.
+    #
+    # Subtracting the maximum is the standard stable form and changes NOTHING:
+    # the softmax is shift-invariant, and on top of that the only thing read
+    # from it is the ORDER of the categories, which the temperature cannot move.
+    z = [PRIORITY_TEMP * v for v in vals]
+    m = max(z)
+    e = [math.exp(x - m) for x in z]
     total = sum(e) or 1.0
     return {c: x / total for c, x in zip(CATEGORIES, e)}
 

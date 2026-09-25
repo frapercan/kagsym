@@ -8,6 +8,7 @@ everything else works the same.
 """
 from __future__ import annotations
 
+
 import os
 import time
 
@@ -179,6 +180,10 @@ class Agent:
         planted = sum(1 for row in mi["tiles"] for t in row
                         if isinstance(t, dict) and t.get("kind") == "PLANT")
         free = max(0, sustainable - planted)
+        from ..plan import get_plan as _get_plan
+        _pl = _get_plan()
+        if _pl is not None:                 # a plan is executed literally
+            free = max(0, _pl.tile_cap(obs) - planted)
 
         # The micro head returns a 10x10 value map, N_OPS x 10 x 10 verb
         # logits and, when the assignment keys are on, K key and K query
@@ -228,19 +233,22 @@ class Agent:
         # animals on 15%, so whoever goes first decides who goes without. With
         # uniform priorities the previous order is recovered.
         from ..macro import category_order
+        # Seed orders are computed once, before the categories are drawn:
+        # hiring counts the seed bought this turn as work, so a policy takes
+        # off from zero seeds without an unconditional hiring allowance.
+        # `tile_target` is overridden by `target_tiles(obs, macro)` inside
+        # `seed_orders` whenever a macro is present, which is always in
+        # training and in play; the value passed here is the macro-less fallback.
+        _seed_orders = market_ops.seed_orders(obs, tile_target=free, macro=mac)
+        _planned_seeds = sum(int(o[2]) if len(o) > 2 else 1 for o in _seed_orders if o[0] == "BUY_SEED")
         by_category = {
             "land": lambda: market_ops.land_orders(obs, macro=mac),
             "feed": lambda: market_ops.feed_orders(obs),
             "animal": lambda: market_ops.animal_orders(obs, macro=mac),
             "sell": lambda: market_ops.sell_orders(obs, opp_flow=flow,
                                                    horizon=self.horizon, macro=mac),
-            # `tile_target` is overridden by `target_tiles(obs, macro)` inside
-            # `seed_orders` whenever a macro is present, which is always in
-            # training and in play. The value passed here is the fallback
-            # for a macro-less agent.
-            "seed": lambda: market_ops.seed_orders(obs, tile_target=free,
-                                                   macro=mac),
-            "hand": lambda: market_ops.hire_orders(obs, macro=mac),
+            "seed": lambda: list(_seed_orders),
+            "hand": lambda: market_ops.hire_orders(obs, macro=mac, planned_seeds=_planned_seeds),
         }
         # The keys MUST match `macro.CATEGORIES`; a mismatch is a KeyError, not
         # a silent fallback, which is what we want after the `turn_weights`

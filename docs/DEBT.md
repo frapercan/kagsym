@@ -1,0 +1,165 @@
+# Known debt
+
+What is known to be wrong or oversized, kept because fixing it now would
+change the game under a running measurement or costs more than it returns
+today. Each item says what it is, why it waits, and what unblocks it.
+
+## Game files (changing them changes every number)
+
+- **`f_turns_init` and `f_turns_min` are dead by wiring.** The executor
+  reads `TURNS_PER_TILE_INIT/MIN` in `Agent.__init__`, and `apply_params`
+  writes them on the first turn, after construction. The dials exist, are
+  emitted, and decide nothing. Fix: read them lazily on the first
+  `_recalibrate`. Waits for: no search or validation in flight (it changes
+  the game fingerprint and the live-dial list).
+- **`tools/live_dials.py` calls a dial dead** when both extremes give the
+  same money and opponent money on 3 seeds. A dial could change operations
+  without changing money; the previous tool also compared action counts.
+  Cheap to add back through `Episode` if it ever matters.
+- **`macro.apply_params` writes 37 module globals** in three modules on every
+  turn and never restores them. Safe today because every evaluator plays
+  episodes serially and re-applies before acting; a threaded evaluator would
+  cross-contaminate candidates. The fix is threading the macro through the
+  signatures, a game-file change.
+- **Nine `KAG_*` variables are read at import time** by the game layer.
+  They are now listed in every ledger line and refused by the gate; removing
+  them (making the switches explicit arguments) is a game-file change.
+- **Sales revenue is paid twice in the training reward** (dense term plus
+  terminal potential) and `--gamma` does not reach the shaping, which reads
+  `KAG_GAMMA`. Training is only used to leave random initialisation, so it
+  waits for the trainer rewrite.
+
+## Trainer (`kagsym/cli/train.py`, 2,700 lines, 64 flags)
+
+- Five opponent-replacement mechanisms and five curricula coexist; only
+  two-seat self-play plus an anchor worker are used. The league
+  (`kagsym/liga.py`, `--rivales-liga`, `--liga-dir`, `--linaje`) never
+  measured a snapshot (`min_partidas` unreachable) and is ceremony; its
+  driver `tools/liga.py` is archived. Removing the league from the trainer is
+  a 300-line surgery that waits for a trainer rewrite around
+  `kagsym.evaluate`.
+- `--eval-cada` shells out to `tools/quick_eval.py` on the first 12 reserved
+  seeds: a winner's-curse selector (short evaluations are anticorrelated
+  with the truth, -0.46). Keep it as a log line, never as the save criterion.
+- The PPO ratio is joint over ~450 dimensions and saturates the clip after
+  the first epoch (`ratio saturation=100%` in the diag lines).
+  `--factored-ratio` exists and is off. The macro head's learning rate is
+  tied to the micro head's by the KL controller. Both are why PPO does not
+  move the macro; neither is worth fixing until training is worth running.
+- `LADDER_CAPS` changed shape in the last uncommitted work
+  (`[None,3,5,8,None]` to `[None,3,5,6,7,8,None]`): `--level 3/4` in old
+  logs mean different opponents than today.
+- **Worker processes are not owned:** `parallel_env` never closes the child
+  end of its pipes and `cerrar()` cannot kill a worker stuck in a public
+  agent; a dead trainer can leave orphans. Kill by recorded PID.
+- **The `.mejor.json` bar is keyed by `--out` only** (no digest, no commit).
+  `--out` now defaults to the run name so two trainers no longer share it.
+
+## Evaluation
+
+- The band with 6 seeds per opponent resolves win-rate differences of about
+  0.1. Deciding on a +0.02 needs ~50 seeds per opponent (7,400 episodes,
+  ~40 minutes on 11 cores). Budget it when a candidate gets close.
+- The RESERVED family (200 seeds) has been used to validate several rounds;
+  each reuse adds false-positive risk at t >= 2. `CLEAN` (30000+) is the
+  fresh instrument; when it is spent, register a new family.
+- `god-s-mode-hacked-stores` does not load (`base_agent` module missing
+  from its package) and `shop-router-0909` throws every turn. Both are
+  excluded and listed; on Kaggle they may behave differently.
+
+## Repository
+
+- `kagsym/nets/world.py` still computes `aux_rival`, `jepa_pred/proy` and
+  `espacial` on every forward; `aux_rival` and `jepa_proy` have never
+  received a gradient in any live checkpoint. Removing them changes the
+  checkpoint format (`migrate_ckpt` would need a rule) and the model
+  fingerprint; cost at inference is small. Do it with the trainer rewrite.
+- MLflow readers `tools/compare_runs.py` and `tools/diagnostico.py` keep
+  their Spanish names and read the training database only.
+- `docs/env_src/` is a copy of the engine sources used to derive
+  `SPECIFICATION.md`; not versioned.
+
+## Stage consistency (tools/regret.py, 2026-09-24)
+
+- **Hands were hired where nothing could pay** (3/9/22 in 2/3/5-day
+  solitaires). Fixed by valuing a unit-turn with the standing work
+  (`market_ops._value_per_action`), +345 $ (t 1.8) at full scale. Two other
+  fixes measured and rejected: a demand cap under the macro (-39,212 $,
+  t -22) and removing the value floor alone (-3,509 $, t -11.5).
+- **The farmer wanders and digs in an idle world** (WEST, NORTH, DIG with
+  no crop to come). Free actions, inconsistent with the stage; `DIG_VALUE`
+  is a dial and the weeding value ignores whether anything will be planted.
+- **A 5-day world is not idle** (carrot 3 days, wheat 4): partida_v5 hires
+  13 hands and plants nothing there. The yardstick for k >= 5 is a planner's
+  optimum on the exact engine, not yet built (the archived receding-horizon
+  search is the candidate).
+
+## Measurement (2026-09-24, evening)
+
+- **Public agents are not fully deterministic under the official runner.**
+  With identical observations, v48 issued a different action at step 505 of
+  seed 7101 under `kaggle_environments.run` than under our loader; our agent
+  was identical for all 505 steps and the engines agree to the dollar on a
+  replayed action stream. Band numbers against v48 carry that extra noise;
+  the cause (module state or an unseeded RNG in the public agent) is not
+  ours to fix but worth knowing when a Kaggle result differs from ours.
+- **A reduced solitaire inverts strategic dials.** `tiles +0.15 on day 0`
+  is worth +5,503 $ in a 14-day solitaire and -25,117 $ against v48 in the
+  full game on the same seed family; the searched opening of EXP-002 was
+  worth +4,801 $ at day 8 and -9,718 $ at day 30. Short worlds against a
+  passive opponent are valid for mechanical consistency (hands hired with
+  nothing to do: fixed and validated) and invalid for strategy. The stage
+  map is made on the full game against the real opponent (`tools/stage_map.py
+  --days 30 --opponent v48-fast-routes`), where the rollouts stay exact.
+
+## The Rust simulator (kaggriculture-simulation, 2026-09-24)
+
+Byte-identical on a full game with our policy against v48 (48,747 /
+128,737, the same as FastEnv), so it is an independent fidelity check.
+Through its stdio JSON interface it is slower than FastEnv for our
+workload (4,272 engine steps/s against 37,152; a full game with our agent
+1.6 s against 0.9 s): its 550k steps/s live inside Rust, for tapes and
+batches. It would pay only with the executor ported to Rust. Binary and
+package under `archivo/kaggsim/` and `archivo/kaggriculture-simulation/`.
+- **Hiring by an explicit work model loses.** Sizing hands by (crops +
+  plantings + harvestable) x turns_per_tile + animals x actions, capped at
+  the macro's target: 5,788 -> 4,526 and 4,471 -> 4,170 in the 8-day
+  solitaire. The explicit model misses market trips, pickups and drops; the
+  policy's 7 hands were right. Third "reasonable" hiring rule refuted by
+  measurement (with the demand cap, -39,212 $, and the value floor, -3,509 $).
+  Mechanical rules that are safe to hard-wire are about watering and
+  planting what was bought, not about labour.
+
+## Found while wiring the plan interface (2026-09-25)
+
+- **`macro.target_crop` is one day looser than `tasks.plantable`.** The
+  first accepts a crop whose cycle ends on the last day, the second refuses
+  to plant it; seed bought by the first sits idle. Fixed in plan mode only
+  (the plan asks `plantable`). In dial mode it still buys that seed; fixing
+  it changes the deployed policy's purchases and must be measured paired
+  against v48 first.
+- **`MIN_HAND_DAYS` refuses every hire with one day left**, in dial mode.
+  The plan bypasses it; whether the deployed policy loses its last day the
+  same way (harvest with the farmer alone) is unmeasured. Test:
+  `test_hands_follow_the_plan_including_the_last_days`.
+- **`Plan` is a process global** (`kagsym.plan.PLAN`), like the executor's
+  constants: one plan per process at a time, set with `plan.active(...)`.
+  Fine for search workers (one plan each); wrong the day two agents in one
+  process need different plans. Fix: pass the plan through `Agent`.
+- **`tools/plan_search.py` coordinate descent stops at a local optimum** and
+  its value grids are hand-picked (tiles in steps of 5, five selling levels).
+  The per-day dial oracle is 560 $ above the best plan found.
+- **The tactical layer is a myopic per-turn assignment** (value x
+  0.82^distance). It has no notion of a trip (harvest, carry, drop, sell)
+  and the rung-1 fixes above are patches on it: a deadline, a load
+  threshold, per-unit drop columns. The exact answer for a harvest day is
+  a small routing problem (units, ripe tiles, one depot, 24 turns); the
+  plan-space way is to expose the remaining tactical choices as plan
+  fields and search them. Not done: harvest green vs ripe, sowing order
+  inside a day.
+- **The rung-1 tactical mechanics are off under a value map.** Per-unit
+  DROP columns, the four shed-access tiles, the last-day deadline and the
+  plan's load threshold run only for agents without a network. Under v5's
+  frozen map they cost -5,356 $ paired vs v48 (t -4.8) because the map was
+  trained on the old semantics. Unblocked by: training a network with them
+  on (the plan head of EXP-008) and measuring that network, not v5.

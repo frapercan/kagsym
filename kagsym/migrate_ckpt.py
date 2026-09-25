@@ -251,6 +251,21 @@ def load_strict(net, sd, name_="checkpoint", macro_fields=None):
     # exact behaviour instead of starting somewhere arbitrary. Without this,
     # `load_strict` raises, which is correct but would make it impossible to
     # resume anything older.
+    # CABEZA NUEVA SIN PASADO. `espacial` se añadio el 2026-09-23 y ningun
+    # checkpoint anterior la lleva, asi que `load_strict` se niega -- con
+    # razon, porque su trabajo es que nada quede al azar en silencio.
+    #
+    # Pero una cabeza NUEVA no tiene nada que preservar: su inicializacion
+    # fresca ES lo correcto, a diferencia de una capa del tronco que quedara
+    # aleatoria. Se permite SOLO para cabezas declaradas aqui, y se anuncia;
+    # la guarda sigue estricta para todo lo demas.
+    _NUEVAS = ("espacial",)
+    _frescas = [k for k in act if k.split(".")[0] in _NUEVAS and k not in sd]
+    if _frescas:
+        print(f"  {name_}: cabeza nueva sin pasado, inicializada fresca: "
+              f"{sorted({k.split('.')[0] for k in _frescas})}", flush=True)
+        sd = {**sd, **{k: act[k].clone() for k in _frescas}}
+
     if "log_sigma_micro" in act and "log_sigma_micro" not in sd:
         import math
         cfgd = getattr(net, "cfg", None)

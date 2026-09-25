@@ -131,9 +131,12 @@ class CodificadorMundo(nn.Module):
         self.resumen = nn.Sequential(
             nn.Linear(O.N_GLOBAL + N_HIST, cfg.hidden), nn.GELU())
 
-    def forward(self, grid, glob, hist=None):
+    def forward(self, grid, glob, hist):
+        # No default. A silent zeros fallback here is how the agent was once
+        # measured blind to the opponent's supply ($76,607 -> $25,335 on the
+        # same board). Every caller passes `obs.rival_flow`.
         if hist is None:
-            hist = torch.zeros(glob.shape[0], N_HIST, device=glob.device, dtype=glob.dtype)
+            raise ValueError("hist is required: pass obs.rival_flow(obs), never zeros")
         g = symlog(torch.cat([glob, hist], dim=-1))
         h = self.stem(symlog(grid))
         scale, sesgo = self.glob_enc(g).chunk(2, dim=-1)
@@ -296,6 +299,26 @@ class E2EAgent(nn.Module):
         from ..obs import N_AUX_RIVAL as _NAUX
         self.n_aux = _NAUX
         self.aux_rival = nn.Linear(hid, _NAUX)
+        # CABEZA ESPACIAL. Auditado el 2026-09-23: SOLO `micro` lee `h` casilla
+        # a casilla. JEPA, `aux_rival` y el critico leen `z`, y `z` ve el mapa
+        # unicamente por `mean` y `amax` sobre las 100 casillas -- asi que
+        # ningun objetivo con etiquetas exactas puede moldear nada con
+        # resolucion espacial. El unico gradiente por casilla que existe es la
+        # ventaja de PPO: un escalar por dia repartido entre 100 casillas y 19
+        # verbos.
+        #
+        # Medido: una sonda LINEAL sobre el tronco congelado llega al 39,6% de
+        # acuerdo de verbo contra un suelo de 31,8% y el 88% del tronco suelto.
+        # La decision por casilla no esta en la representacion.
+        #
+        # Esto predice el GRID FUTURO casilla a casilla a los mismos horizontes
+        # de Fibonacci. Las etiquetas son exactas -- son la observacion de
+        # dentro de k dias, no una estimacion -- asi que es supervision densa y
+        # gratuita, y a diferencia de la JEPA no necesita stop-grad porque el
+        # blanco no es un embedding propio sino verdad observable.
+        from ..obs import AUX_HORIZONS as _HZE
+        self.n_hz_esp = len(_HZE)
+        self.espacial = nn.Conv2d(w, O.N_GRID_CH * self.n_hz_esp, 1)
         # (historical note) The previous version was withdrawn: the trainer's
         # loss is `l_pi + value_weight * l_v` and nobody touches its output, so
         # it received gradient from nothing -it stayed at its initialisation
@@ -327,12 +350,19 @@ class E2EAgent(nn.Module):
     def forward(self, grid, glob, hist=None):
         h, z = self.tronco(grid, glob, hist)
         return {
+            # The trunk latent, exposed so the episodic value memory can key on
+            # exactly what the critic reads -- same information, one estimator
+            # parametric and one not.
+            "z": z,
             "macro_mu": self.macro_mu(z),
             "rival": self.aux_rival(z),
             "jepa_p": self.jepa_pred(z).reshape(-1, self.n_hz, self.d_jepa),
             "jepa_z": self.jepa_proy(z),
             "micro": (self.micro(self.micro_ctx(h)) if self.n_ops
                       else self.micro(self.micro_ctx(h)).squeeze(1)),
+            # (b, horizontes, canales, 10, 10)
+            "espacial": self.espacial(h).reshape(
+                h.shape[0], self.n_hz_esp, O.N_GRID_CH, h.shape[2], h.shape[3]),
             "value": self.critic(z).squeeze(-1),
         }
 

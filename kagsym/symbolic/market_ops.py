@@ -75,11 +75,41 @@ def drain_rate(obs, product: str) -> float:
     return r
 
 
+# PRECIOS MEMOIZADOS. `market_price(item, inventory, params)` es pura, y
+# medido sobre un episodio completo `params` llega None en los 720 turnos, asi
+# que cae al MARKET_PARAMS global del motor y el precio depende solo de
+# (producto, inventario). Medido: 10.166 llamadas a `marginal_prices` sobre
+# 1.957 argumentos distintos, 80,7% redundante, 13,2% del tiempo del agente.
+#
+# Esto es EXACTO, no una aproximacion: se cachea una funcion pura. Con params
+# no nulo se salta la cache, por si alguna configuracion los trae.
+#
+# La cache se invalida si el motor cambia su tabla de parametros, que es lo
+# unico de lo que depende el resultado y no esta en la clave.
+_PRECIO: dict = {}
+_PRECIO_TABLA = None
+
+
+def _precio(product: str, inv: int, params) -> float:
+    if params is not None:
+        return spec.market_price(product, inv, params)
+    global _PRECIO_TABLA
+    _t = getattr(spec, "MARKET_PARAMS", None)
+    if _t is not _PRECIO_TABLA:
+        _PRECIO.clear()
+        _PRECIO_TABLA = _t
+    k = (product, inv)
+    v = _PRECIO.get(k)
+    if v is None:
+        v = _PRECIO[k] = spec.market_price(product, inv, None)
+    return v
+
+
 def marginal_prices(obs, product: str, k: int) -> list[float]:
     """What the engine pays for each of k units, in order."""
     inv = obs["market"]["inventory"][product]
     params = obs["market"].get("params")
-    return [spec.market_price(product, inv + j, params) for j in range(k)]
+    return [_precio(product, inv + j, params) for j in range(k)]
 
 
 def future_price(obs, product: str, horizon: int, opp_flow: float = 0.0) -> float:
@@ -92,7 +122,7 @@ def future_price(obs, product: str, horizon: int, opp_flow: float = 0.0) -> floa
     """
     inv = obs["market"]["inventory"][product]
     future = inv + (opp_flow - drain_rate(obs, product)) * horizon
-    return spec.market_price(product, int(round(future)), obs["market"].get("params"))
+    return _precio(product, int(round(future)), obs["market"].get("params"))
 
 
 def turns_left(obs) -> int:
@@ -271,7 +301,8 @@ def unit_value(obs, product: str) -> float:
     return float(obs["market"]["prices"].get(product, 1))
 
 
-def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
+def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None,
+                planned_seeds: int = 0) -> list:
     """Hire while a hand costs less than it returns in a day.
 
     The cost of the n-th hand of the day is `fib(n)` and resets daily. A hand
@@ -287,7 +318,9 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
     hired = int(farm["hires_today"])
     money = float(farm["money"])
     days = max(1, (turns_left(obs) + 1) // spec.TURNS_PER_DAY)
-    if days < MIN_HAND_DAYS:
+    from ..plan import get_plan as _get_plan
+    _pl = _get_plan()
+    if days < MIN_HAND_DAYS and _pl is None:
         return []                      # no time left to pay it back
 
     from kaggle_environments.envs.kaggriculture import kaggriculture as E
@@ -306,7 +339,9 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
     # otherwise hiring for "plantable" tiles pays for intentions. Counting zero
     # empty tiles created the opposite deadlock: no seed means no tasks, no
     # tasks means no hands, no hands means no planting, and it never starts.
-    seeds_in_hand = sum(int(v) for v in obs["private"].get("seeds", {}).values())
+    # Seed being bought THIS turn counts as work: hiring and buying seed are
+    # decided together, and hiring first is right only if the seed follows.
+    seeds_in_hand = sum(int(v) for v in obs["private"].get("seeds", {}).values()) + int(planned_seeds)
     tasks = 0
     for row in farm["tiles"]:
         for t in row:
@@ -329,18 +364,31 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
     # BUDGET cap: it self-limits, scales with wealth and presumes nothing about
     # how the policy organises the work.
     # The target is set by the policy; the engine sets the hard limit.
+    # THE MACRO'S TARGET, NOT A DEMAND CAP. Measured 2026-09-24: capping
+    # hires by the work executable now (tiles with seed in hand, unwatered
+    # plants, unfed animals) made a 5-day solitaire consistent (0 idle hires)
+    # and cost -39,212 $ (t -22, worse on every one of 60 boards) in the full
+    # game. Hands create the work of a growing farm -building, land, moving-
+    # and "executable now" does not see it. The macro's target stands.
+    per_unit = max(1, spec.TURNS_PER_DAY // 3)
     if macro is not None:
         from ..macro import target_hands
         n_max = min(n_max, target_hands(obs, macro))
     else:
         STARTUP_HANDS = 2
-        per_unit = max(1, spec.TURNS_PER_DAY // 3)
         n_max = min(n_max, max(STARTUP_HANDS, -(-max(tasks, 1) // per_unit)))
+
     budget = max(LABOUR_FLOOR, money * LABOUR_BUDGET_FRACTION)
 
     orders = []
     for n in range(hired, n_max):
         cost = E._fib(n)
+        if _pl is not None:                 # the plan says how many; the cash above the feed reserve limits it
+            if cost > money - feed_cash_reserve(obs):
+                break
+            orders.append(["HIRE"])
+            money -= cost
+            continue
         # A hand contributes `turnsPerDay` actions. It is hired while its
         # cost is a fraction of what those actions yield. It is NOT capped by
         # a share of cash: labour is the multiplier of everything else, and
@@ -355,6 +403,23 @@ def hire_orders(obs, n_max: int = 15, margin: float = None, macro=None) -> list:
     return orders
 
 
+def feed_cash_reserve(obs) -> float:
+    """Cash the animals' next two days of feed need (two days unfed and an
+    animal escapes: its cost is lost). Under a plan, seed, animal and hire
+    orders spend only what is left above it. Measured before it: the
+    expansion blocks sat at cash 0 from day 3 and lost 4-15 animals."""
+    farm = obs["farms"][int(obs["player"])]
+    priv = obs["private"]
+    n = sum(1 for row in farm["tiles"] for t in row if isinstance(t, dict) and t.get("animal"))
+    n += sum(int(priv["shed"].get(a, 0)) for a in spec.ANIMALS)
+    held = int(priv["shed"].get("WHEAT", 0)) + sum(int(inv.get("WHEAT", 0)) for inv in priv.get("inventories", []))
+    import os as _os_f
+    if _os_f.environ.get("KAG_FEED_RESERVE_OFF"):
+        return 0.0
+    need = max(0, 2 * n - held)
+    return need * float(obs["market"]["prices"].get("WHEAT", 25)) * 1.2
+
+
 def _value_per_action(obs) -> float:
     """What one unit-turn is worth, measured by the best available crop."""
     from .tasks import cycle_days, cycle_profit, cycle_yield, plantable
@@ -364,7 +429,20 @@ def _value_per_action(obs) -> float:
             continue
         turns = cycle_days(c) + 3          # water daily + plant + harvest
         best = max(best, cycle_profit(obs, c) / turns)
-    return max(1.0, best)
+    # THE WORK THAT ALREADY EXISTS. A unit-turn is worth what the best crop
+    # cycle yields per turn OR what realising the standing position yields
+    # per unit-turn left: harvests, feeding, sales. The old floor of $1
+    # stood in for the second term and hired hands with nothing to do in
+    # short solitaires (3/9/22 hires in 2/3/5 days); removing it alone lost
+    # $3,509 (t -11.5) in the full game because late hands harvest and sell.
+    # `liquidation` counts exactly what has time to pay, so it is the right
+    # measure of pending work; in a game where nothing pays it is the cash.
+    from ..potential import liquidation
+    farm = obs["farms"][int(obs["player"])]
+    pending = liquidation(obs, int(obs["player"]), obs.get("private")) - float(farm["money"])
+    units = 1 + len(farm["hands"]) + int(farm.get("hires_today", 0))
+    per_unit_turn = max(0.0, pending) / max(1, units * max(1, turns_left(obs)))
+    return max(best, per_unit_turn)
 
 
 def quadrant_of_xy(x: int, y: int) -> str:
@@ -382,10 +460,21 @@ def land_orders(obs, macro=None) -> list:
     """
     farm = obs["farms"][int(obs["player"])]
     n = len(farm["unlocked_quadrants"]) - 1
-    if n >= len(spec.LAND_PRICES) or obs["hour"] != 0:
+    # THE HOUR TEST WAS OURS AND IT IS GONE. The engine handles BUY_LAND as an
+    # atomic order in the market phase with no reference to the hour, so
+    # `obs["hour"] != 0` was an invented rule: 24 chances a day cut to one,
+    # competing for the turn's ten market orders. Measured on 200 paired seeds
+    # against v48 it is worth nothing either way -- -$247, se 393, t -0.6 --
+    # so it goes on principle rather than for money: a condition that does not
+    # come from the engine and cannot be learned has no business deciding.
+    if n >= len(spec.LAND_PRICES):
         return []
     cost = spec.LAND_PRICES[n]
     money = float(farm["money"])
+    from ..plan import get_plan as _get_plan
+    _pl = _get_plan()
+    if _pl is not None:                 # the plan says how much land, literally
+        return [["BUY_LAND"]] if n < _pl.land_on(int(obs["day"])) and money >= cost else []
     # Only expand if the land already owned is being used. An alternative
     # payback criterion was tried (buy if there is season left to pay for it)
     # and it is WORSE: -$1,000 on all three controls, because it buys 25 tiles
@@ -475,6 +564,25 @@ def seed_orders(obs, tile_target: int, macro=None) -> list:
     # crops, against the 57 it manages under its own.
     unused = sum(int(v) for v in obs["private"].get("seeds", {}).values())
     n_units = 1 + len(farm["hands"])
+    from ..plan import get_plan as _get_plan
+    _pl = _get_plan()
+    if _pl is not None:                 # the plan: its crops, the tiles it asks, the cash above the feed reserve
+        from .tasks import plantable as _plantable
+        cash = max(0.0, float(farm["money"]) - feed_cash_reserve(obs))
+        out = []
+        _cap = _pl.tile_cap(obs)
+        _tot = max(1, _pl.tiles_on(int(obs["day"])))
+        for crop_, want in _pl.crop_targets(int(obs["day"]), obs).items():
+            want = int(round(want * _cap / _tot))          # the plan's shares of what fits today
+            if not _plantable(obs, crop_):
+                continue
+            missing = want - planted_by_crop.get(crop_, 0) - int(obs["private"].get("seeds", {}).get(crop_, 0))
+            price = max(1, spec.CROPS[crop_]["seed"])
+            n_take = min(missing, int(cash // price))
+            if n_take > 0:
+                out.append(["BUY_SEED", crop_, n_take])
+                cash -= n_take * price
+        return out
     # LEARNED. This `return []` ABORTS the whole seed purchase, and with 8.4
     # units the threshold came out at 16.8 while we carried 25.1 seeds on
     # average: for much of the episode nothing was bought.
@@ -634,19 +742,36 @@ def animal_orders(obs, max_per_turn: int = None, macro=None) -> list:
         spec.ANIMALS,
         key=lambda a: -(animal_net_value(obs, a)
                         * _lvlA.get(spec.ANIMALS[a]["product"], 1.0)))
+    # UNDER A PLAN the plan says which kinds and how many; the executor's
+    # valuation (manure as a watering credit, not a product) refuses every
+    # animal below 14 days, while a goose pays back in 2-3 days through
+    # eggs and fertiliser (measured: 4 geese, 14 days, 3,000 -> 8,658).
+    from ..plan import get_plan as _get_plan
+    _pl = _get_plan()
+    _want = _pl.animal_targets(int(obs["day"])) if _pl is not None else None
+    if _want is not None:
+        alive_by = {}
+        for row in farm["tiles"]:
+            for t in row:
+                if isinstance(t, dict) and t.get("animal"):
+                    alive_by[t["animal"]] = alive_by.get(t["animal"], 0) + 1
+        for a in spec.ANIMALS:
+            alive_by[a] = alive_by.get(a, 0) + int(priv["shed"].get(a, 0)) \
+                + sum(int(inv.get(a, 0)) for inv in priv.get("inventories", []))
+        candidates = [a for a in spec.ANIMALS if _want.get(a, 0) > alive_by.get(a, 0)]
     orders = []
     for a in candidates:
         if len(orders) >= min(max_per_turn, room):
             break
         d = spec.ANIMALS[a]
-        if animal_net_value(obs, a) <= 0:
+        if _pl is None and animal_net_value(obs, a) <= 0:
             continue
         room = free_slots[d["structure"]] + empty
         if room - pending <= 0:
             continue
         # Reserve cash: running out of money for seed and feed ruins the
         # investment, because an animal that does not eat for two days escapes.
-        if money - d["cost"] < ANIMAL_CASH_RESERVE:
+        if money - d["cost"] < ANIMAL_CASH_RESERVE + (feed_cash_reserve(obs) if _pl is not None else 0.0):
             continue
         orders.append(["BUY_ANIMAL", a, 1])
         money -= d["cost"]

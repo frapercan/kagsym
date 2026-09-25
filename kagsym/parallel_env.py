@@ -22,7 +22,7 @@ import numpy as np
 
 
 def _worker(conn, n_envs, steps, seed0, macro_vec, level,
-                hand_cap=None, hours=None, idx0=0, n_total=None):
+                hand_cap=None, hours=None, idx0=0, n_total=None, dos=False):
     import os
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,6 +34,14 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
     try:
         import torch
         torch.set_num_threads(1)
+        # Exploration draws are reproducible per worker: the trainer's --seed
+        # arrives through the environment (fork inherits it), the rank makes
+        # workers differ, and the same command gives the same draws.
+        _base = int(os.environ.get("KAGSYM_SEED", "0"))
+        torch.manual_seed((_base * 1_000_003 + idx0) % (2 ** 31))
+        import random as _random
+        _random.seed(_base * 7919 + idx0)
+        np.random.seed((_base * 104_729 + idx0) % (2 ** 31))
     except Exception:
         pass
     from kagsym.symbolic import tasks as _T
@@ -52,7 +60,7 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
 
     env = DayEnv(n_envs, steps=steps, seed0=seed0,
                      macro=Macro.from_vector(macro_vec), level=level,
-                     idx0=idx0, n_total=n_total)
+                     idx0=idx0, n_total=n_total, dos_asientos=dos)
     while True:
         cmd, data = conn.recv()
         if cmd == "codifica":
@@ -62,7 +70,8 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
             rec, fin = env.step_day(maps=maps, macros=macros)
             conn.send((rec, fin, env.win_rate(), env.mean_money(),
                        env.mean_useful(), env.rival_stats(),
-                       env.mean_unsold(), env.masks()))
+                       env.mean_unsold(), env.masks(),
+                       env.producto_medio(), env.manos_pedidas_reales()))
         elif cmd == "autojuego":
             # Opponent weights: a snapshot of our own policy. They are sent
             # down the pipe each time a new version is frozen, not every step:
@@ -92,22 +101,27 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
                 # vector. That biased the win signal, which is precisely the
                 # only thing self-play was there to provide.
                 eps_r = torch.randn(1, N_MACRO)
-                _nc = 1 + getattr(_net, "n_ops", 0)
-                eps_u = torch.randn(10, 10) if _nc == 1 else torch.randn(_nc, 10, 10)
-                # ONE SIGMA PER CHANNEL, exactly as the trainer does. This
-                # used to use a flat 0.15 for all channels, and 0.15 is
-                # calibrated for the VALUE channel in symlog dollars: applied
-                # to verb logits it is FIVE times the sigma we use (0.03), and
-                # at that noise level the verb is 96% noise -as the
-                # `sigma_verb` docstring says-. In other words the frozen
-                # opponent was not a copy of us: it was us with the verb head
-                # lobotomised. Measured: it scored $1,413 against the $2,048 of
-                # the policy it was a copy of.
-                _sg = float(cfgd.get("sigma_micro", 0.15))
-                if _nc > 1:
-                    _sg = torch.full((_nc, 1, 1),
-                                     float(cfgd.get("sigma_ops", 0.03)))
-                    _sg[0] = float(cfgd.get("sigma_micro", 0.15))
+                # LA SIGMA APRENDIDA, que ademas trae la FORMA correcta.
+                #
+                # Esto calculaba `_nc = 1 + n_ops` = 20 canales, pero la
+                # cabeza micro emite 28: sobran los canales de CLAVE
+                # (1 + N_OPS + 2*n_keys). La suma `micro[0] + _sg*eps_u`
+                # lanzaba "size of tensor a (28) must match b (20)" EL PRIMER
+                # DIA DE CADA EPISODIO, y `step_day` se tragaba la excepcion y
+                # jugaba PASS.
+                #
+                # Es decir: el rival de autojuego no jugaba MAL, NO JUGABA.
+                # MEDIDO el 2026-09-23 con el caso nulo: 53.417 $ contra
+                # 16.302 $ y win 1,000 frente a una copia EXACTA de nosotros
+                # mismos. Con la misma red y el mismo codigo en los dos lados
+                # la diferencia es -4.780 +- 4.374 (2 de 6), o sea cero.
+                #
+                # `log_sigma_micro` es un parametro del modelo, asi que su
+                # forma sigue a la cabeza sola y los valores son los que la
+                # politica usa de verdad -no los iniciales de la config-.
+                _sg = _net.log_sigma_micro.exp().detach()
+                _nc = int(_sg.shape[0])
+                eps_u = torch.randn(_nc, 10, 10) if _nc > 1 else torch.randn(10, 10)
                 estado = {"dia": None, "mapa": None}
 
                 def jugar(ob):
@@ -119,16 +133,38 @@ def _worker(conn, n_envs, steps, seed0, macro_vec, level,
                     # policy scoring $2,089 made $1,348.
                     d_ = int(ob["day"])
                     if estado["dia"] != d_:
-                        g, b = _O.encode_obs(ob)
+                        # LAS TRES ENTRADAS, como nosotros. Faltaban dos:
+                        #
+                        #  * `hist` (N_HIST = 4 x N_PRODUCTS, el flujo del
+                        #    rival en cuatro ventanas). `forward` lo rellena
+                        #    con CEROS si no llega, asi que la copia jugaba
+                        #    ciega a lo que el otro va a sacar al mercado. Y no
+                        #    es un canal lateral: entra en `glob_enc`, que
+                        #    modula por FiLM las cien casillas.
+                        #  * `_destinations` del ejecutor, que nuestro
+                        #    `encode_obs` si recibe: a donde van las unidades
+                        #    ya asignadas.
+                        #
+                        # MEDIDO el 2026-09-23 con el caso nulo -politica
+                        # congelada contra copia EXACTA de si misma, que por
+                        # simetria debe dar 0,5-: daba win 1,000 y 53.417 $
+                        # contra 16.302 $, el 31%. La copia rendia menos que un
+                        # v48 capado. Con eso, el Elo del torneo, el "peldaño
+                        # ganado al 100%" y la promocion puntuaban un
+                        # handicap, no una diferencia de juego.
+                        g, b = _O.encode_obs(
+                            ob, getattr(ag, "_destinations", None))
+                        hf = np.asarray(_O.rival_flow(ob), dtype=np.float32)
                         with torch.no_grad():
                             s_ = _net(torch.from_numpy(g).unsqueeze(0),
-                                      torch.from_numpy(b).unsqueeze(0))
+                                      torch.from_numpy(b).unsqueeze(0),
+                                      torch.from_numpy(hf).unsqueeze(0))
                             am, _ = _net.macro_from(s_, eps_r)
                             estado["mapa"] = (s_["micro"][0]
                                               + _sg * eps_u).numpy()
                         ag.macro = _Mac.from_vector(am[0].numpy())
-                        from .environment import _parte_micro
-                        ag.micro = lambda o2: _parte_micro(estado["mapa"])
+                        from .environment import _split_micro
+                        ag.micro = lambda o2: _split_micro(estado["mapa"])
                         estado["dia"] = d_
                     return ag(ob)
                 return jugar
@@ -184,7 +220,15 @@ class ParallelEnv:
     """The same interface as `DayEnv`, spread across processes."""
 
     def __init__(self, n_envs, n_procs=8, steps=720, seed0=1, macro=None, level=2,
-                 hand_cap=None, hours=None):
+                 hand_cap=None, hours=None, dos_asientos=0):
+        # DOS ASIENTOS POR TRABAJADOR, no global. Autojuego puro desde cero
+        # tiene un equilibrio degenerado -los dos quietos- y el retorno es
+        # RELATIVO: deja de subir en cuanto el rival mejora aunque los dos
+        # esteis mejorando. Unos cuantos peldaños contra la escalera publica
+        # son el ancla ABSOLUTA que impide esa deriva.
+        #
+        # Entero K = los K primeros trabajadores con dos asientos; -1 = todos.
+        self._dos_arg = dos_asientos
         self.n_procs = min(n_procs, n_envs)
         self.n = n_envs
         # HORIZON PER WORKER. `steps` may be a list: each process plays
@@ -205,6 +249,18 @@ class ParallelEnv:
         # let it condition on instead of average over.
         def _split_envs(v):
             if isinstance(v, (list, tuple)):
+                # LOUD, because silent was expensive. The modulo only wraps
+                # when the list is SHORTER than n_procs; when it is longer the
+                # tail is dropped without a word, and a run then trains on a
+                # grid nobody asked for. Measured cost of that: an overnight
+                # campaign with 11 rungs and 5 processes trained on the first
+                # two horizons against a passive agent, and its logs looked
+                # right because the printout echoed the grid REQUESTED.
+                if len(v) > self.n_procs:
+                    raise SystemExit(
+                        f"{len(v)} rungs asked for and only {self.n_procs} "
+                        f"processes: rungs {list(v)[self.n_procs:]} would be "
+                        f"dropped in silence. Raise --procs or shorten --grid.")
                 return [v[i % len(v)] for i in range(self.n_procs)]
             return [v] * self.n_procs
 
@@ -239,6 +295,21 @@ class ParallelEnv:
             if i > 10 * n_envs:
                 break
         self.n = sum(self.envs_per_proc)
+        # FILAS, no envs: con dos asientos cada trabajador devuelve 2m filas
+        # -primero sus m del asiento 0, luego sus m del asiento 1- y el orden
+        # global queda [w0s0, w0s1, w1s0, w1s1, ...]. `encode` concatena y
+        # `step_day` corta con el mismo reparto, asi que el emparejamiento
+        # fila<->asiento se mantiene sin mas contabilidad.
+        _k = self._dos_arg
+        if isinstance(_k, (list, tuple)):
+            self.dos_proc = [bool(_k[i % len(_k)]) for i in range(self.n_procs)]
+        else:
+            _k = int(_k)
+            _k = self.n_procs if _k < 0 else _k
+            self.dos_proc = [i < _k for i in range(self.n_procs)]
+        self.dos = any(self.dos_proc)
+        self.filas_per_proc = [m * (2 if d else 1)
+                               for m, d in zip(self.envs_per_proc, self.dos_proc)]
         ctx = mp.get_context("fork")
         self.conns, self.procs = [], []
         off = 0
@@ -252,7 +323,8 @@ class ParallelEnv:
                                   (level[k % len(level)]
                                    if isinstance(level, (list, tuple)) else level),
                                   self.cap_per_proc[k],
-                                  self.hours_proc[k], off, n_envs),
+                                  self.hours_proc[k], off, n_envs,
+                                  self.dos_proc[k]),
                             daemon=True)
             p.start()
             self.conns.append(padre)
@@ -263,6 +335,13 @@ class ParallelEnv:
         self._util = [float("nan")] * self.n_procs
         self._riv = [None] * self.n_procs
         self._sinliq = [float("nan")] * self.n_procs
+        self._prod = [None] * self.n_procs
+        self._sat = [None] * self.n_procs
+
+    @property
+    def n_filas(self):
+        """Filas por update: 2n con dos asientos, n si no."""
+        return sum(self.filas_per_proc)
 
     def encode(self):
         for c in self.conns:
@@ -274,13 +353,15 @@ class ParallelEnv:
 
     def step_day(self, maps=None, macros=None):
         off = 0
-        for c, m in zip(self.conns, self.envs_per_proc):
+        for c, m in zip(self.conns, self.filas_per_proc):
             c.send(("paso", (None if maps is None else maps[off:off + m],
                              None if macros is None else macros[off:off + m])))
             off += m
         rec, fin, masks_ = [], [], []
         for k, c in enumerate(self.conns):
-            r, f, wr, din, util, riv, sinliq, ms = c.recv()
+            r, f, wr, din, util, riv, sinliq, ms, prod_, sat_ = c.recv()
+            self._prod[k] = prod_
+            self._sat[k] = sat_
             rec.append(r); fin.append(f)
             if ms is not None:
                 masks_.append(ms)
@@ -434,17 +515,29 @@ class ParallelEnv:
         v = [x for x in v if x == x]
         return float(np.mean(v)) if v else float("nan")
 
-    def forget_results(self):
-        """Clear the win history in every worker and in the parent aggregate.
+    def forget_results(self, idxs=None):
+        """Clear the win history, optionally only in SOME workers.
 
         Used by opponent promotion: against a new opponent the rate has to be
         measured from scratch, not carried over from the previous one.
+
+        `idxs` limits it to the workers whose opponent actually changed. Sin
+        eso, el relevo por meritos -que cambia UN peldaño- borraba el historial
+        de los ONCE. Medido el 2026-09-23: la tasa agregada quedaba en nan 7 de
+        16 lecturas, lo que a su vez dejaba muerta la promocion -exige no-nan-
+        y la actualizacion del Elo. Y el propio relevo volvia a leer el mismo
+        peldaño con dos episodios y lo veia al 100% otra vez: siete relevos
+        seguidos del peldaño 0 y de ningun otro.
         """
-        for c in self.conns:
-            c.send(("olvida_resultados", None))
-        for c in self.conns:
-            c.recv()
-        self._wr = [float("nan")] * self.n_procs
+        ks = (range(len(self.conns)) if idxs is None
+              else [k for k in idxs if 0 <= k < len(self.conns)])
+        ks = list(ks)
+        for k in ks:
+            self.conns[k].send(("olvida_resultados", None))
+        for k in ks:
+            self.conns[k].recv()
+        for k in ks:
+            self._wr[k] = float("nan")
 
     def rival_per_rung(self):
         """Opponent money on EACH rung.
@@ -474,6 +567,16 @@ class ParallelEnv:
     def win_rate(self, last=60):
         return self._media(self._wr)
 
+    def money_per_worker(self):
+        """Nuestro dinero en CADA trabajador.
+
+        `mean_money` promedia los once, y con ocho en autojuego esa media no
+        distingue "extraemos mas valor" de "farmeamos en un mundo donde el
+        rival es igual de flojo". El trabajador ancla -el que juega contra el
+        agente publico sin capar- es la unica lectura absoluta.
+        """
+        return [float(d) if d is not None else float("nan") for d in self._din]
+
     def mean_money(self, last=50):
         return self._media(self._din)
 
@@ -486,6 +589,35 @@ class ParallelEnv:
             return {"money": float("nan"), "crops": float("nan"),
                     "animals": float("nan"), "units": float("nan")}
         return {k: self._media([r[k] for r in vs]) for k in vs[0]}
+
+    def manos_pedidas_reales(self, idxs=None):
+        ks_ = range(self.n_procs) if idxs is None else idxs
+        ds = [self._sat[k] for k in ks_
+              if k < len(self._sat) and self._sat[k]
+              and self._sat[k][0] == self._sat[k][0]]
+        if not ds:
+            return (float("nan"), float("nan"))
+        return (sum(d[0] for d in ds) / len(ds), sum(d[1] for d in ds) / len(ds))
+
+    def producto_medio(self, idxs=None):
+        """Unidades vendidas por producto, media sobre los trabajadores dados.
+
+        `idxs` permite pedir SOLO los del rival externo: mezclar autojuego con
+        v48 promedia dos mercados distintos.
+        """
+        ks_ = range(self.n_procs) if idxs is None else idxs
+        ds = [self._prod[k] for k in ks_
+              if k < len(self._prod) and self._prod[k]]
+        if not ds:
+            return {}
+        out = {}
+        for campo in ("uds", "ing"):
+            ks = set()
+            for d in ds:
+                ks |= set(d.get(campo) or {})
+            out[campo] = {k: sum((d.get(campo) or {}).get(k, 0.0) for d in ds)
+                          / len(ds) for k in ks}
+        return out
 
     def mean_unsold(self, last=50):
         return self._media(self._sinliq)

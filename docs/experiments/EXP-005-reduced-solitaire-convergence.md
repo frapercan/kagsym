@@ -1,0 +1,87 @@
+# EXP-005: can the model converge to a near-perfect strategy in a reduced space, with no opponent?
+
+Written before launch, 2026-09-24 22:30. The question is about the learning
+machinery, not about transfer: the reduced world is the whole game here.
+
+## The space
+
+24h x 8 days, passive opponent (solitaire), starting cash 3,000 $, the
+executor values the honest 8-day horizon. Carrot (3 days), wheat (4) and
+goose (first egg on day 4) can pay; melon, strawberry, tomato, cow and sheep
+cannot. Evaluation seeds: RESERVED (held out from every search and every
+training run, which use SEARCH / TRAINING).
+
+## The bar (measured before learning)
+
+```
+partida_v5 alone, 10 reserved seeds       2,853 $   (loses money: hires, plants nothing that pays)
+local rollout oracle (K=32 around v5)     3,193 $   regret 340 $, search wins on 6 of 8 days
+global bar: CEM over the macro ramp in this world (runs/search/exp005_sol8_cem), then the
+rollout oracle on top of the best schedule -> filled in below
+```
+
+## Mechanisms, cheapest first, each measured as regret on reserved seeds
+
+1. **Search (CEM, ramp a + b*progress on the live dials)** in this world:
+   the best fixed strategy the executor admits. Its regret against the
+   rollout oracle is the value of state-dependence.
+2. **PPO from v5** in this world (`--level 0`, no self-play, 150 updates,
+   seeded): does the gradient close the gap where the search finds money?
+   Health (heads with gradient, sigmas), progress paired against update 1.
+3. **PPO from random weights** in this world: convergence from nothing.
+4. **Imitation of the oracle**: the rollout oracle's daily choices as
+   supervised targets for the macro head; regret after distillation.
+
+## Convergence, defined
+
+Regret per day against the best available oracle on 20 reserved seeds,
+paired; a mechanism has converged when its regret is within the oracle's
+own noise (the difference between K=32 and K=64) on every day. The quality
+of actions across the rhythms is read from the day-by-day regret and from
+`tools/stage_map.py --days 8` on the trained checkpoint.
+
+## Decision rule
+
+Every mechanism runs to its planned length. What is reported is the regret
+curve, the day profile and the health of the network; nothing is baked or
+deployed from this experiment.
+
+## Results so far (2026-09-24, 23:00), 20 reserved seeds, deterministic
+
+```
+partida_v5 as it is                         2,854 +- 2
+CEM on v5's ramp, gen 28 centre (search seeds)   4,433   (validation on reserved seeds pending)
+PPO from v5, 150 updates                    4,129 +- 16    regret vs local oracle (K=32) 554
+PPO from random weights, 300 updates        5,788 +- 26    regret vs local oracle (K=32) 468; oracle 6,385
+```
+
+Health of both PPO checkpoints: every required head with gradient, sigmas
+alive, fingerprint current. The 30-day prior of v5 is a trap in this world
+(hires, animals); from nothing the policy learns the crop economy in three
+minutes. Audit of the from-scratch policy (seed 7101): buys one quadrant on
+day 0, plants 50 tiles 2-3 times, sells everything by day 7; still 32%
+tile-day occupancy, 7 hands with 160/517/641 unit-turns pass/move/work,
+17,095 $-days of idle cash, 17 seeds unplanted. The continuation to 1,200
+updates runs with snapshots every 100 for the convergence curve.
+
+## PPO does not converge in this world: the deterministic curve (20 reserved seeds)
+
+```
+updates    300     350     400     450     500     550     600    1,200
+money    5,788   5,753   5,258   3,098   4,818   4,195   4,542   3,606
+```
+
+The sampled return in the log barely moves (3,594 -> 3,469) while the mean
+policy swings by 2,700 $ between 50-update windows. Diagnosis from the
+curves: the critic never fits (R^2 <= 0 for 1,200 updates), the exploration
+width never leaves its initial 0.35 (learning rate 7.5e-5 on log_sigma), and
+the objective is the noisy policy's return, not the mean's. The 5,788 at
+update 300 was a point on a random walk, not a converged optimum.
+
+Consequence: a minimal learner for this world (`kagsym/cli/train_solitaire.py`):
+policy gradient with the mean policy's money on the same seed as an exact
+baseline, sigma with its own learning rate, and the mean policy evaluated
+on reserved seeds inside the loop. Its first run (lr 3e-4, unnormalised
+advantages) saturated the macro head by update 14: every sample returned
+the same money (adv sd 0, gradient 0). Fixed with normalised advantages, a
+lower learning rate and a penalty on pre-activations outside +-4.
