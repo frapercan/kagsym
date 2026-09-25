@@ -61,3 +61,17 @@ Same duel (seed 7106), P5 78,347 against v48 153,374: v48 has 3 quadrants,
 60 tiles and 15 animals by day 12 with 12 hands (P5: 2 quadrants, 25
 tiles, 10 animals, 10 hands, 19 % of its unit-turns idle); its revenue is
 strawberry 88 k and milk 76 k against P5's 14 k and 42 k.
+
+## Yardsticks from 2026-09-25 14:00 on
+
+v48 is saturated as a yardstick (0 of 20 for every version; it makes
+120-190 k in those games) and leaves the daily loop. The working
+yardsticks: solo money on 5 seeds for executor changes (the expansion
+ladder), the tape of `testkaggriculture-hamburger` (ladder position 154,
+73 k against us, 11-14 wins of 20) for the search's fitness, and the live
+mid-band panel (hamburger, finding-conditiona) counting WINS for
+consolidation. v48 and the 150 k agents only at milestones.
+
+| id | file | seeds | recorded against |
+|---|---|---|---|
+| T-hamburger | runs/rivals/hamburger.json | 7101-7120 | P5's best plan |
