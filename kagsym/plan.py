@@ -106,6 +106,7 @@ class Plan:
 
 
 PLAN: Plan | None = None      # process-global, like HAND_CAP; set per episode
+_TAPES: dict = {}             # recorded rivals, loaded once per process
 
 
 def set_plan(plan: Plan | None) -> None:
@@ -148,7 +149,18 @@ def play_plan(plan: Plan, seed: int, days: int = 8, hours: int = 24, cash: int =
     steps = hours * days
     spec.set_turns_per_day(hours)
     spec.set_episode_steps(steps)
-    rival = _opponent_callable(public(opponent)) if opponent else (lambda ob: dict(PASS_ACTION))
+    if opponent and opponent.startswith("replay:"):
+        # A recorded rival (tools/record_rival.py): its actions of this seed
+        # replayed turn by turn. An approximation of the live agent, which
+        # reacted to the prices of the game it was recorded in.
+        import json
+        tape = _TAPES.get(opponent)
+        if tape is None:
+            tape = _TAPES[opponent] = json.load(open(opponent[len("replay:"):]))
+        acts = tape[str(seed)]
+        rival = lambda ob, _a=acts: _a[int(ob["step"])] if int(ob["step"]) < len(_a) else dict(PASS_ACTION)
+    else:
+        rival = _opponent_callable(public(opponent)) if opponent else (lambda ob: dict(PASS_ACTION))
     other = 1 - seat
     with active(plan):
         env = FastEnv(configuration={"episodeSteps": steps, "turnsPerDay": hours, "startingMoney": cash}, seed=seed)

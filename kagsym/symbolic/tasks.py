@@ -91,7 +91,20 @@ def days_left(obs) -> int:
     return total - obs["day"]
 
 
+_PLANTABLE_MEMO: dict = {}
+
+
 def plantable(obs, crop: str) -> bool:
+    key = (days_left(obs), crop, _under_plan())
+    hit = _PLANTABLE_MEMO.get(key)
+    if hit is None:
+        hit = _PLANTABLE_MEMO[key] = _plantable(obs, crop)
+        if len(_PLANTABLE_MEMO) > 4096:
+            _PLANTABLE_MEMO.clear()
+    return hit
+
+
+def _plantable(obs, crop: str) -> bool:
     """There is no point planting what there will be no time to harvest.
 
     THE FULL CYCLE, AND IT IS NOT A MISREADING -- it was measured. An audit
@@ -206,7 +219,26 @@ def _shed_dist(tile) -> int:
     return min(dist(tile, a) for a in _shed_access_set())
 
 
+_CARRIED_MEMO: dict = {}
+
+
 def _carried_values(obs) -> list:
+    """Per turn and content, computed once: it was recomputed for every
+    unit and every shed tile of the turn (12 % of a game)."""
+    priv = obs["private"]
+    key = (int(obs["step"]), int(obs["player"]),
+           tuple(tuple(sorted((k, int(v)) for k, v in (inv or {}).items())) for inv in (priv.get("inventories") or [])),
+           tuple(sorted((k, int(v)) for k, v in (priv.get("shed", {}) or {}).items() if v)),
+           tuple(sorted((k, float(v)) for k, v in obs["market"]["prices"].items())))
+    hit = _CARRIED_MEMO.get(key)
+    if hit is None:
+        if len(_CARRIED_MEMO) > 256:
+            _CARRIED_MEMO.clear()
+        hit = _CARRIED_MEMO[key] = _carried_values_raw(obs)
+    return list(hit)
+
+
+def _carried_values_raw(obs) -> list:
     """What each unit's load is worth if dropped now: the price drop it avoids
     plus what the nightly flush would discard (shed overflow) or the game's
     end would forfeit (last day). Same margins as `_shed_task`, per unit."""
@@ -1226,7 +1258,14 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
                 _CV = float(_cv) if _cv else CHAIN_VALUE
                 if _CV <= 0.0:
                     continue              # stays 0: loses to the dummy
-                _ch = _chain_for(pos, tile, op, inv, chain_ctx)
+                _memo = chain_ctx.setdefault("_chain_memo", {}) if chain_ctx is not None else None
+                _mk = (pos, tile, op[0], tuple(sorted((k, int(v)) for k, v in (inv or {}).items() if v))) if _memo is not None else None
+                if _memo is not None and _mk in _memo:
+                    _ch = _memo[_mk]
+                else:
+                    _ch = _chain_for(pos, tile, op, inv, chain_ctx)
+                    if _memo is not None:
+                        _memo[_mk] = _ch
                 if _ch is None:
                     continue
                 _acc, _item, _qty, _dtot = _ch

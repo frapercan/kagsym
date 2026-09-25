@@ -115,6 +115,7 @@ def main():
     ap.add_argument("--out", default="runs/blocks/portfolio.json")
     ap.add_argument("--opponent", default=None, help="a public agent as the rival (default: passive)")
     ap.add_argument("--init", default=None, help="a consolidated portfolio json to seed the population with")
+    ap.add_argument("--race", action="store_true", help="successive halving over the seeds (about 3x fewer games)")
     a = ap.parse_args()
     global OPPONENT
     OPPONENT = a.opponent
@@ -132,7 +133,22 @@ def main():
     with get_context("fork").Pool(a.procs) as pool:
         for g in range(a.gens):
             todo = [p for p in pop if json.dumps(p, sort_keys=True) not in seen]
-            vals = pool.map(_eval, [(p, search_seeds) for p in todo], chunksize=2)
+            if a.race and len(search_seeds) >= 3:
+                # RACING (successive halving): everyone on one seed, the top
+                # 40 % on three, the top 10 % on all; the rest keep their
+                # partial mean. About a third of the games for the same elite.
+                s1 = pool.map(_eval, [(p, search_seeds[:1]) for p in todo], chunksize=2)
+                order = sorted(range(len(todo)), key=lambda i: -s1[i])
+                keep2 = order[: max(4, int(0.4 * len(todo)))]
+                s2 = dict(zip(keep2, pool.map(_eval, [(todo[i], search_seeds[1:3]) for i in keep2], chunksize=1)))
+                m2 = {i: (s1[i] + 2 * s2[i]) / 3 for i in keep2}
+                keep3 = sorted(keep2, key=lambda i: -m2[i])[: max(2, int(0.25 * len(keep2)))]
+                s3 = dict(zip(keep3, pool.map(_eval, [(todo[i], search_seeds[3:]) for i in keep3], chunksize=1)))
+                n3 = len(search_seeds) - 3
+                vals = [((s1[i] + 2 * s2[i] + n3 * s3[i]) / (3 + n3)) if i in s3 else (m2[i] if i in m2 else s1[i] - 1e6)
+                        for i in range(len(todo))]      # a one-seed score never beats a full one
+            else:
+                vals = pool.map(_eval, [(p, search_seeds) for p in todo], chunksize=2)
             for p, v in zip(todo, vals):
                 seen[json.dumps(p, sort_keys=True)] = v
             ranked = sorted(pop, key=lambda p: -seen[json.dumps(p, sort_keys=True)])
