@@ -31,19 +31,30 @@ def _one(args):
 
 
 def grid(days: int):
+    """The constant-plan grid: the GLOBAL stage of the search.
+
+    Coarse on purpose, but it has to span the levers that a local search
+    cannot reach in one or two moves. Measured on the first two climbs: a
+    grid of single crops without animals found 50,861 at 30 days while a
+    5-crop portfolio with 4 animals and 7 hands, written by hand, gave
+    56,380; the day-by-day refinement never got there from any grid plan.
+    """
     from kagsym import spec
-    crops = [c for c in spec.CROP_LIST if spec.CROPS[c]["first_yield_day"] < days]
-    tiles = [0, 10, 15, 20, 25, 30, 35, 40, 50, 60, 75]
-    hands = list(range(0, 9))
-    land = [0, 1, 2]
-    if not crops:                          # nothing yields in time: idle plans only
-        for h in hands:
-            yield dict(crop="CARROT", tiles=0, hands=h, land=0, load=12)
+    singles = [c for c in spec.CROP_LIST if spec.CROPS[c]["first_yield_day"] < days]
+    if not singles:                        # nothing yields in time: idle plans only
+        for h in range(0, 9):
+            yield dict(crop="CARROT", tiles=0, hands=h, land=0, load=12, animals=0)
         return
-    for c, t, h, l in itertools.product(crops, tiles, hands, land):
-        if t > 25 * (1 + l):
+    crops = list(singles)
+    crops += [{a: 0.5, b: 0.5} for i, a in enumerate(singles) for b in singles[i + 1:]]
+    if len(singles) >= 3:
+        crops.append({c: 1.0 / len(singles) for c in singles})
+    animals = [0, 2, 4, 6] if days >= 5 else [0]     # a goose yields from day 4
+    hands = [1, 3, 5, 7] if days >= 5 else [0, 1, 2, 3, 5, 7]
+    for c, t, h, l, a in itertools.product(crops, (10, 20, 25, 50), hands, (0, 1), animals):
+        if t > 25 * (1 + l) or (l == 1 and t < 50):
             continue
-        yield dict(crop=c, tiles=t, hands=h, land=l, load=12)
+        yield dict(crop=c, tiles=t, hands=h, land=l, load=12, animals=a)
 
 
 def main():

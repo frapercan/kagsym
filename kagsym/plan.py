@@ -16,7 +16,7 @@ the next step):
   tiles    planted tiles to keep (replanted as they are harvested)
   hands    hands hired every day
   land     quadrants to buy at the start (0-3)
-  animals  animals to keep (0 in the 8-day world: none pays)
+  animals  animals to keep: a count (the executor picks the kind) or {kind: count}
   selling  the macro's selling dial in [0, 1]: 0 sells at once
   load     units a hand carries before walking to the shed (0: whenever it pays)
   water_last  on the last day, water ripe tiles before harvesting (1) or harvest at once (0)
@@ -41,7 +41,7 @@ class Plan:
     tiles: int | tuple = 25
     hands: int | tuple = 3
     land: int | tuple = 0
-    animals: int | tuple = 0
+    animals: int | dict | tuple = 0
     selling: float | tuple = 0.05
     load: int | tuple = 0          # units a hand carries before a shed trip; 0 = whenever it pays
     water_last: int | tuple = 1    # last day: 1 water ripe tiles before harvesting (+1 unit), 0 harvest at once
@@ -75,7 +75,14 @@ class Plan:
         return int(_by_day(self.land, day))
 
     def animals_on(self, day: int) -> int:
-        return int(_by_day(self.animals, day))
+        a = _by_day(self.animals, day)
+        return int(sum(a.values())) if isinstance(a, dict) else int(a)
+
+    def animal_targets(self, day: int) -> dict | None:
+        """Animals per kind for the day ({kind: count}), or None when the plan
+        gives only a count and the executor chooses the kind."""
+        a = _by_day(self.animals, day)
+        return {k: int(v) for k, v in a.items() if v > 0} if isinstance(a, dict) else None
 
     def selling_on(self, day: int) -> float:
         return float(_by_day(self.selling, day))

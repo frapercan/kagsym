@@ -722,12 +722,29 @@ def animal_orders(obs, max_per_turn: int = None, macro=None) -> list:
         spec.ANIMALS,
         key=lambda a: -(animal_net_value(obs, a)
                         * _lvlA.get(spec.ANIMALS[a]["product"], 1.0)))
+    # UNDER A PLAN the plan says which kinds and how many; the executor's
+    # valuation (manure as a watering credit, not a product) refuses every
+    # animal below 14 days, while a goose pays back in 2-3 days through
+    # eggs and fertiliser (measured: 4 geese, 14 days, 3,000 -> 8,658).
+    from ..plan import get_plan as _get_plan
+    _pl = _get_plan()
+    _want = _pl.animal_targets(int(obs["day"])) if _pl is not None else None
+    if _want is not None:
+        alive_by = {}
+        for row in farm["tiles"]:
+            for t in row:
+                if isinstance(t, dict) and t.get("animal"):
+                    alive_by[t["animal"]] = alive_by.get(t["animal"], 0) + 1
+        for a in spec.ANIMALS:
+            alive_by[a] = alive_by.get(a, 0) + int(priv["shed"].get(a, 0)) \
+                + sum(int(inv.get(a, 0)) for inv in priv.get("inventories", []))
+        candidates = [a for a in spec.ANIMALS if _want.get(a, 0) > alive_by.get(a, 0)]
     orders = []
     for a in candidates:
         if len(orders) >= min(max_per_turn, room):
             break
         d = spec.ANIMALS[a]
-        if animal_net_value(obs, a) <= 0:
+        if _pl is None and animal_net_value(obs, a) <= 0:
             continue
         room = free_slots[d["structure"]] + empty
         if room - pending <= 0:

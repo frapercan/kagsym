@@ -245,3 +245,45 @@ pair were not offered. Both are now in the search (`animals` in
 {0,1,2,3,4,6,8}; three-way and all-crop mixes) and in the plan head, and
 the ladder is climbed again from 1 under the protocol. Fertiliser is the
 next lever v5 uses and the plan does not express.
+
+### Second climb, stopped at rung 20 (2026-09-25 10:04-10:30)
+
+Animals and portfolios in the day-by-day search only: identical to the
+first climb to the dollar below 11 days, +1,100 at 11 (animals taken),
+and 34,491 at 20 against the first climb's 35,795. The refinement cannot
+reach a portfolio-with-animals plan from a monoculture in one or two
+moves; the global stage (the constant-plan grid) had neither lever. The
+grid now spans crops (singles, pairs, the all-crop mix), tiles, hands,
+land and animals (0-6). Third climb from rung 1.
+
+Fertiliser is not a separate lever: v5's 185 units sold are the
+by-product of its 14 animals (each animal yields fertiliser daily), and
+its 182 BUY_PRODUCT orders are wheat to feed them.
+
+## Part 5: the blocks (2026-09-25, midday)
+
+The 30-day game is not a prefix of its rungs: v5's strategy makes 2,793 at
+10 days, 3,120 at 15, 24,675 at 20 and 95,656 at 30. It is livestock, which
+pays late. Measured in isolation (nothing sown, plan-mode executor with the
+kind forced), from 3,000 $:
+
+```
+block                 capital    14 days    30 days   idle
+4 geese, 1 hand         1,200     8,658     17,434    41 %
+8 geese, 2 hands        2,400    11,448     25,368    13 %
+12 geese, 3 hands       3,600    12,028     25,212     8 %    eggs saturate
+4 cows, 1 hand          1,600    13,174     34,323    51 %
+7 cows, 2 hands         2,800    14,062     34,540    35 %    milk saturates
+4 sheep, 1 hand         2,000    15,064     28,236    49 %
+7 sheep, 2 hands        3,500    23,092     59,794    36 %
+```
+
+Seven sheep and two hands, nothing sown, beat the whole 30-day crop search
+(50,861). A goose (300 $) returns ~150 $ a day in eggs and fertiliser (the
+engine gives one fertiliser per animal per day when fed and cared for) and
+pays back in 2-3 days; the executor's `animal_net_value` books manure as a
+watering credit and refuses every animal below 14 days, which is why the
+ladder never saw livestock. Each product saturates its own market, so
+blocks are sub-additive within a product and additive across products:
+the 30-day game is a PORTFOLIO of blocks, scheduled by cash. The plan now
+says the kinds (`animals={kind: count}` per day) and the executor obeys.
