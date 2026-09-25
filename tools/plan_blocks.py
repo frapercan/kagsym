@@ -50,7 +50,7 @@ SPACE = {
     "g1": [0, 2, 4, 6, 8], "c1": [0, 2, 4, 6, 7], "s1": [0, 2, 4, 6, 7],      # final animal targets
     "d1": [4, 6, 8, 10, 12],                                                # day the final targets apply
     "t1": [25, 40, 50, 60, 75, 100], "m1": list(MIXES), "dcrop": [6, 8, 10, 12, 14],
-    "h1": [4, 6, 8, 10, 12], "dh": [4, 6, 8, 10, 12],
+    "h1": [4, 6, 8, 10, 12, 14, 15], "dh": [4, 6, 8, 10, 12],
     "sell": [0.05, 0.25, 0.5, 0.75],
     "discount": [0.5, 0.6, 0.7, 0.82],   # the executor's distance discount (Plan.discount)
     "zones": [0.0, 0.3, 0.6],            # each unit owns a quadrant (Plan.zones)

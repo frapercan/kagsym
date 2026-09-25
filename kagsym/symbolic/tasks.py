@@ -331,6 +331,17 @@ def _shed_tasks(obs, farm, ctx=None, macro=None) -> list:
             out.append((max(WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), v), ["PICKUP", "WHEAT", n]))
         else:
             out.append((WHEAT_TRIP_VALUE * unit_price(obs, "WHEAT"), ["PICKUP", "WHEAT", n]))
+    if _under_plan() and hungry >= 2 and int(shed.get("WHEAT", 0)) > 0:
+        # SEVERAL CARRIERS. One wheat pickup a turn meant one feeder walking
+        # animal to animal for fifteen animals; the rest of the crew idled
+        # (more hands: 3 % -> 9 % idle, escapes unchanged). Up to four
+        # units fetch a share of the wheat at once, one per access tile.
+        base = next((t for t in out if t[1][0] == "PICKUP" and t[1][1] == "WHEAT"), None)
+        if base is not None:
+            carriers = max(1, min(4, -(-hungry // 4)))
+            each = max(1, -(-int(base[1][2]) // carriers))
+            for _ in range(carriers - 1):
+                out.append((base[0], ["PICKUP", "WHEAT", each]))
     out.sort(key=lambda t: -t[0])
     return out
 

@@ -496,3 +496,11 @@ Two leaks, both exact:
 Strawberry is the largest product of the top agents (part 6: four shops
 consume it) and it was unharvestable in plan mode until now, which is why
 no portfolio search ever chose it. P6 searches on this executor.
+
+Several carriers (14:00): one wheat pickup a turn meant one feeder walking
+animal to animal for fifteen animals while the rest idled (more hands only
+raised the idle share: 12 -> 15 hands, 3 % -> 9 % idle, 100.0k -> 89.3k).
+Up to four units now fetch a share of the wheat at once, one per access
+tile. The expansion blocks at discount 0.65, 5 seeds, with everything of
+part 10: A 48.9k, B 80.0k (escapes 6), C 91.8k (escapes 20), the v48
+shape 99.7k (escapes 12).
