@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-from .. import evaluate as E, spec
+from .. import spec
 from ..fastenv import FastEnv
 from ..plan import Plan, plan_macro, set_plan
 from ..symbolic.executor import Agent
@@ -14,12 +14,28 @@ def _state(ob) -> dict:
     return s(ob)
 
 
-def play_head(model, seed: int, days: int, hours: int = 24, cash: int = 3000) -> float:
+def _rival(opponent, seed: int):
+    from ..evaluate import PASS_ACTION, _opponent_callable, public
+    if not opponent:
+        return lambda ob: dict(PASS_ACTION)
+    if opponent.startswith("replay:"):
+        import json
+        from ..plan import _TAPES
+        tape = _TAPES.get(opponent)
+        if tape is None:
+            tape = _TAPES[opponent] = json.load(open(opponent[len("replay:"):]))
+        acts = tape[str(seed)]
+        return lambda ob, _a=acts: _a[int(ob["step"])] if int(ob["step"]) < len(_a) else dict(PASS_ACTION)
+    return _opponent_callable(public(opponent))
+
+
+def play_head(model, seed: int, days: int, hours: int = 24, cash: int = 3000, opponent: str | None = None) -> float:
     steps = hours * days
     spec.set_turns_per_day(hours)
     spec.set_episode_steps(steps)
     env = FastEnv(configuration={"episodeSteps": steps, "turnsPerDay": hours, "startingMoney": cash}, seed=seed)
     obs = env.reset()
+    rival = _rival(opponent, seed)
     plan = Plan()
     set_plan(plan)
     ag = Agent(episode_steps=steps, macro=plan_macro(plan))
@@ -38,7 +54,7 @@ def play_head(model, seed: int, days: int, hours: int = 24, cash: int = 3000) ->
                             land=land, animals=tuple(fields["animals"]), selling=tuple(fields["selling"]), load=tuple(fields["load"]),
                             water_last=tuple(fields["water_last"]))
                 set_plan(plan)
-            obs, _ = env.step([ag(ob), dict(E.PASS_ACTION)])
+            obs, _ = env.step([ag(ob), rival(obs[1])])
         return float(env.rewards()[0])
     finally:
         set_plan(None)

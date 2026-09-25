@@ -98,9 +98,9 @@ def load(pattern: str = "runs/ladder/daysearch_*d.jsonl") -> list:
     rows = []
     for path in sorted(glob.glob(pattern)):
         m = re.search(r"daysearch_(\d+)d", os.path.basename(path))
-        if not m or "test" in path or "pairs" in path:
+        if "test" in path or "pairs" in path:
             continue
-        d_file = int(m.group(1))
+        d_file = int(m.group(1)) if m else 30
         for line in open(path):
             r = json.loads(line)
             days = int(r.get("days", d_file))

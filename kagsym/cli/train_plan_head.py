@@ -44,7 +44,10 @@ def searched_plan(rows_of_horizon) -> Plan:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--holdout-days", default="6,9,12")
+    ap.add_argument("--holdout-days", default="")
+    ap.add_argument("--holdout-seeds", default="", help="seeds held out (a single-horizon dataset splits by seed)")
+    ap.add_argument("--data", default="runs/ladder/daysearch_*d.jsonl", help="glob of day-search records")
+    ap.add_argument("--opponent", default=None, help="regret played against this rival (replay:<tape> or a public name)")
     ap.add_argument("--epochs", type=int, default=300)
     ap.add_argument("--width", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -53,11 +56,14 @@ def main():
     ap.add_argument("--out", default="runs/plan_head.pt")
     a = ap.parse_args()
     torch.manual_seed(a.seed); np.random.seed(a.seed); random.seed(a.seed)
-    rows = load()
+    rows = load(a.data)
     hold = {int(d) for d in a.holdout_days.split(",") if d}
-    train = [r for r in rows if r["days"] not in hold]
-    test = [r for r in rows if r["days"] in hold]
-    print(f"{len(rows)} records, horizons {sorted({r['days'] for r in rows})}; train {len(train)}, held-out {len(test)} (days {sorted(hold)})")
+    hold_seeds = {int(x) for x in a.holdout_seeds.split(",") if x}
+    is_test = lambda r: (r["days"] in hold) or (r["seed"] in hold_seeds)
+    train = [r for r in rows if not is_test(r)]
+    test = [r for r in rows if is_test(r)]
+    print(f"{len(rows)} records, horizons {sorted({r['days'] for r in rows})}, seeds {len({r['seed'] for r in rows})}; "
+          f"train {len(train)}, held-out {len(test)} (days {sorted(hold)}, seeds {sorted(hold_seeds)})")
     model = PlanHead(len(rows[0]["x"]), a.width)
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
     xt, yt = _batch(train)
@@ -80,16 +86,25 @@ def main():
     torch.save({"state_dict": model.state_dict(), "n_in": len(rows[0]["x"]), "width": a.width, "fields": FIELDS}, a.out)
     # Regret on held-out horizons, reserved seeds the search never saw.
     model.eval()
-    seeds = RESERVED.seeds(a.eval_seeds, 5)
-    print("regret (money of the head's plan vs the searched plan, unseen seeds):")
+    print(f"regret (money of the head's plan vs the searched plan; opponent {a.opponent or 'passive'}):")
     for d in sorted({r["days"] for r in rows}):
         by_seed = {}
         for r in rows:
             if r["days"] == d:
                 by_seed.setdefault(r["seed"], []).append(r)
+        if hold_seeds:
+            # per seed: the searched schedule of THAT seed against the head on the same seed
+            for s in sorted(by_seed):
+                ref = searched_plan(by_seed[s])
+                m_ref = play_plan(ref, s, days=d, opponent=a.opponent)
+                m_head = play_head(model, s, d, opponent=a.opponent)
+                tag = "HELD-OUT" if s in hold_seeds else "train"
+                print(f"  {d:2d} days seed {s} {tag:8s} searched {m_ref:9,.0f}  head {m_head:9,.0f}  regret {m_ref - m_head:+9,.0f} ({(m_ref - m_head) / max(1, m_ref):+.1%})", flush=True)
+            continue
+        seeds = RESERVED.seeds(a.eval_seeds, 5)
         ref = searched_plan(next(iter(by_seed.values())))
-        m_ref = np.mean([play_plan(ref, s, days=d) for s in seeds])
-        m_head = np.mean([play_head(model, s, d) for s in seeds])
+        m_ref = np.mean([play_plan(ref, s, days=d, opponent=a.opponent) for s in seeds])
+        m_head = np.mean([play_head(model, s, d, opponent=a.opponent) for s in seeds])
         tag = "HELD-OUT" if d in hold else "train"
         print(f"  {d:2d} days {tag:8s} searched {m_ref:9,.0f}  head {m_head:9,.0f}  regret {m_ref - m_head:+9,.0f} ({(m_ref - m_head) / max(1, m_ref):+.1%})", flush=True)
 
