@@ -465,3 +465,34 @@ C (60 + 15)         58,742*    66,420   65,575   65,830    moves 60 % -> 53 %, e
 (* C's baseline here is 0.82 forced; its macro-default figure is 47,081.)
 The largest single lever of the day after the ranked shed; it joins the
 portfolio search space with the zones.
+
+## Part 10: the farm at v48's scale (2026-09-25, 13:20-13:45)
+
+v48's own calendar (12 tiles and 4 animals on day 0, the 2nd and 3rd
+quadrants on days 6 and 10, 60 tiles and 15 animals, 12 hands) played by
+our executor, solo, 5 seeds; and what it sold against what v48 sells:
+
+```
+                                        money    strawberry  milk  fertiliser  wool
+our executor, before                    78,093        21      128     237       75   (seed 7106)
++ care on a fed day worth a unit        83,032        32      154     278       78   (5-seed means)
++ HARVEST before FERTILISE             101,693       122      147     268       76
+v48 itself, solo                       131,661       430      335     397      179
+```
+
+Two leaks, both exact:
+
+1. **Care.** Care on a fed day banks a bonus unit for the next production
+   day (engine: `pending_care_bonus`); it was valued at half a unit and 6-9
+   of 15 animals got it. Worth a unit under a plan: milk +20 %.
+2. **The fruit sat on the plant.** For an ongoing crop past its first
+   yield the fertilise branch fires every day and was the tile's only
+   task; it needs fertiliser in hand, chains are off, so no unit could
+   take it and the tile was never harvested: 45 strawberry tiles, 66 ripe
+   units, the price at 339 with the town's inventory 679 below base, and
+   zero harvests in a game. Under a plan HARVEST comes before FERTILISE.
+   Strawberry sold 32 -> 122 a seed; the block +18.7 k.
+
+Strawberry is the largest product of the top agents (part 6: four shops
+consume it) and it was unharvestable in plan mode until now, which is why
+no portfolio search ever chose it. P6 searches on this executor.

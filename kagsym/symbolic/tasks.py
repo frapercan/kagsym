@@ -568,6 +568,16 @@ def tile_task(obs, farm, x: int, y: int, free_capacity: int, ctx=None, macro=Non
                     return (price, ["WATER"])
             return (WATER_IDLE_VALUE * price, ["WATER"])
 
+        if ripe and _under_plan() and (cd["ongoing"] or age >= cd["max_yield_day"]):
+            # UNDER A PLAN, HARVEST BEFORE FERTILISE (and after the watering:
+            # a watering in the yield window adds a unit first). The
+            # fertilise branch below fires every day on an ongoing crop past
+            # its first yield and was the tile's only task; it needs
+            # fertiliser in hand, chains are off, so nobody could take it and
+            # the fruit sat on the plant: 45 strawberry tiles, 66 units ripe,
+            # the price at 339, zero harvests in a game (EXP-007 part 10).
+            return (tile["yield_units"] * price, ["HARVEST"])
+
         # FERTILISE: only where the NETWORK provides the value.
         #
         # The capability was needed -fertiliser was picked up 550 times per
