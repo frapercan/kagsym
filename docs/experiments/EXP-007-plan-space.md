@@ -449,3 +449,19 @@ demand mix available), consolidated LIVE against v48 on 20 seeds:
 **60,711** against 55,281 for the v1 portfolio and 62,309 for v5. The
 executor's refinements reach the duel; a fixed plan is now within 3 % of
 the deployed policy there.
+
+**The distance discount** (2026-09-25, 13:20). 70 % of the crew's moves
+lead to a watering, at 2.5 steps each where a contiguous sweep costs one:
+the assignment sends units to the highest value x 0.896^distance, and a
+melon three tiles away outranks the wheat next door. The discount is a
+macro constant rewritten every turn (`apply_params`), so it is now a plan
+field, `Plan.discount`. Blocks on 5 seeds:
+
+```
+                 macro's 0.896   0.70     0.60     0.50
+B (50 + 8)          48,598     63,323   63,793   59,814    moves 61 % -> 50 %, escapes 17 -> 5
+C (60 + 15)         58,742*    66,420   65,575   65,830    moves 60 % -> 53 %, escapes 36 -> 19
+```
+(* C's baseline here is 0.82 forced; its macro-default figure is 47,081.)
+The largest single lever of the day after the ranked shed; it joins the
+portfolio search space with the zones.
