@@ -209,6 +209,26 @@ def _under_plan() -> bool:
     return get_plan() is not None
 
 
+def _zone_of(tile) -> str:
+    h = BOARD // 2
+    return ("N" if tile[1] < h else "S") + ("W" if tile[0] < h else "E")
+
+
+def _plan_zones(obs) -> float:
+    from ..plan import get_plan
+    pl = get_plan()
+    return float(getattr(pl, "zones", 0.0)) if pl is not None else 0.0
+
+
+def _home_zones(obs, units) -> list:
+    """Each unit's home quadrant: the unlocked quadrants dealt round-robin in
+    unit order (the farmer first), so a quadrant with more tiles gets the
+    same share as the others; good enough to stop the criss-crossing."""
+    farm = obs["farms"][int(obs["player"])]
+    qs = [q for q in ("NW", "NE", "SW", "SE") if q in farm["unlocked_quadrants"]] or ["NW"]
+    return [qs[i % len(qs)] for i in range(len(units))]
+
+
 def _plan_load(obs) -> int:
     from ..plan import get_plan
     pl = get_plan()
@@ -1202,6 +1222,10 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
     # the crew's maximum, so the unit with 3 units looked like the one with
     # 12). In map mode the network's value is kept and scaled by that share.
     _deadline = None if chain_ctx is None else chain_ctx.get("deadline")
+    _zones = 0.0 if chain_ctx is None else float(chain_ctx.get("zones") or 0.0)
+    _home = (chain_ctx.get("home") or []) if chain_ctx is not None else []
+    if _zones and len(_home) < len(units):
+        _zones = 0.0
     _load = 0 if chain_ctx is None else int(chain_ctx.get("load") or 0)
     _carried_n = [sum(int(n_) for it, n_ in (inv or {}).items() if it in spec.PRODUCTS)
                   if isinstance(inv, dict) else 0 for inv in invs]
@@ -1294,6 +1318,12 @@ def _assign_hungarian(units, tasks, invs=None, previous=None, stickiness=0.0,
                 continue
             if PASS_ACC is not None:
                 PASS_ACC["offers"] += 1
+            if _zones and op[0] not in ("DROP", "PICKUP", "PLACE") and _zone_of(tile) != _home[i]:
+                # ZONES (a plan field): each unit owns a quadrant, like a route
+                # agent; work in another quadrant is discounted so the crew
+                # stops criss-crossing (measured: 60 % of unit-turns were
+                # moves in the 60-tile block, v48 makes 1.08 moves per work).
+                v = v * (1.0 - _zones)
             if _share is not None and op[0] == "DROP" and i < len(_share):
                 v = v * _share[i]
                 if _load > 0 and _carried_n[i] < _load:
@@ -1510,7 +1540,8 @@ def assign_units(obs, free_capacity: int,
         # by retraining with them on. See docs/DEBT.md.
         _chain_ctx.update({"carried": _carried_values(obs),
                            "deadline": _remaining if days_left(obs) <= 1 else None,
-                           "load": _plan_load(obs)})
+                           "load": _plan_load(obs),
+                           "zones": _plan_zones(obs), "home": _home_zones(obs, units)})
     adh = 0.0
     if macro is not None:
         from ..macro import assignment_stickiness

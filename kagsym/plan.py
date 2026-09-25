@@ -45,6 +45,7 @@ class Plan:
     selling: float | tuple = 0.05
     load: int | tuple = 0          # units a hand carries before a shed trip; 0 = whenever it pays
     water_last: int | tuple = 1    # last day: 1 water ripe tiles before harvesting (+1 unit), 0 harvest at once
+    zones: float = 0.0             # each unit owns a quadrant; work elsewhere discounted by this fraction (0 = off)
 
     def water_last_on(self, day: int) -> int:
         return int(_by_day(self.water_last, day))
