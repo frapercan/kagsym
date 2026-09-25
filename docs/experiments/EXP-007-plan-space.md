@@ -513,3 +513,11 @@ with it. Strawberry itself is right in the executor now: the engine gives
 a plant four productions (one every two days from day 10) and then ends
 it, so 430 strawberries a game means sowing from day 0 and replanting at
 day 16, which is the search's decision, not the executor's.
+
+**Routing closed** (14:10). With `Plan.discount` 0.6 the big farm (v48's
+shape) makes 1.11 moves per work action; v48 makes 1.08. Its 52 % of
+unit-turns spent moving is the structure of 60 tiles and 15 animals with
+12 hands (v48: 49 %), not inefficiency. What remains between 100 k and
+v48's 131 k solo is strategy: strawberries from day 0 and replanted at
+day 16, the mix, the herd. The search space now allows a strawberry
+opening and sowing from day 0 (P10 on).
