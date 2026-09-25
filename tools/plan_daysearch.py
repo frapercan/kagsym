@@ -86,6 +86,13 @@ def candidates(plan: Plan, day: int, days: int, rng=None, pairs: int = 12) -> li
 
 def _rollout(task):
     ag, env, plan = task
+    # THE CALENDAR IS PROCESS STATE. A forked worker carries whatever
+    # spec.EPISODE_STEPS the parent had when the pool was made; when the
+    # grid was cached nothing had set it, and every candidate was played as
+    # a 30-day game (2,540 against a correct base of 3,714 at 3 days) so no
+    # candidate ever "improved". Set it here, from the game itself.
+    spec.set_turns_per_day(int(env.configuration["turnsPerDay"]))
+    spec.set_episode_steps(int(env.configuration["episodeSteps"]))
     with active(plan):
         env2 = env.clone()
         ag2 = copy.deepcopy(ag)

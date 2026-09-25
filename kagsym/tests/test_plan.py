@@ -165,3 +165,22 @@ def test_a_mix_inside_the_day_buys_and_plants_both_crops():
                 if isinstance(t, dict) and t.get("kind") == "PLANT":
                     by[t["crop"]] = by.get(t["crop"], 0) + 1
     assert by == {"WHEAT": 15, "CARROT": 10}, by
+
+
+def test_rollout_uses_the_games_calendar_not_the_process_state():
+    # A forked worker inherits whatever calendar the parent had when the pool
+    # was made; the rollout must set it from the game (measured: every
+    # candidate played as a 30-day game, 2,540 against a base of 3,714).
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import plan_daysearch as D
+    plan = Plan("CARROT", 20, 6, 0, 0, 0.05, 12)
+    spec.set_turns_per_day(HOURS)
+    spec.set_episode_steps(HOURS * 3)
+    env = FastEnv(configuration={"episodeSteps": HOURS * 3, "turnsPerDay": HOURS, "startingMoney": 3000}, seed=7101)
+    env.reset()
+    with active(plan):
+        ag = Agent(episode_steps=HOURS * 3, macro=plan_macro(plan))
+    spec.set_episode_steps(720)                       # the stale state of a worker
+    money = D._rollout((ag, env, plan))
+    assert spec.EPISODE_STEPS == HOURS * 3
+    assert money == play_plan(plan, 7101, days=3)
