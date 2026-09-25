@@ -77,3 +77,7 @@ consolidation. v48 and the 150 k agents only at milestones.
 | id | file | seeds | recorded against |
 |---|---|---|---|
 | T-hamburger | runs/rivals/hamburger.json | 7101-7120 | P5's best plan |
+
+## Packaging (2026-09-25 14:15)
+
+`runs/P8_fixed.pt` (kind `plan_fixed`, the P8 plan) loads through `Policy.from_checkpoint` as `FixedPlanPolicy` and plays identically through the real Kaggle runner (`tools/check_submission.py`, 4 of 4 games to the cent). The band run against every public agent, paired with prod, is the ladder's criterion.
